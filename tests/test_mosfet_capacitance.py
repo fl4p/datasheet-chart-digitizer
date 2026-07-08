@@ -186,5 +186,76 @@ class TraceRepairTests(unittest.TestCase):
         )
 
 
+class VectorExtractionTests(unittest.TestCase):
+    def test_curve_stroke_color_accepts_teal_but_rejects_gray_grid(self) -> None:
+        self.assertTrue(mc._is_curve_stroke_color((0.03, 0.40, 0.36)))
+        self.assertTrue(mc._is_curve_stroke_color((0.0, 0.0, 0.0)))
+        self.assertFalse(mc._is_curve_stroke_color((0.55, 0.55, 0.55)))
+        self.assertFalse(mc._is_curve_stroke_color((0.8, 0.1, 0.1)))
+
+    def test_internal_long_horizontal_segment_is_not_treated_as_grid(self) -> None:
+        class Rect:
+            x0 = 10.0
+            y0 = 20.0
+            x1 = 210.0
+            y1 = 120.0
+            width = 200.0
+            height = 100.0
+
+        self.assertFalse(mc._is_long_orthogonal_segment((20.0, 70.0), (190.0, 70.0), Rect))
+        self.assertTrue(mc._is_long_orthogonal_segment((20.0, 20.5), (190.0, 20.5), Rect))
+
+    def test_mostly_inside_plot_allows_clipped_curve_continuations(self) -> None:
+        class Rect:
+            x0 = 0.0
+            y0 = 0.0
+            x1 = 100.0
+            y1 = 100.0
+            width = 100.0
+
+            def contains(self, point: tuple[float, float]) -> bool:
+                x, y = point
+                return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
+
+        points = [(float(x), 50.0) for x in range(-30, 101, 10)]
+        self.assertTrue(mc._mostly_inside_plot(points, Rect()))
+
+    def test_mostly_inside_plot_rejects_weak_visible_span(self) -> None:
+        class Rect:
+            x0 = 0.0
+            y0 = 0.0
+            x1 = 100.0
+            y1 = 100.0
+            width = 100.0
+
+            def contains(self, point: tuple[float, float]) -> bool:
+                x, y = point
+                return self.x0 <= x <= self.x1 and self.y0 <= y <= self.y1
+
+        points = [(float(x), 50.0) for x in range(0, 50, 5)]
+        self.assertFalse(mc._mostly_inside_plot(points, Rect()))
+
+    def test_vector_resampling_emits_dense_single_valued_trace(self) -> None:
+        plot = mc.PlotBox(x0=10, y0=10, x1=110, y1=110)
+        raw = [(10, 20), (110, 20)]
+
+        dense = mc._resample_vector_trace_pixels(raw, plot)
+
+        self.assertGreater(len(dense), 90)
+        self.assertTrue(mc._single_valued_by_x(dense))
+        self.assertEqual(dense[0], (10, 20))
+        self.assertEqual(dense[-1], (110, 20))
+
+    def test_vector_resampling_does_not_interpolate_disconnected_jump(self) -> None:
+        plot = mc.PlotBox(x0=10, y0=10, x1=110, y1=110)
+        raw = [(10, 20), (30, 20), (90, 90), (110, 90)]
+
+        dense = mc._resample_vector_trace_pixels(raw, plot)
+
+        self.assertTrue(mc._single_valued_by_x(dense))
+        xs = [x for x, _ in dense]
+        self.assertNotIn(60, xs)
+
+
 if __name__ == "__main__":
     unittest.main()
