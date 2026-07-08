@@ -92,6 +92,20 @@ class AxisCalibration:
     x_offset: float | None = None
     y_scale: float | None = None
     y_offset: float | None = None
+    x_source: str | None = None
+    y_source: str | None = None
+    y_gridline_px: tuple[float, ...] = ()
+    y_grid_candidate_count: int | None = None
+    y_grid_span_fraction: float | None = None
+    y_grid_residual_px: float | None = None
+
+
+@dataclass(frozen=True)
+class GridlineFit:
+    centers: list[float]
+    candidate_count: int
+    span_fraction: float
+    residual_px: float
 
 
 @dataclass(frozen=True)
@@ -166,6 +180,7 @@ def extract_trace_components(
 
     assigned = _track_directional_traces(centers_by_x, plot, anchors or {})
     assigned = _repair_leading_steep_coss(mask, centers_by_x, assigned, plot)
+    assigned = _repair_leading_steep_crss(mask, assigned, plot)
 
     traces: list[Trace] = []
     for name in ["Ciss", "Coss", "Crss"]:
@@ -491,6 +506,8 @@ def infer_text_order_axis_calibration(chart: dict[str, object]) -> AxisCalibrati
         source="chart_text",
         x_ticks_v=tuple(float(v) for v in x_ticks),
         y_decades=tuple(float(v) for v in sorted(set(y_decades))),
+        x_source="text_order_normalized_plot_extent",
+        y_source="text_order_normalized_plot_extent",
     )
 
 
@@ -547,6 +564,8 @@ def infer_position_axis_calibration(
         x_offset=x_offset,
         y_scale=y_scale,
         y_offset=y_offset,
+        x_source="position_text",
+        y_source="position_text",
     )
 
 
@@ -562,7 +581,8 @@ def reject_bad_position_calibration(calibration: AxisCalibration) -> str | None:
 
 def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray, plot: PlotBox) -> AxisCalibration:
     text_calibration = infer_text_order_axis_calibration(chart)
-    y_positions = _major_horizontal_gridline_centers(image, plot, len(text_calibration.y_decades))
+    y_fit = _major_horizontal_gridline_fit(image, plot, len(text_calibration.y_decades))
+    y_positions = y_fit.centers
     if len(y_positions) != len(text_calibration.y_decades):
         raise RuntimeError("could not match Y decade labels to horizontal gridlines")
 
@@ -589,10 +609,20 @@ def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray,
         x_offset=float(x_offset),
         y_scale=float(y_scale),
         y_offset=float(y_offset),
+        x_source="plot_box_endpoints_from_text_ticks",
+        y_source="gridline_fit_from_text_decades",
+        y_gridline_px=tuple(float(y) for y in y_positions),
+        y_grid_candidate_count=y_fit.candidate_count,
+        y_grid_span_fraction=y_fit.span_fraction,
+        y_grid_residual_px=y_fit.residual_px,
     )
 
 
 def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: int) -> list[float]:
+    return _major_horizontal_gridline_fit(image, plot, count).centers
+
+
+def _major_horizontal_gridline_fit(image: np.ndarray, plot: PlotBox, count: int) -> GridlineFit:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(80, gray.shape[1] // 5), 1))
@@ -628,13 +658,14 @@ def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: 
     if len(candidates) < count:
         raise RuntimeError(f"found only {len(candidates)} horizontal gridline candidates")
 
-    best: tuple[float, float, list[float]] | None = None
+    best: tuple[float, float, float, list[float]] | None = None
+    best_rejected: tuple[float, float, float, list[float]] | None = None
     for first_idx in range(len(candidates)):
         for last_idx in range(first_idx + count - 1, len(candidates)):
             first = candidates[first_idx]
             last = candidates[last_idx]
             span = last - first
-            if span < plot.height * 0.65:
+            if span < plot.height * 0.94:
                 continue
             expected = np.linspace(first, last, count)
             chosen = []
@@ -647,14 +678,28 @@ def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: 
                 chosen.append(candidates[idx])
                 used.add(idx)
             residual = float(np.sqrt(np.mean((np.array(chosen) - expected) ** 2)))
-            score = residual - span * 1e-4
-            if best is None or score < best[0]:
-                best = (score, residual, chosen)
+            # A log-axis decade set should cover the whole plotted axis. Dense
+            # minor log gridlines can form many very uniform but shifted
+            # sequences; choosing by residual alone can pick an internal
+            # sequence and mis-scale every capacitance. Prefer full-height
+            # sequences first, then use residual as the tie-breaker.
+            score = -span + residual * 0.05
+            candidate = (score, residual, span, chosen)
+            if residual <= 3.0:
+                if best is None or score < best[0]:
+                    best = candidate
+            elif best_rejected is None or score < best_rejected[0]:
+                best_rejected = candidate
 
-    if best is None or best[1] > 3.0:
-        residual = best[1] if best is not None else float("nan")
+    if best is None:
+        residual = best_rejected[1] if best_rejected is not None else float("nan")
         raise RuntimeError(f"could not find a uniform major-grid sequence; residual {residual:.4g}")
-    return sorted(best[2])
+    return GridlineFit(
+        centers=sorted(best[3]),
+        candidate_count=len(candidates),
+        span_fraction=float(best[2] / max(1, plot.height - 1)),
+        residual_px=float(best[1]),
+    )
 
 
 def _interval_coverage_fraction(intervals: list[tuple[int, int]], start: int, end: int) -> float:
@@ -754,11 +799,25 @@ def calibration_v_of_x(calibration: AxisCalibration, plot: PlotBox, x: float) ->
     return float(calibration.x_min_v + x_norm * (calibration.x_max_v - calibration.x_min_v))
 
 
+def calibration_x_of_v(calibration: AxisCalibration, plot: PlotBox, vds: float) -> float:
+    if calibration.x_scale is not None and calibration.x_offset is not None and abs(calibration.x_scale) > 1e-12:
+        return float((vds - calibration.x_offset) / calibration.x_scale)
+    x_norm = (vds - calibration.x_min_v) / max(1e-12, calibration.x_max_v - calibration.x_min_v)
+    return float(plot.x0 + _clip01(x_norm) * max(1, plot.width - 1))
+
+
 def calibration_log_c_of_y(calibration: AxisCalibration, plot: PlotBox, y: float) -> float:
     if calibration.y_scale is not None and calibration.y_offset is not None:
         return float(calibration.y_scale * y + calibration.y_offset)
     y_norm = _clip01((plot.y1 - y) / max(1, plot.height - 1))
     return float(calibration.y_min_decade + y_norm * (calibration.y_max_decade - calibration.y_min_decade))
+
+
+def calibration_y_of_log_c(calibration: AxisCalibration, plot: PlotBox, log_c: float) -> float:
+    if calibration.y_scale is not None and calibration.y_offset is not None and abs(calibration.y_scale) > 1e-12:
+        return float((log_c - calibration.y_offset) / calibration.y_scale)
+    y_norm = (log_c - calibration.y_min_decade) / max(1e-12, calibration.y_max_decade - calibration.y_min_decade)
+    return float(plot.y1 - _clip01(y_norm) * max(1, plot.height - 1))
 
 
 def _clip01(value: float) -> float:
@@ -807,6 +866,12 @@ def _repair_leading_steep_coss(
     coss = sorted(assigned["Coss"])
     if len(coss) < 8:
         return assigned
+
+    repaired_coss = _repair_missing_leading_knee(mask, coss, plot)
+    if repaired_coss is not None and _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+        out = dict(assigned)
+        out["Coss"] = repaired_coss
+        return out
 
     leading_overlap = [(x, y) for x, y in coss[:8] if x in ciss_by_x and abs(y - ciss_by_x[x]) <= 8]
     if not leading_overlap:
@@ -872,8 +937,313 @@ def _repair_leading_steep_coss(
         if x < stable[0]:
             by_x[x] = y
     out = dict(assigned)
-    out["Coss"] = sorted(by_x.items())
+    repaired_coss = sorted(by_x.items())
+    if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+        return assigned
+    out["Coss"] = repaired_coss
     return out
+
+
+def _repair_missing_leading_knee(
+    mask: np.ndarray, points: list[tuple[int, int]], plot: PlotBox
+) -> list[tuple[int, int]] | None:
+    """Prepend a near-vertical left-edge knee as one y per x.
+
+    This handles raster Coss traces on high-voltage SiC charts where the first
+    tracked column is already below the nearly vertical low-VDS rise. The row
+    walk recovers the steep segment; grouping by x with a median center keeps
+    the exported curve single-valued.
+    """
+    if len(points) < 8:
+        return None
+    ordered = sorted(points)
+    anchor = ordered[0]
+    anchor_x = anchor[0] - plot.x0
+    anchor_y = anchor[1] - plot.y0
+    if anchor_x > plot.width * 0.08 or anchor_y < plot.height * 0.10:
+        return None
+
+    max_band = int(round(plot.height * 0.16))
+    y_min = max(0, anchor_y - max_band)
+    left_limit = max(anchor_x + 18.0, plot.width * 0.07)
+    row_points: list[tuple[int, int]] = []
+    last_x: float | None = None
+    for local_y in range(anchor_y - 1, y_min - 1, -1):
+        row_centers = _cluster_row_runs(mask[local_y, :])
+        candidates = [x for x in row_centers if 0 <= x <= left_limit]
+        if not candidates:
+            continue
+        if last_x is None:
+            best = min(candidates, key=lambda x: abs(x - anchor_x))
+        else:
+            monotone_candidates = [x for x in candidates if x <= last_x + 4.0]
+            if not monotone_candidates:
+                continue
+            best = min(monotone_candidates, key=lambda x: abs(x - last_x))
+            if abs(best - last_x) > 12.0:
+                continue
+        last_x = float(best)
+        row_points.append((plot.x0 + int(round(best)), plot.y0 + local_y))
+
+    if len(row_points) < 10:
+        return None
+
+    by_x: dict[int, list[int]] = {}
+    for x, y in row_points + [anchor]:
+        by_x.setdefault(x, []).append(y)
+    repaired: list[tuple[int, int]] = []
+    running_y: int | None = None
+    for x in sorted(by_x):
+        # Use the upper envelope for Coss: this repair only covers the missing
+        # high-capacitance left-edge knee, and the visible stroke top is the
+        # conservative continuation toward VDS=0.
+        y = int(min(by_x[x]))
+        if running_y is not None and y < running_y:
+            y = running_y
+        running_y = y
+        repaired.append((x, y))
+    if len(repaired) < 2:
+        return None
+
+    x_cover_min = min(x for x, _ in repaired)
+    x_cover_max = max(x for x, _ in repaired)
+    merged = {x: y for x, y in ordered if not (x_cover_min <= x <= x_cover_max)}
+    for x, y in repaired:
+        merged[x] = y
+    return sorted(merged.items())
+
+
+def _repair_leading_steep_crss(
+    mask: np.ndarray,
+    assigned: dict[str, list[tuple[int, int]]],
+    plot: PlotBox,
+) -> dict[str, list[tuple[int, int]]]:
+    """Recover the near-vertical low-VDS Crss knee in raster charts.
+
+    Column sampling deliberately ignores tall runs so grid lines and merged
+    strokes do not collapse multiple traces into one center. That also drops
+    the left-edge Crss knee on SiC capacitance plots, where the trace is almost
+    vertical. Repair that local segment by sampling row runs near the left edge
+    and splicing them before the first column-tracked Crss point.
+    """
+    crss = assigned.get("Crss")
+    if not crss or len(crss) < 8:
+        return assigned
+
+    crss_by_path = list(crss)
+    left_candidates = [point for point in crss_by_path if point[0] - plot.x0 <= plot.width * 0.12]
+    if not left_candidates:
+        return assigned
+    anchor = min(left_candidates, key=lambda point: (point[0], point[1]))
+    anchor_x = anchor[0] - plot.x0
+    anchor_y = anchor[1] - plot.y0
+    if anchor_x > plot.width * 0.08 or anchor_y < plot.height * 0.25:
+        return assigned
+
+    # Only repair the local missing knee. Extending too far upward can steal the
+    # overlapping Coss/Ciss low-VDS rise, so cap the search to a modest vertical
+    # band above the first stable Crss point.
+    max_band = int(round(plot.height * 0.22))
+    y_min = max(0, anchor_y - max_band)
+    left_limit = max(anchor_x + 18.0, plot.width * 0.07)
+
+    row_points: list[tuple[int, int]] = []
+    last_x: float | None = None
+    for local_y in range(anchor_y - 1, y_min - 1, -1):
+        row_centers = _cluster_row_runs(mask[local_y, :])
+        candidates = [x for x in row_centers if 0 <= x <= left_limit]
+        if not candidates:
+            continue
+        if last_x is None:
+            monotone_candidates = [x for x in candidates if x <= anchor_x + 4.0]
+            if not monotone_candidates:
+                continue
+            best = min(monotone_candidates, key=lambda x: abs(x - anchor_x))
+        else:
+            # Crss is a single-valued decreasing C(VDS) curve. Walking toward
+            # higher capacitance (smaller pixel-y) must not move the trace to
+            # larger VDS, otherwise we are following a different left-edge
+            # branch and will create a loop in the overlay/data.
+            monotone_candidates = [x for x in candidates if x <= last_x + 4.0]
+            if not monotone_candidates:
+                continue
+            best = min(monotone_candidates, key=lambda x: abs(x - last_x))
+            if abs(best - last_x) > 12.0:
+                continue
+        last_x = float(best)
+        row_points.append((plot.x0 + int(round(best)), plot.y0 + local_y))
+
+    if len(row_points) < 12:
+        return assigned
+
+    # Convert the row-walk back to a function y(x). Raster strokes can be nearly
+    # vertical, but the digitized C(V) curve must still have one capacitance per
+    # VDS. Use the upper envelope for each x, then enforce nondecreasing y as x
+    # increases so the repaired Crss knee cannot fold back on itself.
+    by_x: dict[int, int] = {}
+    for x, y in row_points + [anchor]:
+        old = by_x.get(x)
+        if old is None or y < old:
+            by_x[x] = y
+    repaired: list[tuple[int, int]] = []
+    running_y: int | None = None
+    for x in sorted(by_x):
+        y = by_x[x]
+        if running_y is not None and y < running_y:
+            y = running_y
+        running_y = y
+        repaired.append((x, y))
+    if len(repaired) < 2:
+        return assigned
+
+    x_cover_min = min(x for x, _ in repaired)
+    x_cover_max = max(x for x, _ in repaired)
+    remainder = [
+        point
+        for point in crss_by_path
+        if not (
+            x_cover_min <= point[0] <= x_cover_max
+            and point != anchor
+        )
+    ]
+
+    out = dict(assigned)
+    merged_by_x = {x: y for x, y in remainder}
+    for x, y in repaired:
+        merged_by_x[x] = y
+    repaired_crss = sorted(merged_by_x.items())
+    peers = {name: points for name, points in assigned.items() if name in ("Ciss", "Coss")}
+    if not _repair_shape_guard(repaired_crss, crss_by_path, plot, peers=peers, require_bottom=True):
+        return assigned
+    out["Crss"] = repaired_crss
+    return out
+
+
+def _repair_shape_guard(
+    repaired: list[tuple[int, int]],
+    original: list[tuple[int, int]],
+    plot: PlotBox,
+    *,
+    peers: dict[str, list[tuple[int, int]]] | None = None,
+    require_bottom: bool = False,
+) -> bool:
+    if not repaired or not _single_valued_by_x(repaired):
+        return False
+    if not _low_v_nonfolding(repaired, plot):
+        return False
+    if not _splice_continuity_ok(repaired, original, plot):
+        return False
+    repair_segment = _changed_repair_segment(repaired, original) or repaired
+    if peers and _overlaps_peer_for_too_long(repair_segment, peers):
+        return False
+    if require_bottom and peers and not _is_bottom_branch(repair_segment, peers):
+        return False
+    return True
+
+
+def _single_valued_by_x(points: list[tuple[int, int]]) -> bool:
+    return len({x for x, _ in points}) == len(points)
+
+
+def _low_v_nonfolding(points: list[tuple[int, int]], plot: PlotBox) -> bool:
+    low_v_limit = plot.x0 + int(round(plot.width * 0.20))
+    low_v_points = [(x, y) for x, y in sorted(points) if x <= low_v_limit]
+    if len(low_v_points) < 3:
+        return True
+    ys = np.array([y for _, y in low_v_points], dtype=float)
+    return bool(np.all(np.diff(ys) >= -3.0))
+
+
+def _splice_continuity_ok(
+    repaired: list[tuple[int, int]], original: list[tuple[int, int]], plot: PlotBox
+) -> bool:
+    changed_runs = _changed_repair_runs(repaired, original)
+    if not changed_runs:
+        return True
+    repaired_sorted = sorted(repaired)
+    for changed in changed_runs:
+        changed_min_x = min(x for x, _ in changed)
+        changed_max_x = max(x for x, _ in changed)
+        first_changed = min(changed, key=lambda point: point[0])
+        last_changed = max(changed, key=lambda point: point[0])
+        prev_tail = [point for point in repaired_sorted if point[0] < changed_min_x]
+        next_tail = [point for point in repaired_sorted if point[0] > changed_max_x]
+        if prev_tail and not _splice_pair_continuous(prev_tail[-1], first_changed, plot):
+            return False
+        if next_tail and not _splice_pair_continuous(last_changed, next_tail[0], plot):
+            return False
+    return True
+
+
+def _changed_repair_segment(
+    repaired: list[tuple[int, int]], original: list[tuple[int, int]], y_tol: int = 3
+) -> list[tuple[int, int]]:
+    original_by_x = dict(original)
+    return [(x, y) for x, y in sorted(repaired) if x not in original_by_x or abs(y - original_by_x[x]) > y_tol]
+
+
+def _changed_repair_runs(
+    repaired: list[tuple[int, int]], original: list[tuple[int, int]], y_tol: int = 3
+) -> list[list[tuple[int, int]]]:
+    changed = _changed_repair_segment(repaired, original, y_tol=y_tol)
+    if not changed:
+        return []
+    runs: list[list[tuple[int, int]]] = [[changed[0]]]
+    for point in changed[1:]:
+        if point[0] <= runs[-1][-1][0] + 1:
+            runs[-1].append(point)
+        else:
+            runs.append([point])
+    return runs
+
+
+def _splice_pair_continuous(a: tuple[int, int], b: tuple[int, int], plot: PlotBox) -> bool:
+    dx = b[0] - a[0]
+    dy = abs(b[1] - a[1])
+    return 0 < dx <= max(8, plot.width * 0.04) and dy <= max(24, plot.height * 0.08)
+
+
+def _overlaps_peer_for_too_long(
+    points: list[tuple[int, int]], peers: dict[str, list[tuple[int, int]]]
+) -> bool:
+    shared = 0
+    close = 0
+    for x, y in points:
+        for peer_points in peers.values():
+            peer_y = _interp_y_in_range(peer_points, x)
+            if peer_y is None:
+                continue
+            shared += 1
+            if abs(y - peer_y) <= 4:
+                close += 1
+    return shared >= 6 and close / shared > 0.45
+
+
+def _is_bottom_branch(points: list[tuple[int, int]], peers: dict[str, list[tuple[int, int]]]) -> bool:
+    samples = 0
+    bottom = 0
+    for x, y in points:
+        peer_ys = [
+            peer_y
+            for peer_points in peers.values()
+            for peer_y in [_interp_y_in_range(peer_points, x)]
+            if peer_y is not None
+        ]
+        if not peer_ys:
+            continue
+        samples += 1
+        if y >= max(peer_ys) - 8:
+            bottom += 1
+    return samples < 4 or bottom / samples >= 0.80
+
+
+def _interp_y_in_range(points: list[tuple[int, int]], x: int) -> float | None:
+    if not points:
+        return None
+    ordered = sorted(points)
+    if x < ordered[0][0] or x > ordered[-1][0]:
+        return None
+    return _interp_y(ordered, x)
 
 
 def _seed_x_from_anchors(centers_by_x: list[list[float]], anchors: dict[str, CapAnchor]) -> int:
@@ -1080,7 +1450,9 @@ def draw_trace_overlay(image: np.ndarray, plot: PlotBox, traces: list[Trace]) ->
         color = TRACE_COLORS_BGR[trace.name]
         pts = trace.points
         for a, b in zip(pts, pts[1:]):
-            if b[0] - a[0] <= 8 and abs(b[1] - a[1]) <= 60:
+            dx = abs(b[0] - a[0])
+            dy = abs(b[1] - a[1])
+            if dx <= max(8, int(plot.width * 0.06)) and dy <= max(60, int(plot.height * 0.18)):
                 cv2.line(overlay, a, b, color, 3, lineType=cv2.LINE_AA)
         for point in pts[:: max(1, len(pts) // 80)]:
             cv2.circle(overlay, point, 2, color, -1, lineType=cv2.LINE_AA)
@@ -1098,6 +1470,108 @@ def draw_trace_overlay(image: np.ndarray, plot: PlotBox, traces: list[Trace]) ->
         )
 
     return overlay
+
+
+def draw_axis_debug_overlay(
+    image: np.ndarray,
+    plot: PlotBox,
+    calibration: AxisCalibration,
+    title: str,
+) -> np.ndarray:
+    overlay = image.copy()
+    cv2.rectangle(overlay, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 255), 3)
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(
+        overlay,
+        title[:120],
+        (max(5, plot.x0 - 90), max(26, plot.y0 - 42)),
+        font,
+        0.82,
+        (0, 0, 0),
+        3,
+        lineType=cv2.LINE_AA,
+    )
+    subtitle1 = (
+        f"axis={calibration.source} x={calibration.x_source or 'n/a'} "
+        f"y={calibration.y_source or 'n/a'} "
+        f"x_resid={_fmt_optional(calibration.x_resid_v)} "
+        f"y_resid={_fmt_optional(calibration.y_resid_dec)}"
+    )
+    subtitle2 = (
+        f"grid_n={calibration.y_grid_candidate_count if calibration.y_grid_candidate_count is not None else 'n/a'} "
+        f"grid_span={_fmt_optional(calibration.y_grid_span_fraction)} "
+        f"grid_resid_px={_fmt_optional(calibration.y_grid_residual_px)}"
+    )
+    cv2.putText(
+        overlay,
+        subtitle1[:140],
+        (max(5, plot.x0 - 90), max(52, plot.y0 - 16)),
+        font,
+        0.62,
+        (0, 0, 0),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.putText(
+        overlay,
+        subtitle2[:140],
+        (max(5, plot.x0 - 90), max(78, plot.y0 + 10)),
+        font,
+        0.62,
+        (0, 0, 0),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+
+    for tick in calibration.x_ticks_v:
+        x = int(round(calibration_x_of_v(calibration, plot, float(tick))))
+        if plot.x0 - 3 <= x <= plot.x1 + 3:
+            cv2.line(overlay, (x, plot.y0), (x, plot.y1), (255, 230, 0), 3, lineType=cv2.LINE_AA)
+            cv2.circle(overlay, (x, plot.y1), 8, (255, 230, 0), -1, lineType=cv2.LINE_AA)
+            cv2.putText(
+                overlay,
+                f"{tick:g}",
+                (x - 16, min(image.shape[0] - 6, plot.y1 + 32)),
+                font,
+                0.70,
+                (180, 125, 0),
+                2,
+                lineType=cv2.LINE_AA,
+            )
+    for exponent in calibration.y_decades:
+        y = int(round(calibration_y_of_log_c(calibration, plot, float(exponent))))
+        if plot.y0 - 3 <= y <= plot.y1 + 3:
+            cv2.line(overlay, (plot.x0, y), (plot.x1, y), (255, 0, 255), 3, lineType=cv2.LINE_AA)
+            cv2.circle(overlay, (plot.x0, y), 8, (255, 0, 255), -1, lineType=cv2.LINE_AA)
+            cv2.putText(
+                overlay,
+                f"10^{int(round(exponent))}",
+                (max(2, plot.x0 - 82), y + 8),
+                font,
+                0.70,
+                (180, 0, 180),
+                2,
+                lineType=cv2.LINE_AA,
+            )
+    for y_raw in calibration.y_gridline_px:
+        y = int(round(y_raw))
+        if plot.y0 - 3 <= y <= plot.y1 + 3:
+            cv2.line(overlay, (plot.x0, y), (plot.x1, y), (160, 0, 160), 1, lineType=cv2.LINE_AA)
+            cv2.drawMarker(
+                overlay,
+                (plot.x0 + 14, y),
+                (160, 0, 160),
+                markerType=cv2.MARKER_TILTED_CROSS,
+                markerSize=16,
+                thickness=2,
+                line_type=cv2.LINE_AA,
+            )
+    return overlay
+
+
+def _fmt_optional(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.4g}"
 
 
 def parse_capacitance_anchors(part: str, datasheet_root: Path) -> dict[str, CapAnchor]:
@@ -1246,6 +1720,8 @@ def output_charge_reference_to_json(ref: OutputChargeReference) -> dict[str, flo
 def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
     return {
         "source": calibration.source,
+        "x_source": calibration.x_source,
+        "y_source": calibration.y_source,
         "x_min_v": calibration.x_min_v,
         "x_max_v": calibration.x_max_v,
         "y_min_decade": calibration.y_min_decade,
@@ -1254,6 +1730,14 @@ def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
         "y_decades": list(calibration.y_decades),
         "x_resid_v": calibration.x_resid_v,
         "y_resid_dec": calibration.y_resid_dec,
+        "x_scale": calibration.x_scale,
+        "x_offset": calibration.x_offset,
+        "y_scale": calibration.y_scale,
+        "y_offset": calibration.y_offset,
+        "y_gridline_px": list(calibration.y_gridline_px),
+        "y_grid_candidate_count": calibration.y_grid_candidate_count,
+        "y_grid_span_fraction": calibration.y_grid_span_fraction,
+        "y_grid_residual_px": calibration.y_grid_residual_px,
     }
 
 
@@ -1415,6 +1899,7 @@ def process_chart(
     out_dir: Path,
     rel_stem: Path,
     datasheet_root: Path,
+    debug_axis_overlays: bool = False,
 ) -> dict[str, object]:
     image = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
     if image is None:
@@ -1465,9 +1950,20 @@ def process_chart(
 
     overlay_path = out_dir / "overlays" / rel_stem.with_suffix(".overlay.png")
     points_path = out_dir / "points" / rel_stem.with_suffix(".points.csv")
+    axis_debug_path: Path | None = None
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
     points_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(overlay_path), overlay)
+    if debug_axis_overlays and axis_calibration is not None:
+        axis_debug_path = out_dir / "axis_debug_overlays" / rel_stem.with_suffix(".axis.png")
+        axis_debug_path.parent.mkdir(parents=True, exist_ok=True)
+        axis_overlay = draw_axis_debug_overlay(
+            image,
+            plot,
+            axis_calibration,
+            f"{chart.get('part', '')} {chart.get('diagram', '')}",
+        )
+        cv2.imwrite(str(axis_debug_path), axis_overlay)
 
     trace_data: dict[str, list[tuple[float, float]]] = {}
     if axis_calibration is not None:
@@ -1532,6 +2028,7 @@ def process_chart(
     return {
         "crop": str(crop_path),
         "overlay": str(overlay_path.relative_to(out_dir)),
+        "axis_debug_overlay": str(axis_debug_path.relative_to(out_dir)) if axis_debug_path is not None else None,
         "points": str(points_path.relative_to(out_dir)),
         "plot_box_px": [plot.x0, plot.y0, plot.x1, plot.y1],
         "extraction_method": extraction_method,
@@ -1575,6 +2072,11 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Directory containing <part>.pdf.nop.csv anchor tables; defaults to each chart PDF's directory",
     )
+    parser.add_argument(
+        "--debug-axis-overlays",
+        action="store_true",
+        help="Write axis calibration overlays with selected ticks/gridlines and fit residuals.",
+    )
     return parser.parse_args()
 
 
@@ -1609,7 +2111,14 @@ def main() -> None:
             datasheet_root = base_dir
         print(f"digitize {chart['part']} diagram {chart['diagram']}: {crop_rel}")
         try:
-            result = process_chart(chart, crop_path, out_dir, rel_stem, datasheet_root)
+            result = process_chart(
+                chart,
+                crop_path,
+                out_dir,
+                rel_stem,
+                datasheet_root,
+                debug_axis_overlays=args.debug_axis_overlays,
+            )
         except Exception as exc:
             print(f"  ERROR: {exc}")
             errors.append({"crop": str(crop_path), "error": str(exc)})
