@@ -35,11 +35,9 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     # Current state before consolidating dslib.viz into this package.  These are
     # mostly non-Infineon caption/layout styles that dslib.viz handles with its
     # Vpl-specific title/axis heuristics.
-    "AGM15T13D",
     "PSMN1R2-55SLH",
     "NVMFS5C468NLT1G",
     "NVMYS029N08LHTWG",
-    "NVTFWS010N10MCLTAG",
     "AGM025N13LL",
     "R6509KND3TL1-HXY",
     "SIHD6N65ET4-GE3-HXY",
@@ -47,19 +45,15 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     "F3L3MR12W3M1HH11BPSA1",
     # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
     "PSMN3R3-80BS,118",
-    "PSMP050N10NS2_T0_00601",
     "SQJQ480E-T1_GE3",
     "CSD19501KCS",
     "TPS1100",
     "IPI65R190CFD",
     "SIJ482DP-T1-GE3",
     "SUP85N15-21",
-    "G200N10K",
-    "PSMN6R7-40MSD",
     "STB55NF06LT4",
     "AGM035N10D",
     "XPQR8308QB",
-    "PSMN1R0-30YLD",
 }
 
 EXPECTED_LEGACY_UNAVAILABLE = {

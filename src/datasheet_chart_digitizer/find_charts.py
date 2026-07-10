@@ -856,8 +856,15 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
 
             for title in caption_titles:
                 bbox = choose_caption_panel_bbox(page, title, grid_regions)
+                axis_label_bbox = choose_caption_axis_label_bbox(page, title)
                 if bbox is None:
-                    bbox = choose_caption_axis_label_bbox(page, title)
+                    bbox = axis_label_bbox
+                elif (
+                    axis_label_bbox is not None
+                    and _caption_prefers_plot_above(title)
+                    and _bbox_iou(bbox, axis_label_bbox) < 0.25
+                ):
+                    bbox = axis_label_bbox
                 if bbox is None:
                     continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
