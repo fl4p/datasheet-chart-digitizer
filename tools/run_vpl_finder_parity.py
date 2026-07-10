@@ -1,0 +1,301 @@
+#!/usr/bin/env python3
+"""Compare packaged chart discovery against the legacy dslib Vpl finder.
+
+This is a migration guard for removing the runtime dependency on
+``pwr-mosfet-lib``.  The packaged generic finder does not yet cover all
+gate-charge panel styles, so known current misses are explicit and should only
+shrink as Vpl-specific discovery moves into this repository.
+"""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import json
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
+
+from datasheet_chart_digitizer.find_charts import process_pdf  # noqa: E402
+from datasheet_chart_digitizer.gate_charge_samples import (  # noqa: E402
+    DEFAULT_DATASHEET_ROOT,
+    SAMPLES,
+    _sample_pdf_path,
+)
+
+LEGACY_VPL_TEST = DEFAULT_DATASHEET_ROOT / "test/test_viz_vpl.py"
+
+EXPECTED_PACKAGED_FINDER_MISSES = {
+    # Current state before consolidating dslib.viz into this package.  These are
+    # mostly non-Infineon caption/layout styles that dslib.viz handles with its
+    # Vpl-specific title/axis heuristics.
+    "AGM15T13D",
+    "AOMR62818",
+    "AOT286L",
+    "IRF540NL",
+    "PSMN1R2-55SLH",
+    "NVMFS5C468NLT1G",
+    "NVMYS029N08LHTWG",
+    "NVTFWS010N10MCLTAG",
+    "AGM025N13LL",
+    "AGM150P10AP",
+    "R6509KND3TL1-HXY",
+    "SIHD6N65ET4-GE3-HXY",
+    "IAUC28N08S5L230ATMA1",
+    "F3L3MR12W3M1HH11BPSA1",
+    # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
+    "STWA75N65DM6",
+    "MCAC60N15YA-TP",
+    "XR150N04",
+    "AM9435SA-HXY",
+    "CSD19532KTT",
+    "DI110N15PQ",
+    "HYG009N06NS1C2",
+    "BSB056N10NN3GXUMA2",
+    "IPB019N08N3GATMA1",
+    "IPB072N15N3GATMA1",
+    "PSMN3R3-80BS,118",
+    "PSMP050N10NS2_T0_00601",
+    "IPP100N08N3GXKSA1",
+    "SQJQ480E-T1_GE3",
+    "IXTT240N15X4HV",
+    "FDA032N08",
+    "NVCR4LS1D3N08M7A",
+    "CSD19501KCS",
+    "MCAC100N08Y-TP",
+    "MCP75N10Y-BP",
+    "TPS1100",
+    "IPI65R190CFD",
+    "EPC7018GSH",
+    "IRFS4310TRRPBF",
+    "SIJ482DP-T1-GE3",
+    "IRFH7110",
+    "SUP85N15-21",
+    "AOLF66910",
+    "G200N10K",
+    "PSMN6R7-40MSD",
+    "STB55NF06LT4",
+    "AGM035N10D",
+    "XPQR8308QB",
+    "STL70N4LLF5",
+    "AOB284L",
+    "AOTL66518Q",
+    "PSMN1R0-30YLD",
+    "HYG016N04LS1B",
+    "SIS444DN-T1-GE3-HXY",
+    "CRTT020N04N",
+}
+
+EXPECTED_LEGACY_UNAVAILABLE = {
+    # These entries are present in the legacy Vpl test list but are not useful
+    # for finder parity on the current local corpus because the PDF is absent or
+    # dslib.viz itself returns no chart without OCR/extra handling.
+    "AON6220",
+    "SP30N01AGHNP",
+    "GSFP1080",
+    "IRF150DM115XTMA1",
+    "HY3912W",
+}
+
+
+def _rect_tuple(rect: Any) -> tuple[float, float, float, float]:
+    return (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
+
+
+def _center_inside(bbox: tuple[float, float, float, float], point: tuple[float, float]) -> bool:
+    x0, y0, x1, y1 = bbox
+    x, y = point
+    return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _pick_legacy_hit(hits: list[tuple[Any, Any, str | None]], ref_vpl: float | None) -> tuple[Any, Any, str | None] | None:
+    usable = [(chart, hit, source) for chart, hit, source in hits if hit is not None]
+    if not usable:
+        return None
+    if ref_vpl is not None:
+        return min(
+            usable,
+            key=lambda item: (
+                abs(float(getattr(item[1], "v_pl", float("inf"))) - ref_vpl),
+                -float(getattr(item[1], "score", 0.0)),
+            ),
+        )
+    return max(usable, key=lambda item: float(getattr(item[1], "score", 0.0)))
+
+
+def _normalize_sample_rel(rel: str) -> str:
+    return rel[len("datasheets/") :] if rel.startswith("datasheets/") else rel
+
+
+def _legacy_test_samples(path: Path) -> list[tuple[str, float | None, str]]:
+    if not path.exists():
+        return []
+    module = ast.parse(path.read_text())
+    for node in module.body:
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "SAMPLES":
+            return [(_normalize_sample_rel(str(rel)), float(ref), "legacy test_viz_vpl") for rel, ref in ast.literal_eval(node.value)]
+    return []
+
+
+def _dedupe_samples(samples: list[tuple[str, float | None, str]]) -> list[tuple[str, float | None, str]]:
+    out: list[tuple[str, float | None, str]] = []
+    seen: set[str] = set()
+    for rel, ref, comment in samples:
+        if rel in seen:
+            continue
+        seen.add(rel)
+        out.append((rel, ref, comment))
+    return out
+
+
+def finder_parity_samples(datasheet_root: Path, source: str = "expanded") -> list[tuple[str, float | None, str]]:
+    if source == "builtin":
+        return list(SAMPLES)
+    if source == "legacy-test":
+        return _legacy_test_samples(datasheet_root / "test/test_viz_vpl.py")
+    if source == "expanded":
+        return _dedupe_samples(_legacy_test_samples(datasheet_root / "test/test_viz_vpl.py") + list(SAMPLES)) or list(SAMPLES)
+    raise ValueError(f"unknown sample source: {source}")
+
+
+def run_parity(
+    datasheet_root: Path,
+    out_json: Path | None = None,
+    strict: bool = False,
+    sample_source: str = "expanded",
+) -> list[str]:
+    sys.path.insert(0, str(datasheet_root))
+    try:
+        from dslib.viz import find_in_pdf
+    except ModuleNotFoundError as exc:
+        if exc.name != "dslib":
+            raise
+        return [f"missing dslib checkout at {datasheet_root}"]
+
+    rows: list[dict[str, Any]] = []
+    failures: list[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="vpl-finder-parity-") as tmp:
+        tmpdir = Path(tmp)
+        for rel, ref_vpl, comment in finder_parity_samples(datasheet_root, sample_source):
+            pdf = _sample_pdf_path(datasheet_root, rel)
+            mpn = pdf.stem
+            if not pdf.exists():
+                status = "missing_pdf"
+                if mpn not in EXPECTED_LEGACY_UNAVAILABLE:
+                    failures.append(f"{mpn}: missing PDF {pdf}")
+                rows.append({"mpn": mpn, "rel": rel, "ref_vpl": ref_vpl, "comment": comment, "status": status})
+                continue
+
+            legacy = _pick_legacy_hit(find_in_pdf(str(pdf), enable_raster=True, enable_ocr=False), ref_vpl)
+            if legacy is None:
+                status = "legacy_missing"
+                if mpn not in EXPECTED_LEGACY_UNAVAILABLE:
+                    failures.append(f"{mpn}: legacy dslib.viz finder found no Vpl chart")
+                rows.append({"mpn": mpn, "rel": rel, "ref_vpl": ref_vpl, "comment": comment, "status": status})
+                continue
+
+            legacy_chart, legacy_hit, legacy_source = legacy
+            legacy_bbox = _rect_tuple(legacy_chart.bbox)
+            legacy_center = (
+                0.5 * (legacy_bbox[0] + legacy_bbox[2]),
+                0.5 * (legacy_bbox[1] + legacy_bbox[3]),
+            )
+            legacy_page = int(legacy_chart.page_num) + 1
+
+            panels = process_pdf(pdf, tmpdir / mpn, dpi=120)
+            packaged = [panel for panel in panels if panel.kind == "gate_charge"]
+            matching = [
+                panel
+                for panel in packaged
+                if panel.page == legacy_page and _center_inside(panel.bbox_pt, legacy_center)
+            ]
+            status = "match" if matching else "missing"
+            if strict and not matching:
+                failures.append(f"{mpn}: packaged finder missed legacy Vpl chart on page {legacy_page}")
+            elif not strict and not matching and mpn not in EXPECTED_PACKAGED_FINDER_MISSES:
+                failures.append(f"{mpn}: unexpected packaged finder miss on page {legacy_page}")
+
+            rows.append(
+                {
+                    "mpn": mpn,
+                    "rel": rel,
+                    "ref_vpl": ref_vpl,
+                    "comment": comment,
+                    "status": status,
+                    "legacy": {
+                        "page": legacy_page,
+                        "bbox_pt": [round(v, 3) for v in legacy_bbox],
+                        "vpl": getattr(legacy_hit, "v_pl", None),
+                        "score": getattr(legacy_hit, "score", None),
+                        "source": legacy_source,
+                    },
+                    "packaged_gate_charge_panels": [
+                        {
+                            "page": panel.page,
+                            "diagram": panel.diagram,
+                            "title": panel.title,
+                            "bbox_pt": list(panel.bbox_pt),
+                        }
+                        for panel in packaged
+                    ],
+                }
+            )
+
+    if not strict:
+        current_misses = {row["mpn"] for row in rows if row["status"] == "missing"}
+        current_legacy_unavailable = {row["mpn"] for row in rows if row["status"] in {"missing_pdf", "legacy_missing"}}
+        stale_allowlist = EXPECTED_PACKAGED_FINDER_MISSES - current_misses
+        if stale_allowlist:
+            print(
+                "packaged finder improved; remove from EXPECTED_PACKAGED_FINDER_MISSES: "
+                + ", ".join(sorted(stale_allowlist))
+            )
+        stale_legacy_allowlist = EXPECTED_LEGACY_UNAVAILABLE - current_legacy_unavailable
+        if stale_legacy_allowlist:
+            print(
+                "legacy baseline became available; remove from EXPECTED_LEGACY_UNAVAILABLE: "
+                + ", ".join(sorted(stale_legacy_allowlist))
+            )
+
+    if out_json is not None:
+        out_json.parent.mkdir(parents=True, exist_ok=True)
+        out_json.write_text(json.dumps(rows, indent=2) + "\n")
+
+    matched = sum(1 for row in rows if row["status"] == "match")
+    unavailable = sum(1 for row in rows if row["status"] in {"missing_pdf", "legacy_missing"})
+    print(
+        f"Vpl finder parity: matched={matched} missing={len(rows) - matched - unavailable} "
+        f"legacy_unavailable={unavailable} strict={strict} source={sample_source} samples={len(rows)}"
+    )
+    return failures
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--datasheet-root", type=Path, default=DEFAULT_DATASHEET_ROOT)
+    parser.add_argument("--out-json", type=Path)
+    parser.add_argument("--strict", action="store_true", help="fail on every packaged-finder miss")
+    parser.add_argument(
+        "--sample-source",
+        choices=("builtin", "legacy-test", "expanded"),
+        default="expanded",
+        help="Vpl finder sample corpus to compare.",
+    )
+    args = parser.parse_args()
+
+    failures = run_parity(args.datasheet_root, args.out_json, strict=args.strict, sample_source=args.sample_source)
+    if failures:
+        for failure in failures:
+            print(f"FAIL: {failure}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -66,7 +66,11 @@ python tools/run_local_regression.py
 ```
 
 This runs the C(V) corpus and the Vpl gate-charge full-curve verifier against
-the 15 human-checked Vpl samples. For C(V)-only work, use:
+the 15 human-checked Vpl samples. It also runs a 66-sample Vpl finder-parity
+guard that compares packaged chart discovery against the current `dslib.viz`
+baseline; known packaged-finder misses and legacy-unavailable samples are
+explicit and should only shrink while the standalone finder is consolidated.
+For C(V)-only work, use:
 
 ```bash
 python tools/run_capacitance_regression.py

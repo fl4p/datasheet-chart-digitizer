@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import run_capacitance_regression
+import run_vpl_finder_parity
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -46,6 +47,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-vpl",
         action="store_true",
         help="Skip Vpl gate-charge regression.",
+    )
+    parser.add_argument(
+        "--skip-vpl-finder",
+        action="store_true",
+        help="Skip Vpl finder parity regression.",
     )
     parser.add_argument(
         "--vpl-start",
@@ -88,6 +94,9 @@ def main() -> None:
 
     if not args.skip_vpl:
         failures.extend(_run_vpl_regression(args.vpl_tol, args.vpl_start, args.vpl_count))
+    if not args.skip_vpl_finder:
+        print("== vpl_finder_parity")
+        failures.extend(run_vpl_finder_parity.run_parity(run_vpl_finder_parity.DEFAULT_DATASHEET_ROOT))
 
     if failures:
         print()
