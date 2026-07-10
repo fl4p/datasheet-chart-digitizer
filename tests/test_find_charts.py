@@ -121,6 +121,26 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 13)
         self.assertEqual(titles[0].title, "Gate-source voltage as a function of gate charge; typical values")
 
+    def test_splits_unnumbered_typ_gate_charge_header(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Typ.", 120, 300, 145, 310),
+                find_charts.Word("gate", 150, 300, 178, 310),
+                find_charts.Word("charge", 182, 300, 225, 310),
+                find_charts.Word("Typ.", 340, 300, 365, 310),
+                find_charts.Word("capacitances", 370, 300, 450, 310),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].number, 901)
+        self.assertEqual(titles[0].title, "Typ. gate charge")
+
     def test_caption_axis_label_fallback_synthesizes_panel(self) -> None:
         page = find_charts.PageText(
             page_num=1,

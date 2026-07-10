@@ -207,6 +207,14 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
 
+        if lower in {"typ", "typical", "typicaly", "typycal"}:
+            if idx > 0 and re.match(r"^\d+[\.:]?$", line[idx - 1].text.strip()):
+                continue
+            tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
+            if any(phrase in tail for phrase in ("gate", "capacitance", "breakdown")):
+                starts.append(idx)
+            continue
+
         if not token.isdigit() or idx + 1 >= len(line):
             continue
         tail = " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
@@ -215,7 +223,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
     return starts
 
 
-def _parse_caption_text(text: str) -> tuple[int, str] | None:
+def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
     match = FIGURE_RE.match(text)
     if match:
         return int(match.group(1)), match.group(2).strip()
@@ -228,6 +236,8 @@ def _parse_caption_text(text: str) -> tuple[int, str] | None:
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[0].isdigit():
         return int(parts[0]), parts[1].strip()
+    if re.match(r"(?i)^Typ(?:ical|ycal)?\.?\s+", text):
+        return None, text.strip()
     return None
 
 
@@ -267,7 +277,8 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
             parsed = _parse_caption_text(text)
             if parsed is None:
                 continue
-            number, title = parsed
+            parsed_number, title = parsed
+            number = parsed_number if parsed_number is not None else 900 + len(titles) + 1
             title_for_classification = title
             if classify_chart(title_for_classification, "") != "gate_charge" and "gate" in title_for_classification.lower():
                 continuation = _caption_continuation(lines, line_idx, segment)
