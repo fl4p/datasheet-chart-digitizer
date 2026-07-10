@@ -1,0 +1,283 @@
+from __future__ import annotations
+
+import re
+
+import numpy as np
+import pymupdf
+
+from .gate_charge_trace import _pdf_to_px
+
+
+def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> float | None:
+    ticks = getattr(chart, "y_ticks", None) or []
+    if len(ticks) < 2:
+        return None
+    vals = np.array([float(v) for v, _ in ticks], dtype=float)
+    ys_pdf = np.array([float(y) for _, y in ticks], dtype=float)
+    if np.nanmax(vals) <= 0:
+        vals = -vals
+    m, b = np.polyfit(ys_pdf, vals, 1)
+    y_pdf = rect.y0 + float(y_px) / scale
+    return float(m * y_pdf + b)
+
+
+def _parse_numeric_label(text: str) -> float | None:
+    text = text.strip().replace("−", "-").replace("–", "-")
+    text = text.replace("O", "0").replace("o", "0")
+    m = re.search(r"[-+]?\d+(?:\.\d+)?", text)
+    if not m:
+        return None
+    try:
+        return float(m.group(0))
+    except ValueError:
+        return None
+
+
+def _local_y_ticks_for_plot(
+    page: pymupdf.Page,
+    rect: pymupdf.Rect,
+    scale: float,
+    plot_box: tuple[int, int, int, int],
+) -> list[tuple[float, float]]:
+    x0, y0, x1, y1 = plot_box
+    px0 = rect.x0 + x0 / scale
+    py0 = rect.y0 + y0 / scale
+    px1 = rect.x0 + x1 / scale
+    py1 = rect.y0 + y1 / scale
+    height = max(1.0, py1 - py0)
+    candidates: list[tuple[float, float]] = []
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return candidates
+    for word in words:
+        wx0, wy0, wx1, wy1 = [float(v) for v in word[:4]]
+        text = str(word[4])
+        cx = 0.5 * (wx0 + wx1)
+        cy = 0.5 * (wy0 + wy1)
+        if cy < py0 - 0.04 * height or cy > py1 + 0.04 * height:
+            continue
+        left_band = px0 - 82 <= cx <= px0 - 1
+        right_band = px1 + 1 <= cx <= px1 + 82
+        if not (left_band or right_band):
+            continue
+        value = _parse_numeric_label(text)
+        if value is None:
+            continue
+        if value < -20 or value > 30:
+            continue
+        candidates.append((value, cy))
+
+    candidates.sort(key=lambda item: item[1])
+    grouped: list[list[tuple[float, float]]] = []
+    for item in candidates:
+        if grouped and abs(item[1] - grouped[-1][-1][1]) <= 3.0:
+            grouped[-1].append(item)
+        else:
+            grouped.append([item])
+    ticks: list[tuple[float, float]] = []
+    for group in grouped:
+        values = [g[0] for g in group]
+        ys = [g[1] for g in group]
+        ticks.append((float(np.median(values)), float(np.median(ys))))
+    if len(ticks) < 2:
+        return []
+
+    ticks.sort(key=lambda item: item[1])
+    vals = np.array([v for v, _ in ticks], dtype=float)
+    if vals[0] < vals[-1]:
+        return []
+    if len(vals) >= 3:
+        diffs = np.diff(vals)
+        if np.any(diffs >= 0):
+            return []
+        med = float(np.median(np.abs(diffs)))
+        if med > 0 and float(np.max(np.abs(np.abs(diffs) - med))) > max(1.5, 0.45 * med):
+            return []
+    return ticks
+
+
+def _text_near_rect(page: pymupdf.Page, bbox: pymupdf.Rect, pad: float = 26.0) -> str:
+    rect = (bbox + (-pad, -pad, pad, pad)) & page.rect
+    parts: list[str] = []
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return ""
+    for word in words:
+        x0, y0, x1, y1 = [float(v) for v in word[:4]]
+        cx = 0.5 * (x0 + x1)
+        cy = 0.5 * (y0 + y1)
+        if rect.contains((cx, cy)):
+            parts.append(str(word[4]))
+    return " ".join(parts)
+
+
+def _reject_non_gate_context(text: str, *, broad: bool = False) -> bool:
+    tl = re.sub(r"\s+", " ", text.lower())
+    absolute_stop = (
+        "source-drain diode",
+        "source drain diode",
+        "source- drain diode",
+        "source - drain diode",
+        "source-drain voltage",
+        "source drain voltage",
+        "reverse drain current",
+        "diode forward",
+        "reverse diode",
+        "vsd source-drain",
+        "vsd source drain",
+    )
+    if any(stop in tl for stop in absolute_stop):
+        return True
+    table_stop = ("test condition", "min", "typ", "max", "unit", "symbol")
+    if "gate charge" in tl or "qg" in tl or "qgate" in tl:
+        if all(tok in tl for tok in table_stop):
+            return True
+        return False
+    return broad and all(tok in tl for tok in table_stop)
+
+
+def _reject_ambiguous_broad_context(tight_text: str, broad_text: str) -> bool:
+    if tight_text.strip():
+        return False
+    tl = re.sub(r"\s+", " ", broad_text.lower())
+    return ("reverse drain current" in tl and ("source-drain" in tl or "source drain" in tl))
+
+
+def _v_from_local_ticks(y_ticks: list[tuple[float, float]], y_px: float, rect: pymupdf.Rect, scale: float) -> float | None:
+    if len(y_ticks) < 2:
+        return None
+    vals = np.array([float(v) for v, _ in y_ticks], dtype=float)
+    ys_pdf = np.array([float(y) for _, y in y_ticks], dtype=float)
+    if np.ptp(vals) < 1e-9 or np.ptp(ys_pdf) < 1e-9:
+        return None
+    m, b = np.polyfit(ys_pdf, vals, 1)
+    y_pdf = rect.y0 + float(y_px) / scale
+    return float(m * y_pdf + b)
+
+
+def _y_pixel_from_local_ticks(y_ticks: list[tuple[float, float]], v: float, rect: pymupdf.Rect, scale: float) -> float | None:
+    if len(y_ticks) < 2:
+        return None
+    vals = np.array([float(val) for val, _ in y_ticks], dtype=float)
+    ys_pdf = np.array([float(y) for _, y in y_ticks], dtype=float)
+    if np.ptp(vals) < 1e-9 or np.ptp(ys_pdf) < 1e-9:
+        return None
+    m, b = np.polyfit(vals, ys_pdf, 1)
+    y_pdf = float(m * float(v) + b)
+    return (y_pdf - rect.y0) * scale
+
+
+def _v_from_plot_axis(plot_box: tuple[int, int, int, int], y_px: float, v_min: float, v_max: float) -> float:
+    _x0, y0, _x1, y1 = plot_box
+    return float(v_min + (v_max - v_min) * (y1 - y_px) / max(1.0, y1 - y0))
+
+
+def _line_sse(xs: np.ndarray, ys: np.ndarray, i: int, j: int) -> float:
+    if j - i < 2:
+        return 1e18
+    x = xs[i:j]
+    y = ys[i:j]
+    if np.ptp(x) < 1e-9:
+        return 1e18
+    m, b = np.polyfit(x, y, 1)
+    r = y - (m * x + b)
+    return float(np.dot(r, r))
+
+
+def _middle_slope_y(points: list[tuple[int, int]], plot_box: tuple[int, int, int, int]) -> float | None:
+    """Mean y of the Miller-slope section from a 3-line gate-charge fit."""
+    if len(points) < 30:
+        return None
+    x0, _y0, x1, _y1 = plot_box
+    pts = sorted(points)
+    xs = np.array([p[0] for p in pts], dtype=float)
+    ys = np.array([p[1] for p in pts], dtype=float)
+    n = len(xs)
+    min_len = max(8, n // 12)
+    best: tuple[float, int, int] | None = None
+    for i in range(min_len, n - 2 * min_len):
+        rel_i = (xs[i] - x0) / max(1.0, x1 - x0)
+        if rel_i < 0.05 or rel_i > 0.60:
+            continue
+        for j in range(i + min_len, n - min_len):
+            rel_j = (xs[j] - x0) / max(1.0, x1 - x0)
+            if rel_j < 0.18 or rel_j > 0.88:
+                continue
+            cost = _line_sse(xs, ys, 0, i) + _line_sse(xs, ys, i, j) + _line_sse(xs, ys, j, n)
+            if best is None or cost < best[0]:
+                best = (cost, i, j)
+    if best is None:
+        return None
+    _cost, i, j = best
+    if j - i < min_len:
+        return None
+    return float(np.mean(ys[i:j]))
+
+
+def _estimate_vpl_from_curve(
+    curve: list[tuple[int, int]],
+    chart,
+    rect: pymupdf.Rect,
+    scale: float,
+    plot_box: tuple[int, int, int, int],
+    local_y_ticks: list[tuple[float, float]] | None = None,
+) -> tuple[float | None, float | None]:
+    """Return (Vpl, y_px) from the traced VGS(Qg) curve."""
+    if len(curve) < 20:
+        return None, None
+    x0, y0, x1, y1 = plot_box
+    pts = sorted(curve)
+    xs = np.array([p[0] for p in pts], dtype=float)
+    ys = np.array([p[1] for p in pts], dtype=float)
+    middle_y = _middle_slope_y(pts, plot_box)
+    win = max(8, int(0.07 * len(pts)))
+    candidates: list[tuple[float, float, float, float, int, int]] = []
+    for i in range(0, len(pts) - win):
+        j = i + win
+        x_mid = 0.5 * (xs[i] + xs[j - 1])
+        rel_x = (x_mid - x0) / max(1.0, x1 - x0)
+        if rel_x < 0.04 or rel_x > 0.78:
+            continue
+        yr = float(np.percentile(ys[i:j], 90) - np.percentile(ys[i:j], 10))
+        xr = float(xs[j - 1] - xs[i])
+        before = ys[:i]
+        after = ys[j:]
+        if len(before) < 4 or len(after) < 4:
+            continue
+        pre_rise = float(np.percentile(before, 90) - np.median(ys[i:j]))
+        post_rise = float(np.median(ys[i:j]) - np.percentile(after, 10))
+        if pre_rise < 0.05 * (y1 - y0):
+            continue
+        if post_rise < 0.05 * (y1 - y0):
+            continue
+        flatness = yr / max(1.0, y1 - y0)
+        xfrac = xr / max(1.0, x1 - x0)
+        score = 3.0 * xfrac / (flatness + 0.01) + min(pre_rise, post_rise) / max(1.0, y1 - y0) - 8.0 * rel_x
+        candidates.append((score, rel_x, float(np.median(ys[i:j])), yr, i, j))
+    if not candidates:
+        if middle_y is None:
+            return None, None
+        y_px = middle_y
+        if local_y_ticks:
+            local_v = _v_from_local_ticks(local_y_ticks, y_px, rect, scale)
+            if local_v is not None:
+                return local_v, y_px
+        return _v_from_y_pixel(chart, rect, scale, y_px), y_px
+    best_score = max(c[0] for c in candidates)
+    plausible = [c for c in candidates if c[0] >= 0.70 * best_score]
+    if not plausible:
+        plausible = candidates
+    _score, _rel_x, y_px, candidate_yr, _i, _j = min(plausible, key=lambda c: c[1])
+    if (
+        middle_y is not None
+        and candidate_yr > 0.010 * max(1, y1 - y0)
+        and abs(middle_y - y_px) > 0.035 * max(1, y1 - y0)
+    ):
+        y_px = middle_y
+    if local_y_ticks:
+        local_v = _v_from_local_ticks(local_y_ticks, y_px, rect, scale)
+        if local_v is not None:
+            return local_v, y_px
+    return _v_from_y_pixel(chart, rect, scale, y_px), y_px
