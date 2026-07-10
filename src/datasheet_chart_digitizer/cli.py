@@ -36,7 +36,7 @@ def main() -> None:
         from . import gate_charge_vpl
 
         sys.argv = ["dsdig digitize-vpl", *rest]
-        gate_charge_vpl.main()
+        raise SystemExit(gate_charge_vpl.main())
         return
     raise SystemExit(f"unknown command: {command}")
 

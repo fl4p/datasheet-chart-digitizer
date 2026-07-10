@@ -117,7 +117,12 @@ def _run_vpl_regression(tol: float, start: int | None, count: int | None) -> lis
     rows = _parse_vpl_output(completed.stdout)
     if not rows:
         return ["Vpl script produced no parsable sample rows"]
-    expected_count = DEFAULT_VPL_SAMPLE_COUNT if start is None and count is None else len(rows)
+    if count is not None:
+        expected_count = count
+    elif start is not None:
+        expected_count = DEFAULT_VPL_SAMPLE_COUNT
+    else:
+        expected_count = DEFAULT_VPL_SAMPLE_COUNT
     if len(rows) != expected_count:
         return [f"Vpl script produced {len(rows)} parsable sample rows, expected {expected_count}"]
 

@@ -3,6 +3,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+from datasheet_chart_digitizer import cli
 from datasheet_chart_digitizer import gate_charge_vpl as vpl
 
 
@@ -58,6 +59,14 @@ class GateChargeVplTests(unittest.TestCase):
                     vpl.main()
 
         self.assertIn("requires pwr-mosfet-lib's dslib", str(raised.exception))
+
+    def test_cli_propagates_vpl_failure_exit_code(self) -> None:
+        argv = ["dsdig", "digitize-vpl", "missing.pdf"]
+        with mock.patch("sys.argv", argv), mock.patch.object(vpl, "main", return_value=7):
+            with self.assertRaises(SystemExit) as raised:
+                cli.main()
+
+        self.assertEqual(raised.exception.code, 7)
 
 
 if __name__ == "__main__":
