@@ -46,7 +46,6 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     "IAUC28N08S5L230ATMA1",
     "F3L3MR12W3M1HH11BPSA1",
     # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
-    "CSD19532KTT",
     "PSMN3R3-80BS,118",
     "PSMP050N10NS2_T0_00601",
     "SQJQ480E-T1_GE3",

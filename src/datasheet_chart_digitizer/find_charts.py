@@ -571,6 +571,25 @@ def infer_grid_regions_from_h_rules(
     return regions
 
 
+def _caption_prefers_plot_above(title: DiagramTitle) -> bool:
+    text = title.line_text.strip()
+    return bool(FIGURE_RE.match(text) or COMPACT_FIGURE_RE.match(text) or re.match(r"^\d+[\.:]?\s+", text))
+
+
+def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitle) -> bool:
+    tx0, ty0, tx1, _ = title.bbox_pt
+    for line in group_words_into_lines(page.words):
+        text = line_text(line)
+        if not _is_gate_charge_axis_label(text):
+            continue
+        lx0, ly0, lx1, ly1 = line_bbox(line)
+        if not (ty0 - 70.0 <= ly1 <= ty0 - 4.0):
+            continue
+        if _overlap_1d(tx0, tx1, lx0, lx1) >= min(tx1 - tx0, lx1 - lx0) * 0.20:
+            return True
+    return False
+
+
 def choose_caption_panel_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -600,6 +619,11 @@ def choose_caption_panel_bbox(
     plot_width_candidates = [item for item in candidates if item[2][2] - item[2][0] <= page.width_pt * 0.62]
     if plot_width_candidates:
         candidates = plot_width_candidates
+
+    if _caption_prefers_plot_above(title) and _has_gate_charge_axis_label_above_caption(page, title):
+        above = [item for item in candidates if item[2][3] <= ty0]
+        if above:
+            candidates = above
 
     for horizontal_penalty, vertical_gap, region in candidates:
         score = vertical_gap + 0.25 * horizontal_penalty

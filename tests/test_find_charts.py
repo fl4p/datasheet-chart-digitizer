@@ -190,6 +190,40 @@ class CaptionTitleTests(unittest.TestCase):
 
         self.assertIsNone(find_charts.choose_caption_axis_label_bbox(page, title))
 
+    def test_figure_caption_prefers_plot_above(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Figure", 150, 298, 185, 306),
+                find_charts.Word("4.", 190, 298, 202, 306),
+                find_charts.Word("Gate", 207, 298, 235, 306),
+                find_charts.Word("Charge", 240, 298, 280, 306),
+                find_charts.Word("Q", 150, 255, 158, 265),
+                find_charts.Word("g", 162, 255, 168, 265),
+                find_charts.Word("-", 172, 255, 176, 265),
+                find_charts.Word("Gate", 180, 255, 208, 265),
+                find_charts.Word("Charge", 212, 255, 252, 265),
+                find_charts.Word("(nC)", 256, 255, 286, 265),
+            ],
+        )
+        title = find_charts.find_caption_titles(page)[0]
+
+        bbox = find_charts.choose_caption_panel_bbox(
+            page,
+            title,
+            [
+                (90.0, 100.0, 290.0, 255.0),
+                (90.0, 310.0, 290.0, 455.0),
+            ],
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[1], title.bbox_pt[1])
+        self.assertLess(bbox[3], title.bbox_pt[1])
+
 
 if __name__ == "__main__":
     unittest.main()
