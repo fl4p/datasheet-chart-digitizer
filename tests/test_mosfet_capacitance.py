@@ -124,8 +124,156 @@ class AxisCalibrationTests(unittest.TestCase):
             self.assertIsNotNone(result["axis_debug_overlay"])
             self.assertTrue((root / "out" / str(result["axis_debug_overlay"])).exists())
 
+    def test_chart_text_fallback_is_not_trusted_for_physical_output(self) -> None:
+        image = np.full((80, 100, 3), 255, dtype=np.uint8)
+        crop_rel = Path("crops") / "P" / "chart.png"
+        traces = [
+            mc.Trace(name="Ciss", area=2, bbox=(0, 0, 2, 2), points=[(10, 12), (20, 12)]),
+            mc.Trace(name="Coss", area=2, bbox=(0, 0, 2, 2), points=[(10, 22), (20, 24)]),
+            mc.Trace(name="Crss", area=2, bbox=(0, 0, 2, 2), points=[(10, 35), (20, 36)]),
+        ]
+        calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=10.0,
+            y_min_decade=0.0,
+            y_max_decade=1.0,
+            source="chart_text",
+            x_ticks_v=(0.0, 10.0),
+            y_decades=(0.0, 1.0),
+            x_source="text_order_normalized_plot_extent",
+            y_source="text_order_normalized_plot_extent",
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crop_path = root / crop_rel
+            crop_path.parent.mkdir(parents=True)
+            cv2.imwrite(str(crop_path), image)
+            with mock.patch.object(mc, "find_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
+                mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
+                mock.patch.object(
+                    mc,
+                    "parse_output_charge_reference",
+                    return_value=mc.OutputChargeReference(1000.0, 10.0, None, None),
+                ), \
+                mock.patch.object(mc, "infer_text_order_axis_calibration", return_value=calibration), \
+                mock.patch.object(mc, "infer_position_axis_calibration", side_effect=RuntimeError("no positions")), \
+                mock.patch.object(mc, "infer_gridline_axis_calibration", side_effect=RuntimeError("no grid")), \
+                mock.patch.object(mc, "extract_vector_trace_components", return_value=traces):
+                result = mc.process_chart(
+                    {"part": "P", "diagram": 1, "pdf": "p.pdf", "page": 1},
+                    crop_path,
+                    root / "out",
+                    crop_rel.with_suffix(""),
+                    root,
+                )
+
+            self.assertFalse(result["axis_calibration_trusted"])
+            self.assertIn("untrusted text-order axis fallback", result["axis_warning"])
+            self.assertEqual(result["qoss_validation_error"], "untrusted axis calibration")
+            rows = (root / "out" / str(result["points"])).read_text().splitlines()
+            self.assertTrue(rows[1].endswith(",,"))
+
+    def test_trace_validation_summary_flags_semantic_failures(self) -> None:
+        diagnostics = {
+            "Ciss": {"points": 20, "x_span_fraction": 0.95, "y_range_px": 100},
+            "Coss": {"points": 20, "x_span_fraction": 0.95, "y_range_px": 20},
+            "Crss": {"points": 20, "x_span_fraction": 0.40, "y_range_px": 30},
+            "checks": {
+                "common_samples": 100,
+                "ciss_coss_rank_swap_count": 2,
+                "crss_bottom_fraction": 0.5,
+                "ciss_flatter_than_coss": False,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics)
+
+        self.assertEqual(summary["status"], "suspect")
+        self.assertIn("Crss_short_x_span", summary["reasons"])
+        self.assertIn("ciss_coss_rank_swap_count", summary["reasons"])
+        self.assertIn("crss_not_bottom", summary["reasons"])
+        self.assertIn("ciss_not_flatter_than_coss", summary["reasons"])
+
 
 class TraceRepairTests(unittest.TestCase):
+    def test_track_direction_waits_for_trace_after_label_gap(self) -> None:
+        centers_by_x = [[100.0] for _ in range(120)]
+        for x in range(41, 75):
+            centers_by_x[x] = [135.0, 300.0]
+        for x in range(75, 120):
+            centers_by_x[x] = [100.0, 140.0, 300.0]
+
+        tracked = mc._track_direction(
+            centers_by_x,
+            seed_x=40,
+            seed_y=100.0,
+            direction=1,
+            candidate_kind="upper",
+        )
+
+        by_x = dict(tracked)
+        self.assertNotIn(50, by_x)
+        self.assertEqual(by_x[75], 100.0)
+        self.assertEqual(by_x[100], 100.0)
+
+    def test_leading_coss_upper_envelope_repairs_shared_ciss_prefix(self) -> None:
+        plot = mc.PlotBox(x0=10, y0=20, x1=130, y1=140)
+        centers_by_x: list[list[float]] = []
+        for x in range(plot.width):
+            if x <= 18:
+                centers_by_x.append([30.0 + x * 0.5, 70.0, 105.0])
+            elif x <= 44:
+                centers_by_x.append([70.0, 105.0])
+            else:
+                centers_by_x.append([70.0, 86.0, 105.0])
+
+        ciss = [(plot.x0 + x, plot.y0 + 70) for x in range(3, 100)]
+        coss = [(plot.x0 + x, plot.y0 + 70) for x in range(3, 45)]
+        coss.extend((plot.x0 + x, plot.y0 + 86) for x in range(45, 100))
+        crss = [(plot.x0 + x, plot.y0 + 105) for x in range(3, 100)]
+
+        repaired = mc._repair_leading_coss_upper_envelope(
+            centers_by_x,
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        repaired_coss = dict(repaired["Coss"])
+        self.assertLess(repaired_coss[plot.x0 + 3], dict(ciss)[plot.x0 + 3] - 20)
+        self.assertLess(repaired_coss[plot.x0 + 15], dict(ciss)[plot.x0 + 15] - 20)
+        self.assertEqual(len(repaired["Coss"]), len(coss))
+        self.assertTrue(mc._low_v_nonfolding(repaired["Coss"], plot))
+
+    def test_leading_coss_upper_envelope_uses_nearest_branch_above_ciss(self) -> None:
+        plot = mc.PlotBox(x0=10, y0=20, x1=130, y1=140)
+        centers_by_x: list[list[float]] = []
+        for x in range(plot.width):
+            if x <= 18:
+                # A high Ciss knee and a middle Coss branch both sit above the
+                # Ciss plateau. Coss repair must choose the middle branch.
+                centers_by_x.append([30.0 + x * 0.4, 55.0 + x * 0.2, 70.0, 105.0])
+            elif x <= 44:
+                centers_by_x.append([70.0, 105.0])
+            else:
+                centers_by_x.append([70.0, 86.0, 105.0])
+
+        ciss = [(plot.x0 + x, plot.y0 + 70) for x in range(3, 100)]
+        coss = [(plot.x0 + x, plot.y0 + 70) for x in range(3, 45)]
+        coss.extend((plot.x0 + x, plot.y0 + 86) for x in range(45, 100))
+        crss = [(plot.x0 + x, plot.y0 + 105) for x in range(3, 100)]
+
+        repaired = mc._repair_leading_coss_upper_envelope(
+            centers_by_x,
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        repaired_coss = dict(repaired["Coss"])
+        self.assertEqual(repaired_coss[plot.x0 + 3], plot.y0 + 56)
+        self.assertEqual(repaired_coss[plot.x0 + 15], plot.y0 + 58)
+        self.assertNotEqual(repaired_coss[plot.x0 + 3], plot.y0 + 31)
+        self.assertTrue(mc._low_v_nonfolding(repaired["Coss"], plot))
+
     def test_missing_leading_knee_repair_is_single_valued_and_nonfolding(self) -> None:
         plot = mc.PlotBox(x0=10, y0=20, x1=109, y1=139)
         mask = np.zeros((plot.height, plot.width), dtype=np.uint8)
@@ -147,14 +295,14 @@ class TraceRepairTests(unittest.TestCase):
         self.assertLessEqual(min(x for x, _ in repaired), plot.x0 + 1)
 
     def test_splice_guard_rejects_discontinuous_changed_segment(self) -> None:
-        plot = mc.PlotBox(x0=0, y0=0, x1=120, y1=120)
+        plot = mc.PlotBox(x0=0, y0=0, x1=200, y1=120)
         original = [(x, 100) for x in range(20, 80)]
         repaired = [(x, 20) for x in range(0, 10)] + original
 
         self.assertFalse(mc._splice_continuity_ok(repaired, original, plot))
 
     def test_splice_guard_checks_split_changed_runs(self) -> None:
-        plot = mc.PlotBox(x0=0, y0=0, x1=120, y1=120)
+        plot = mc.PlotBox(x0=0, y0=0, x1=200, y1=120)
         original = [(x, 50) for x in range(0, 100)]
         repaired = []
         for x, y in original:
@@ -184,6 +332,111 @@ class TraceRepairTests(unittest.TestCase):
         self.assertFalse(
             mc._repair_shape_guard(repaired, original, plot, peers={"Coss": coss}, require_bottom=True)
         )
+
+    def test_trim_repair_points_on_peer_keeps_only_separated_segment(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=120, y1=120)
+        original = [(x, 90) for x in range(40, 100)]
+        repaired = [(x, 50) for x in range(0, 10)]
+        repaired.extend((x, 20) for x in range(10, 15))
+        repaired.extend((x, 82) for x in range(15, 25))
+        repaired.extend(original)
+        peer = [(x, 50) for x in range(0, 100)]
+
+        trimmed = mc._trim_repair_points_on_peer(repaired, original, peer, plot)
+
+        self.assertIsNotNone(trimmed)
+        assert trimmed is not None
+        trimmed_by_x = dict(trimmed)
+        self.assertNotIn(5, trimmed_by_x)
+        self.assertNotIn(12, trimmed_by_x)
+        self.assertEqual(trimmed_by_x[18], 82)
+        self.assertEqual(trimmed_by_x[50], 90)
+
+    def test_low_v_coss_monotone_cleanup_clamps_only_prefix(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=100, y1=100)
+        points = [(0, 10), (10, 20), (20, 18), (30, 25), (50, 15)]
+
+        cleaned = mc._enforce_low_v_coss_monotone(points, plot, fraction=0.35)
+
+        self.assertEqual(cleaned[:4], [(0, 10), (10, 20), (20, 20), (30, 25)])
+        self.assertEqual(cleaned[4], (50, 15))
+
+    def test_low_v_coss_monotone_cleanup_does_not_hide_large_swaps(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=100, y1=100)
+        points = [(0, 80), (10, 95), (20, 35), (30, 100)]
+
+        cleaned = mc._enforce_low_v_coss_monotone(points, plot, fraction=0.35)
+
+        self.assertEqual(cleaned[2], (20, 35))
+        self.assertFalse(mc._low_v_nonfolding(cleaned, plot))
+
+    def test_coss_ciss_overlap_gap_is_bridged_between_separated_segments(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=200, y1=120)
+        ciss = [(x, 50) for x in range(0, 110)]
+        coss = [(x, 30) for x in range(0, 20)]
+        coss.extend((x, 50) for x in range(20, 81))
+        coss.extend((x, 70) for x in range(81, 110))
+        crss = [(x, 95) for x in range(0, 110)]
+
+        repaired = mc._repair_coss_ciss_overlap_gap(
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        repaired_coss = dict(repaired["Coss"])
+        self.assertGreater(repaired_coss[65], 50)
+        self.assertLess(repaired_coss[65], 70)
+        self.assertTrue(mc._low_v_nonfolding(repaired["Coss"], plot))
+
+    def test_coss_ciss_overlap_gap_does_not_bridge_without_rank_swap(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=200, y1=120)
+        ciss = [(x, 50) for x in range(0, 110)]
+        coss = [(x, 70) for x in range(0, 20)]
+        coss.extend((x, 50) for x in range(20, 81))
+        coss.extend((x, 75) for x in range(81, 110))
+        crss = [(x, 95) for x in range(0, 110)]
+
+        repaired = mc._repair_coss_ciss_overlap_gap(
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        self.assertEqual(repaired["Coss"], coss)
+
+    def test_coss_ciss_overlap_gap_does_not_bridge_short_antialias_contact(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=200, y1=120)
+        ciss = [(x, 50) for x in range(0, 110)]
+        coss = [(x, 30) for x in range(0, 45)]
+        coss.extend((x, 52) for x in range(45, 52))
+        coss.extend((x, 70) for x in range(52, 110))
+        crss = [(x, 95) for x in range(0, 110)]
+
+        repaired = mc._repair_coss_ciss_overlap_gap(
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        self.assertEqual(repaired["Coss"], coss)
+
+    def test_crss_left_knee_repair_accepts_anchor_beyond_eight_percent_width(self) -> None:
+        plot = mc.PlotBox(x0=0, y0=0, x1=519, y1=519)
+        mask = np.zeros((plot.height, plot.width), dtype=np.uint8)
+        for y in range(220, 401):
+            x = int(round(np.interp(y, [220, 400], [0, 47])))
+            mask[y, max(0, x - 1) : min(plot.width, x + 2)] = 1
+
+        ciss = [(x, 80) for x in range(0, 500)]
+        coss = [(x, 170) for x in range(0, 500)]
+        crss = [(x, 400 + min(80, x - 47)) for x in range(47, 500)]
+
+        repaired = mc._repair_leading_steep_crss(
+            mask,
+            {"Ciss": ciss, "Coss": coss, "Crss": crss},
+            plot,
+        )
+
+        self.assertLess(min(x for x, _ in repaired["Crss"]), 10)
+        self.assertTrue(mc._repair_shape_guard(repaired["Crss"], crss, plot, peers={"Ciss": ciss, "Coss": coss}, require_bottom=True))
 
 
 class VectorExtractionTests(unittest.TestCase):

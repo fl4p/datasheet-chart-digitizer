@@ -47,6 +47,30 @@ Key outputs:
 - `points/...points.csv`: pixel and calibrated data-space trace points.
 - `capacitance_digitization.json`: diagnostics and validation manifest.
 
+## Local Regression Corpus
+
+Fab's workstation has local regression corpora under `/Users/fab/dev/pv/ee/out`
+and `/Users/fab/dev/pv/pwr-mosfet-lib`. Run the combined local regression after
+trace, calibration, or validation changes:
+
+```bash
+python tools/run_local_regression.py
+```
+
+This runs the C(V) corpus and the Vpl gate-charge full-curve verifier against
+the 15 human-checked Vpl samples. For C(V)-only work, use:
+
+```bash
+python tools/run_capacitance_regression.py
+```
+
+The C(V) harness regenerates outputs in a temporary directory and fails on
+trace semantic regressions, unexpected untrusted axis calibration, or unexpected
+Qoss validation statuses. It includes the focused Coss/Ciss label-overlap
+repairs, the dashed-line case, and the 35-chart random-manufacturer C(V) sample.
+The Vpl harness currently delegates to the established local full-curve overlay
+script in `/Users/fab/dev/pv/ee/scripts`.
+
 ## Scope
 
 The repository name is intentionally generic. Planned plugins include Qoss(VDS),

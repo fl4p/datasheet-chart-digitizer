@@ -180,6 +180,7 @@ def extract_trace_components(
 
     assigned = _track_directional_traces(centers_by_x, plot, anchors or {})
     assigned = _repair_leading_steep_coss(mask, centers_by_x, assigned, plot)
+    assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
     assigned = _repair_leading_steep_crss(mask, assigned, plot)
 
     traces: list[Trace] = []
@@ -525,6 +526,13 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
     by_name = {trace.name: trace.points for trace in traces}
     diagnostics: dict[str, object] = {}
     for name, points in by_name.items():
+        if not points:
+            diagnostics[name] = {
+                "points": 0,
+                "x_span_fraction": 0.0,
+                "y_range_px": 0,
+            }
+            continue
         xs = [x for x, _ in points]
         ys = [y for _, y in points]
         diagnostics[name] = {
@@ -533,7 +541,7 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
             "y_range_px": max(ys) - min(ys),
         }
 
-    if all(name in by_name for name in ("Ciss", "Coss", "Crss")):
+    if all(name in by_name and by_name[name] for name in ("Ciss", "Coss", "Crss")):
         x_min = max(min(x for x, _ in by_name[name]) for name in ("Ciss", "Coss", "Crss"))
         x_max = min(max(x for x, _ in by_name[name]) for name in ("Ciss", "Coss", "Crss"))
         samples = list(range(x_min, x_max + 1, max(1, (x_max - x_min) // 200 or 1)))
@@ -555,6 +563,43 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
             "ciss_flatter_than_coss": ciss_range < coss_range,
         }
     return diagnostics
+
+
+def trace_validation_summary(diagnostics: dict[str, object]) -> dict[str, object]:
+    reasons: list[str] = []
+    for name in ("Ciss", "Coss", "Crss"):
+        trace_diag = diagnostics.get(name)
+        if not isinstance(trace_diag, dict):
+            reasons.append(f"missing_{name}")
+            continue
+        points = int(trace_diag.get("points") or 0)
+        span = float(trace_diag.get("x_span_fraction") or 0.0)
+        if points < 8:
+            reasons.append(f"{name}_too_few_points")
+        if span < 0.75:
+            reasons.append(f"{name}_short_x_span")
+
+    checks = diagnostics.get("checks")
+    if not isinstance(checks, dict):
+        reasons.append("missing_semantic_checks")
+    else:
+        samples = int(checks.get("common_samples") or 0)
+        swaps = int(checks.get("ciss_coss_rank_swap_count") or 0)
+        crss_bottom = float(checks.get("crss_bottom_fraction") or 0.0)
+        ciss_flatter = bool(checks.get("ciss_flatter_than_coss"))
+        if samples < 20:
+            reasons.append("too_few_common_samples")
+        if swaps not in (0, 1):
+            reasons.append("ciss_coss_rank_swap_count")
+        if crss_bottom < 0.95:
+            reasons.append("crss_not_bottom")
+        if not ciss_flatter:
+            reasons.append("ciss_not_flatter_than_coss")
+
+    return {
+        "status": "pass" if not reasons else "suspect",
+        "reasons": reasons,
+    }
 
 
 def _interp_y(points: list[tuple[int, int]], x: int) -> float:
@@ -944,16 +989,23 @@ def _repair_leading_steep_coss(
 ) -> dict[str, list[tuple[int, int]]]:
     if not all(name in assigned for name in ("Ciss", "Coss")):
         return assigned
+    assigned = _repair_leading_coss_upper_envelope(centers_by_x, assigned, plot)
     ciss_by_x = {x: y for x, y in assigned["Ciss"]}
     coss = sorted(assigned["Coss"])
     if len(coss) < 8:
         return assigned
 
     repaired_coss = _repair_missing_leading_knee(mask, coss, plot)
-    if repaired_coss is not None and _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
-        out = dict(assigned)
-        out["Coss"] = repaired_coss
-        return out
+    if repaired_coss is not None:
+        if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+            repaired_coss = _trim_repair_points_on_peer(repaired_coss, coss, assigned["Ciss"], plot)
+        if repaired_coss is not None and _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+            repaired_coss = _enforce_low_v_coss_monotone(repaired_coss, plot)
+            if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+                return assigned
+            out = dict(assigned)
+            out["Coss"] = repaired_coss
+            return out
 
     leading_overlap = [(x, y) for x, y in coss[:8] if x in ciss_by_x and abs(y - ciss_by_x[x]) <= 8]
     if not leading_overlap:
@@ -1026,6 +1078,266 @@ def _repair_leading_steep_coss(
     return out
 
 
+def _repair_leading_coss_upper_envelope(
+    centers_by_x: list[list[float]],
+    assigned: dict[str, list[tuple[int, int]]],
+    plot: PlotBox,
+) -> dict[str, list[tuple[int, int]]]:
+    """Recover Coss when the low-VDS Ciss/Coss traces share a column center.
+
+    The raster tracker starts in the unambiguous right half of the plot. When it
+    walks left through a low-VDS Ciss/Coss crossing, the two upper traces can be
+    close enough that the greedy tracker assigns both labels to the flatter Ciss
+    branch. The column data still contains the missing high-capacitance Coss
+    branch as the upper envelope, so splice that envelope into the leading Coss
+    segment before the generic vertical-knee repair runs.
+    """
+    ciss = sorted(assigned.get("Ciss", []))
+    coss = sorted(assigned.get("Coss", []))
+    if len(ciss) < 8 or len(coss) < 8:
+        return assigned
+
+    ciss_by_x = {x: y for x, y in ciss}
+    coss_by_x = {x: y for x, y in coss}
+    common_xs = sorted(set(ciss_by_x) & set(coss_by_x))
+    if not common_xs:
+        return assigned
+
+    low_v_limit = plot.x0 + int(round(plot.width * 0.22))
+    leading_common = [
+        x for x in common_xs
+        if x <= low_v_limit and abs(ciss_by_x[x] - coss_by_x[x]) <= 6
+    ]
+    if len(leading_common) < 5:
+        return assigned
+
+    replacement: dict[int, int] = {}
+    misses_after_hit = 0
+    for local_x in range(0, min(len(centers_by_x), int(round(plot.width * 0.35)))):
+        global_x = plot.x0 + local_x
+        ciss_y = _interp_y_in_range(ciss, global_x)
+        if ciss_y is None:
+            continue
+        centers = centers_by_x[local_x]
+        if len(centers) < 2:
+            if replacement:
+                misses_after_hit += 1
+                if misses_after_hit > 10:
+                    break
+            continue
+        # Pixel y decreases as capacitance increases. A real low-VDS Coss
+        # branch is visibly above Ciss; ignore tiny separations from stroke
+        # thickness or anti-aliasing. If multiple branches are above Ciss, use
+        # the nearest one, not the topmost envelope: the topmost trace can be
+        # Ciss on charts with a steep low-V input-capacitance knee.
+        min_separation = max(8.0, plot.height * 0.012)
+        candidates = [
+            plot.y0 + int(round(center))
+            for center in centers
+            if ciss_y - (plot.y0 + int(round(center))) >= min_separation
+        ]
+        if candidates:
+            replacement[global_x] = max(candidates)
+            misses_after_hit = 0
+        elif replacement:
+            misses_after_hit += 1
+            if misses_after_hit > 10:
+                break
+
+    if len(replacement) < 6:
+        return assigned
+
+    replacement_min = min(replacement)
+    replacement_max = max(replacement)
+    merged = {
+        x: y for x, y in coss
+        if not (replacement_min <= x <= replacement_max and abs(y - ciss_by_x.get(x, y)) <= 8)
+    }
+    merged.update(replacement)
+
+    bridge_width = max(12, int(round(plot.width * 0.04)))
+    bridge_target_x = min(
+        [x for x in coss_by_x if x > replacement_max + bridge_width],
+        default=None,
+    )
+    if bridge_target_x is not None:
+        start_x = replacement_max
+        start_y = replacement[replacement_max]
+        target_y = coss_by_x[bridge_target_x]
+        for x in range(start_x + 1, bridge_target_x):
+            if x in coss_by_x and abs(coss_by_x[x] - ciss_by_x.get(x, coss_by_x[x])) > 8:
+                continue
+            t = (x - start_x) / max(1, bridge_target_x - start_x)
+            merged[x] = int(round(start_y + (target_y - start_y) * t))
+
+    repaired_coss = sorted(merged.items())
+    repaired_coss = _enforce_low_v_coss_monotone(repaired_coss, plot)
+
+    changed = _changed_repair_segment(repaired_coss, coss)
+    if not changed:
+        return assigned
+    if _overlaps_peer_for_too_long(changed, {"Ciss": ciss}):
+        return assigned
+    if not _low_v_nonfolding(repaired_coss, plot):
+        return assigned
+
+    out = dict(assigned)
+    out["Coss"] = repaired_coss
+    return out
+
+
+def _repair_coss_ciss_overlap_gap(
+    assigned: dict[str, list[tuple[int, int]]],
+    plot: PlotBox,
+) -> dict[str, list[tuple[int, int]]]:
+    """Bridge long Coss/Ciss overlap runs caused by text-label occlusion.
+
+    On some raster charts the "Coss" label and leader line obscure the actual
+    Coss stroke around the Ciss/Coss crossing. Column tracking then glues Coss
+    to Ciss for a long run, even though Coss is clearly above Ciss before the
+    label and below Ciss after it. Treat only that rank-swap overlap pattern as
+    missing data and interpolate through it.
+    """
+    ciss = sorted(assigned.get("Ciss", []))
+    coss = sorted(assigned.get("Coss", []))
+    if len(ciss) < 8 or len(coss) < 8:
+        return assigned
+
+    close_tol = max(6.0, plot.height * 0.012)
+    sep_tol = max(12.0, plot.height * 0.020)
+    min_run = max(18, int(round(plot.width * 0.05)))
+    max_run = int(round(plot.width * 0.45))
+    xs = sorted(x for x, _ in coss if _interp_y_in_range(ciss, x) is not None)
+    if not xs:
+        return assigned
+
+    runs: list[list[int]] = []
+    current: list[int] = []
+    for x in xs:
+        ciss_y = _interp_y_in_range(ciss, x)
+        coss_y = _interp_y_in_range(coss, x)
+        close = ciss_y is not None and coss_y is not None and abs(coss_y - ciss_y) <= close_tol
+        if close:
+            if current and x > current[-1] + 1:
+                runs.append(current)
+                current = []
+            current.append(x)
+        elif current:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+
+    coss_by_x = {x: y for x, y in coss}
+    repaired_by_x = dict(coss_by_x)
+    changed = False
+    for run in runs:
+        if not (min_run <= len(run) <= max_run):
+            continue
+        start_x = run[0]
+        end_x = run[-1]
+        left = _nearest_separated_coss_sample(ciss, coss, start_x, -1, sep_tol, plot)
+        right = _nearest_separated_coss_sample(ciss, coss, end_x, 1, sep_tol, plot)
+        if left is None or right is None:
+            continue
+        left_delta = left[1] - float(_interp_y_in_range(ciss, left[0]) or left[1])
+        right_delta = right[1] - float(_interp_y_in_range(ciss, right[0]) or right[1])
+        if not (left_delta <= -sep_tol and right_delta >= sep_tol):
+            continue
+        if right[0] <= left[0] or right[0] - left[0] > plot.width * 0.55:
+            continue
+        for x in range(left[0] + 1, right[0]):
+            if x not in repaired_by_x:
+                continue
+            t = (x - left[0]) / max(1, right[0] - left[0])
+            repaired_by_x[x] = int(round(left[1] + (right[1] - left[1]) * t))
+        changed = True
+
+    if not changed:
+        return assigned
+
+    repaired_coss = sorted(repaired_by_x.items())
+    if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": ciss}):
+        return assigned
+    out = dict(assigned)
+    out["Coss"] = repaired_coss
+    return out
+
+
+def _nearest_separated_coss_sample(
+    ciss: list[tuple[int, int]],
+    coss: list[tuple[int, int]],
+    x: int,
+    direction: int,
+    sep_tol: float,
+    plot: PlotBox,
+) -> tuple[int, float] | None:
+    limit = plot.x0 if direction < 0 else plot.x1
+    max_distance = int(round(plot.width * 0.20))
+    coss_by_x = {px: py for px, py in coss}
+    px = x + direction
+    while (px >= limit if direction < 0 else px <= limit) and abs(px - x) <= max_distance:
+        coss_y = coss_by_x.get(px)
+        ciss_y = _interp_y_in_range(ciss, px)
+        if coss_y is not None and ciss_y is not None and abs(coss_y - ciss_y) >= sep_tol:
+            return (px, float(coss_y))
+        px += direction
+    return None
+
+
+def _enforce_low_v_coss_monotone(
+    points: list[tuple[int, int]], plot: PlotBox, fraction: float = 0.35
+) -> list[tuple[int, int]]:
+    """Remove small low-VDS Coss folds introduced by label-gap repairs.
+
+    Coss is physically non-increasing with VDS on these plots, so in image
+    coordinates its y should be nondecreasing as x increases. Raster label gaps
+    can make a repaired prefix jump back upward by a few pixels; clamp only the
+    low-VDS repair region so the rest of the extracted curve remains untouched.
+    """
+    limit_x = plot.x0 + int(round(plot.width * fraction))
+    max_jitter = max(8.0, plot.height * 0.02)
+    out: list[tuple[int, int]] = []
+    running_y: int | None = None
+    for x, y in sorted(points):
+        if x <= limit_x:
+            if running_y is not None and y < running_y and running_y - y <= max_jitter:
+                y = running_y
+            running_y = y
+        out.append((x, y))
+    return out
+
+
+def _trim_repair_points_on_peer(
+    repaired: list[tuple[int, int]],
+    original: list[tuple[int, int]],
+    peer: list[tuple[int, int]],
+    plot: PlotBox,
+) -> list[tuple[int, int]] | None:
+    """Keep only repaired points that have separated from a peer trace.
+
+    Row-wise knee recovery can follow the shared top of a crossing before it
+    reaches the intended Coss branch. Those points are visually on Ciss and
+    should not be grafted into Coss. Once the recovered path drops below Ciss by
+    a visible margin, keep it as the missing Coss knee.
+    """
+    margin = max(10.0, plot.height * 0.018)
+    keep: list[tuple[int, int]] = []
+    for x, y in _changed_repair_segment(repaired, original):
+        peer_y = _interp_y_in_range(peer, x)
+        # Coss sits below Ciss in image coordinates after the low-VDS crossing.
+        # Points above Ciss are still the shared/peer branch and must not be
+        # grafted into Coss, even if they are well separated.
+        if peer_y is not None and y - peer_y >= margin:
+            keep.append((x, y))
+    if len(keep) < 6:
+        return None
+    merged = {x: y for x, y in original}
+    for x, y in keep:
+        merged[x] = y
+    return sorted(merged.items())
+
+
 def _repair_missing_leading_knee(
     mask: np.ndarray, points: list[tuple[int, int]], plot: PlotBox
 ) -> list[tuple[int, int]] | None:
@@ -1042,10 +1354,10 @@ def _repair_missing_leading_knee(
     anchor = ordered[0]
     anchor_x = anchor[0] - plot.x0
     anchor_y = anchor[1] - plot.y0
-    if anchor_x > plot.width * 0.08 or anchor_y < plot.height * 0.10:
+    if anchor_x > plot.width * 0.16 or anchor_y < plot.height * 0.10:
         return None
 
-    max_band = int(round(plot.height * 0.16))
+    max_band = int(round(plot.height * 0.45))
     y_min = max(0, anchor_y - max_band)
     left_limit = max(anchor_x + 18.0, plot.width * 0.07)
     row_points: list[tuple[int, int]] = []
@@ -1113,19 +1425,19 @@ def _repair_leading_steep_crss(
         return assigned
 
     crss_by_path = list(crss)
-    left_candidates = [point for point in crss_by_path if point[0] - plot.x0 <= plot.width * 0.12]
+    left_candidates = [point for point in crss_by_path if point[0] - plot.x0 <= plot.width * 0.16]
     if not left_candidates:
         return assigned
     anchor = min(left_candidates, key=lambda point: (point[0], point[1]))
     anchor_x = anchor[0] - plot.x0
     anchor_y = anchor[1] - plot.y0
-    if anchor_x > plot.width * 0.08 or anchor_y < plot.height * 0.25:
+    if anchor_x > plot.width * 0.16 or anchor_y < plot.height * 0.25:
         return assigned
 
     # Only repair the local missing knee. Extending too far upward can steal the
     # overlapping Coss/Ciss low-VDS rise, so cap the search to a modest vertical
     # band above the first stable Crss point.
-    max_band = int(round(plot.height * 0.22))
+    max_band = int(round(plot.height * 0.45))
     y_min = max(0, anchor_y - max_band)
     left_limit = max(anchor_x + 18.0, plot.width * 0.07)
 
@@ -1393,14 +1705,16 @@ def _track_direction(
     out: list[tuple[int, float]] = []
     misses = 0
     max_misses = 80
-    max_step = 70.0
+    max_step = 32.0
+    max_reacquire_step = 24.0
     x = seed_x + direction
     while 0 <= x < len(centers_by_x):
         candidates = _trace_candidates(centers_by_x[x], candidate_kind)
         pred = _predict_y(points, x)
         if candidates:
             best = min(candidates, key=lambda y: abs(y - pred))
-            if abs(best - pred) <= max_step:
+            step_limit = max_reacquire_step if misses else max_step
+            if abs(best - pred) <= step_limit:
                 points.append((x, best))
                 out.append((x, best))
                 misses = 0
@@ -1838,6 +2152,14 @@ def calibration_delta_to_json(
     }
 
 
+def axis_calibration_is_trusted(calibration: AxisCalibration | None) -> bool:
+    if calibration is None:
+        return False
+    if calibration.source == "chart_text":
+        return False
+    return calibration.x_scale is not None and calibration.y_scale is not None
+
+
 def coss_metrics_to_json(metrics: object) -> dict[str, float]:
     return {
         "Qoss_pc": float(metrics.Qoss),
@@ -1996,6 +2318,7 @@ def process_chart(
     axis_grid_error: str | None = None
     axis_position_error: str | None = None
     axis_error: str | None = None
+    axis_warning: str | None = None
     try:
         axis_text_order = infer_text_order_axis_calibration(chart)
     except Exception as text_exc:
@@ -2019,6 +2342,12 @@ def process_chart(
             axis_calibration = axis_text_order
     if axis_calibration is None:
         axis_error = f"position: {axis_position_error}; grid: {axis_grid_error}; text_order: {axis_text_order_error}"
+    axis_trusted = axis_calibration_is_trusted(axis_calibration)
+    if axis_calibration is not None and not axis_trusted:
+        axis_warning = (
+            "untrusted text-order axis fallback; physical vds_V/cap_pF columns "
+            "and Qoss validation are disabled"
+        )
     extraction_method = "vector"
     try:
         traces = extract_vector_trace_components(chart, image, plot)
@@ -2048,7 +2377,7 @@ def process_chart(
         cv2.imwrite(str(axis_debug_path), axis_overlay)
 
     trace_data: dict[str, list[tuple[float, float]]] = {}
-    if axis_calibration is not None:
+    if axis_trusted and axis_calibration is not None:
         trace_data = {trace.name: trace_data_points(trace, plot, axis_calibration) for trace in traces}
 
     with points_path.open("w", newline="") as f:
@@ -2075,7 +2404,9 @@ def process_chart(
     qoss_vendor_tail_validation: dict[str, object] | None = None
     metrics = None
     coss_clip_diag = top_decade_clip_diagnostic(trace_data, axis_calibration)
-    if axis_calibration is not None and "Coss" in trace_data and output_ref.vint_v:
+    if not axis_trusted and axis_calibration is not None:
+        qoss_validation_error = "untrusted axis calibration"
+    elif axis_calibration is not None and "Coss" in trace_data and output_ref.vint_v:
         try:
             vds, coss = arrays_for_trace_data(trace_data["Coss"])
             if coss_metrics is None or validate_axis is None:
@@ -2107,6 +2438,9 @@ def process_chart(
         except Exception as exc:
             qoss_validation_error = str(exc)
 
+    diagnostics = trace_semantic_diagnostics(traces, plot)
+    validation = trace_validation_summary(diagnostics)
+
     return {
         "crop": str(crop_path),
         "overlay": str(overlay_path.relative_to(out_dir)),
@@ -2122,13 +2456,17 @@ def process_chart(
         "axis_grid_error": axis_grid_error,
         "axis_text_order_error": axis_text_order_error,
         "axis_error": axis_error,
+        "axis_warning": axis_warning,
+        "axis_calibration_trusted": axis_trusted,
         "output_charge_reference": output_charge_reference_to_json(output_ref),
         "qoss_metrics": qoss_metrics,
         "qoss_vendor_tail_validation": qoss_vendor_tail_validation,
         "qoss_validation_status": qoss_validation_status(metrics, qoss_validation_error, qoss_vendor_tail_validation),
         "qoss_validation_error": qoss_validation_error,
         "coss_top_decade_clip": coss_clip_diag,
-        "diagnostics": trace_semantic_diagnostics(traces, plot),
+        "trace_validation_status": validation["status"],
+        "trace_validation_reasons": validation["reasons"],
+        "diagnostics": diagnostics,
         "anchors": {
             name: {"value_pf": anchor.value_pf, "vds_v": anchor.vds_v}
             for name, anchor in anchors.items()
