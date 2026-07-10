@@ -7,6 +7,7 @@ def main() -> None:
     commands = {
         "find": "find chart panels and emit charts.json",
         "digitize-capacitance": "digitize MOSFET Ciss/Coss/Crss charts",
+        "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
     }
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         print("usage: dsdig <command> [args...]")
@@ -30,6 +31,12 @@ def main() -> None:
 
         sys.argv = ["dsdig digitize-capacitance", *rest]
         mosfet_capacitance.main()
+        return
+    if command == "digitize-vpl":
+        from . import gate_charge_vpl
+
+        sys.argv = ["dsdig digitize-vpl", *rest]
+        gate_charge_vpl.main()
         return
     raise SystemExit(f"unknown command: {command}")
 

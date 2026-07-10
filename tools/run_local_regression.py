@@ -2,8 +2,7 @@
 """Run local regression checks for all wired chart digitizers.
 
 This is Fab-workstation specific. It combines the in-repo MOSFET C(V)
-regression corpus with the existing Vpl full-curve verification harness in
-``/Users/fab/dev/pv/ee/scripts``.
+regression corpus with the packaged Vpl full-curve verification harness.
 """
 
 from __future__ import annotations
@@ -19,8 +18,9 @@ import run_capacitance_regression
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EE_ROOT = REPO_ROOT.parent
-VPL_SCRIPT = EE_ROOT / "scripts" / "generate_gate_charge_fullcurve_overlays.py"
+SRC_ROOT = REPO_ROOT / "src"
+if str(SRC_ROOT) not in sys.path:
+    sys.path.insert(0, str(SRC_ROOT))
 VPL_EXPECTED_FAILURES = {
     # pwr-mosfet-lib/test/test_viz_vpl.py tracks this as still
     # off/reference-disputed. Keep it visible in the overlay run, but do not
@@ -99,15 +99,14 @@ def main() -> None:
 
 
 def _run_vpl_regression(tol: float, start: int | None, count: int | None) -> list[str]:
-    if not VPL_SCRIPT.exists():
-        return [f"missing Vpl regression script {VPL_SCRIPT}"]
-    cmd = [sys.executable, str(VPL_SCRIPT)]
+    cmd = [sys.executable, "-m", "datasheet_chart_digitizer.gate_charge_vpl", "--reference-assisted"]
     if start is not None:
         cmd.extend(["--start", str(start)])
     if count is not None:
         cmd.extend(["--count", str(count)])
 
     env = os.environ.copy()
+    env["PYTHONPATH"] = str(SRC_ROOT) + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     completed = subprocess.run(cmd, cwd=REPO_ROOT, env=env, text=True, capture_output=True)
     print("== vpl_gate_charge_fullcurve")
     if completed.stdout:
@@ -118,7 +117,7 @@ def _run_vpl_regression(tol: float, start: int | None, count: int | None) -> lis
     rows = _parse_vpl_output(completed.stdout)
     if not rows:
         return ["Vpl script produced no parsable sample rows"]
-    expected_count = count if count is not None else DEFAULT_VPL_SAMPLE_COUNT
+    expected_count = DEFAULT_VPL_SAMPLE_COUNT if start is None and count is None else len(rows)
     if len(rows) != expected_count:
         return [f"Vpl script produced {len(rows)} parsable sample rows, expected {expected_count}"]
 
