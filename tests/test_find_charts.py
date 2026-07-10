@@ -75,6 +75,52 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 14)
         self.assertEqual(titles[0].title, "Typ. gate charge")
 
+    def test_splits_compact_fig_caption_tokens(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Fig.5-Capacitance", 80, 200, 180, 210),
+                find_charts.Word("Characteristics", 185, 200, 265, 210),
+                find_charts.Word("Fig.6-Gate", 330, 200, 395, 210),
+                find_charts.Word("Charge", 400, 200, 445, 210),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].number, 6)
+        self.assertEqual(titles[0].title, "Gate Charge")
+
+    def test_accepts_wrapped_gate_charge_caption(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Fig.", 60, 200, 78, 210),
+                find_charts.Word("13.", 82, 200, 102, 210),
+                find_charts.Word("Gate-source", 110, 200, 180, 210),
+                find_charts.Word("voltage", 185, 200, 230, 210),
+                find_charts.Word("as", 235, 200, 248, 210),
+                find_charts.Word("a", 252, 200, 258, 210),
+                find_charts.Word("function", 262, 200, 315, 210),
+                find_charts.Word("of", 320, 200, 333, 210),
+                find_charts.Word("gate", 338, 200, 365, 210),
+                find_charts.Word("charge;", 90, 211, 135, 221),
+                find_charts.Word("typical", 140, 211, 185, 221),
+                find_charts.Word("values", 190, 211, 230, 221),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].number, 13)
+        self.assertEqual(titles[0].title, "Gate-source voltage as a function of gate charge; typical values")
+
 
 if __name__ == "__main__":
     unittest.main()

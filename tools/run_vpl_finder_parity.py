@@ -47,7 +47,6 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     "IAUC28N08S5L230ATMA1",
     "F3L3MR12W3M1HH11BPSA1",
     # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
-    "MCAC60N15YA-TP",
     "AM9435SA-HXY",
     "CSD19532KTT",
     "DI110N15PQ",
@@ -57,8 +56,6 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     "SQJQ480E-T1_GE3",
     "NVCR4LS1D3N08M7A",
     "CSD19501KCS",
-    "MCAC100N08Y-TP",
-    "MCP75N10Y-BP",
     "TPS1100",
     "IPI65R190CFD",
     "EPC7018GSH",

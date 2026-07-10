@@ -25,6 +25,7 @@ from PIL import Image
 
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
 FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+)[\.:]?\s*(.*)$", re.IGNORECASE)
+COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
 CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
 
 
@@ -183,6 +184,24 @@ def _caption_starts(line: list[Word]) -> list[int]:
     for idx, word in enumerate(line):
         token = word.text.strip()
         lower = token.lower().rstrip(".:")
+        compact_match = COMPACT_FIGURE_RE.match(token)
+        if compact_match:
+            tail = compact_match.group(2).lower() + " " + " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
+            if any(
+                phrase in tail
+                for phrase in (
+                    "typ",
+                    "gate",
+                    "charge",
+                    "capacitance",
+                    "avalanche",
+                    "breakdown",
+                    "waveforms",
+                    "dynamic",
+                )
+            ):
+                starts.append(idx)
+            continue
         if lower in {"figure", "fig"} and idx + 1 < len(line):
             if re.match(r"^\d+[\.:]?$", line[idx + 1].text):
                 starts.append(idx)
@@ -196,10 +215,48 @@ def _caption_starts(line: list[Word]) -> list[int]:
     return starts
 
 
+def _parse_caption_text(text: str) -> tuple[int, str] | None:
+    match = FIGURE_RE.match(text)
+    if match:
+        return int(match.group(1)), match.group(2).strip()
+    match = COMPACT_FIGURE_RE.match(text)
+    if match:
+        title = match.group(2).strip()
+        if title.startswith("-"):
+            title = title[1:].strip()
+        return int(match.group(1)), title
+    parts = text.split(maxsplit=1)
+    if len(parts) == 2 and parts[0].isdigit():
+        return int(parts[0]), parts[1].strip()
+    return None
+
+
+def _caption_continuation(lines: list[list[Word]], line_idx: int, segment: list[Word]) -> str:
+    """Return a short wrapped caption continuation below a title segment."""
+    if line_idx + 1 >= len(lines):
+        return ""
+    sx0, sy0, sx1, sy1 = line_bbox(segment)
+    segment_width = sx1 - sx0
+    continuation: list[str] = []
+    for next_line in lines[line_idx + 1 : line_idx + 3]:
+        nx0, ny0, nx1, _ = line_bbox(next_line)
+        if ny0 - sy1 > 18:
+            break
+        overlap = _overlap_1d(sx0, sx1, nx0, nx1)
+        if overlap < max(8.0, min(segment_width, nx1 - nx0) * 0.25):
+            continue
+        text = line_text(next_line)
+        if not re.search(r"[A-Za-z]", text):
+            continue
+        continuation.append(text)
+    return " ".join(continuation).strip()
+
+
 def find_caption_titles(page: PageText) -> list[DiagramTitle]:
     """Find non-Diagram chart captions used by many gate-charge plots."""
     titles: list[DiagramTitle] = []
-    for line in group_words_into_lines(page.words):
+    lines = group_words_into_lines(page.words)
+    for line_idx, line in enumerate(lines):
         starts = _caption_starts(line)
         if not starts:
             continue
@@ -207,18 +264,18 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
         for start, end in zip(starts, starts[1:]):
             segment = line[start:end]
             text = line_text(segment)
-            match = FIGURE_RE.match(text)
-            if match:
-                number = int(match.group(1))
-                title = match.group(2).strip()
-            else:
-                parts = text.split(maxsplit=1)
-                if len(parts) != 2 or not parts[0].isdigit():
-                    continue
-                number = int(parts[0])
-                title = parts[1].strip()
-            if classify_chart(title, "") != "gate_charge":
+            parsed = _parse_caption_text(text)
+            if parsed is None:
                 continue
+            number, title = parsed
+            title_for_classification = title
+            if classify_chart(title_for_classification, "") != "gate_charge" and "gate" in title_for_classification.lower():
+                continuation = _caption_continuation(lines, line_idx, segment)
+                if continuation:
+                    title_for_classification = f"{title_for_classification} {continuation}".strip()
+            if classify_chart(title_for_classification, "") != "gate_charge":
+                continue
+            title = title_for_classification
             titles.append(
                 DiagramTitle(
                     number=number,
