@@ -121,6 +121,55 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 13)
         self.assertEqual(titles[0].title, "Gate-source voltage as a function of gate charge; typical values")
 
+    def test_caption_axis_label_fallback_synthesizes_panel(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Figure", 330, 320, 360, 331),
+                find_charts.Word("10:", 365, 320, 382, 331),
+                find_charts.Word("Gate", 386, 320, 414, 331),
+                find_charts.Word("Charge", 418, 320, 460, 331),
+                find_charts.Word("Characteristics", 464, 320, 540, 331),
+                find_charts.Word("Q", 340, 510, 348, 520),
+                find_charts.Word("G", 352, 510, 360, 520),
+                find_charts.Word("-Gate", 365, 510, 402, 520),
+                find_charts.Word("Charge", 407, 510, 450, 520),
+                find_charts.Word("(nC)", 455, 510, 485, 520),
+            ],
+        )
+        title = find_charts.find_caption_titles(page)[0]
+
+        bbox = find_charts.choose_caption_axis_label_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLessEqual(bbox[0], 435)
+        self.assertGreaterEqual(bbox[2], 435)
+        self.assertLess(bbox[1], 410)
+        self.assertGreater(bbox[3], 510)
+
+    def test_caption_axis_label_fallback_requires_qg_axis_evidence(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Figure", 330, 320, 360, 331),
+                find_charts.Word("10:", 365, 320, 382, 331),
+                find_charts.Word("Gate", 386, 320, 414, 331),
+                find_charts.Word("Charge", 418, 320, 460, 331),
+                find_charts.Word("Characteristics", 464, 320, 540, 331),
+                find_charts.Word("Total", 340, 510, 375, 520),
+                find_charts.Word("Gate", 380, 510, 408, 520),
+                find_charts.Word("Charge", 412, 510, 455, 520),
+            ],
+        )
+        title = find_charts.find_caption_titles(page)[0]
+
+        self.assertIsNone(find_charts.choose_caption_axis_label_bbox(page, title))
+
 
 if __name__ == "__main__":
     unittest.main()

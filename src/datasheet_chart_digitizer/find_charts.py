@@ -608,6 +608,67 @@ def choose_caption_panel_bbox(
     )
 
 
+def _is_gate_charge_axis_label(text: str) -> bool:
+    normalized = text.lower().replace("‑", "-").replace("–", "-").replace("_", " ")
+    normalized = re.sub(r"\s+", " ", normalized)
+    has_qg = bool(re.search(r"\bq\s*g\b|\bqg\b|\bqgate\b", normalized))
+    has_charge_unit = "charge" in normalized or "nc" in normalized
+    return has_qg and has_charge_unit
+
+
+def choose_caption_axis_label_bbox(
+    page: PageText,
+    title: DiagramTitle,
+) -> tuple[float, float, float, float] | None:
+    """Synthesize a caption panel from the nearby Qg/Gate-Charge axis label.
+
+    This is a fallback for small or light raster/vector plot frames whose grid
+    rules are not recovered by morphology.  It intentionally requires an axis
+    label near the caption so generic "gate charge" table text is not enough.
+    """
+    tx0, ty0, tx1, ty1 = title.bbox_pt
+    tcx = 0.5 * (tx0 + tx1)
+    tcy = 0.5 * (ty0 + ty1)
+    best: tuple[float, tuple[float, float, float, float]] | None = None
+    for line in group_words_into_lines(page.words):
+        text = line_text(line)
+        if not _is_gate_charge_axis_label(text):
+            continue
+        lx0, ly0, lx1, ly1 = line_bbox(line)
+        lcx = 0.5 * (lx0 + lx1)
+        lcy = 0.5 * (ly0 + ly1)
+        vertical_gap = abs(lcy - tcy)
+        if vertical_gap > 280:
+            continue
+        horizontal_penalty = abs(lcx - tcx)
+        # Axis-label lines often span two side-by-side charts.  Do not reject
+        # those only because their center is pulled toward the neighboring plot.
+        if horizontal_penalty > page.width_pt * 0.45:
+            continue
+        score = vertical_gap + 0.15 * horizontal_penalty
+        if best is None or score < best[0]:
+            best = (score, (lx0, ly0, lx1, ly1))
+    if best is None:
+        return None
+
+    _, (lx0, ly0, lx1, ly1) = best
+    line_cy = 0.5 * (ly0 + ly1)
+    half_width = min(max(145.0, (tx1 - tx0) * 0.95), page.width_pt * 0.32)
+    x0 = max(0.0, tcx - half_width)
+    x1 = min(page.width_pt, tcx + half_width)
+    if line_cy < tcy:
+        # Caption sits below the plot; the x-axis label is just above it.
+        y0 = max(0.0, ly0 - 185.0)
+        y1 = min(page.height_pt, ty0 - 2.0)
+    else:
+        # Header sits above the plot; the x-axis label is below it.
+        y0 = max(0.0, ty1 + 2.0)
+        y1 = min(page.height_pt, ly1 + 18.0)
+    if y1 - y0 < 90:
+        return None
+    return (x0, y0, x1, y1)
+
+
 def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) -> list[Word]:
     x0, y0, x1, y1 = bbox
     selected = []
@@ -760,6 +821,8 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
 
             for title in caption_titles:
                 bbox = choose_caption_panel_bbox(page, title, grid_regions)
+                if bbox is None:
+                    bbox = choose_caption_axis_label_bbox(page, title)
                 if bbox is None:
                     continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
