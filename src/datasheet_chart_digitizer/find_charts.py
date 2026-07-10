@@ -24,6 +24,7 @@ from PIL import Image
 
 
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
+FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+)[\.:]?\s*(.*)$", re.IGNORECASE)
 CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
 
 
@@ -169,6 +170,59 @@ def find_diagram_titles(page: PageText) -> list[DiagramTitle]:
                 DiagramTitle(
                     number=int(match.group(1)),
                     title=match.group(2).strip(),
+                    bbox_pt=line_bbox(segment),
+                    line_text=text,
+                )
+            )
+    titles.sort(key=lambda t: (t.bbox_pt[1], t.bbox_pt[0], t.number))
+    return titles
+
+
+def _caption_starts(line: list[Word]) -> list[int]:
+    starts: list[int] = []
+    for idx, word in enumerate(line):
+        token = word.text.strip()
+        lower = token.lower().rstrip(".:")
+        if lower in {"figure", "fig"} and idx + 1 < len(line):
+            if re.match(r"^\d+[\.:]?$", line[idx + 1].text):
+                starts.append(idx)
+            continue
+
+        if not token.isdigit() or idx + 1 >= len(line):
+            continue
+        tail = " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
+        if any(phrase in tail for phrase in ("typ", "gate", "avalanche", "breakdown", "waveforms")):
+            starts.append(idx)
+    return starts
+
+
+def find_caption_titles(page: PageText) -> list[DiagramTitle]:
+    """Find non-Diagram chart captions used by many gate-charge plots."""
+    titles: list[DiagramTitle] = []
+    for line in group_words_into_lines(page.words):
+        starts = _caption_starts(line)
+        if not starts:
+            continue
+        starts.append(len(line))
+        for start, end in zip(starts, starts[1:]):
+            segment = line[start:end]
+            text = line_text(segment)
+            match = FIGURE_RE.match(text)
+            if match:
+                number = int(match.group(1))
+                title = match.group(2).strip()
+            else:
+                parts = text.split(maxsplit=1)
+                if len(parts) != 2 or not parts[0].isdigit():
+                    continue
+                number = int(parts[0])
+                title = parts[1].strip()
+            if classify_chart(title, "") != "gate_charge":
+                continue
+            titles.append(
+                DiagramTitle(
+                    number=number,
+                    title=title,
                     bbox_pt=line_bbox(segment),
                     line_text=text,
                 )
@@ -387,6 +441,116 @@ def choose_panel_bbox(
     return (x_left, y_top, x_right, y_bottom)
 
 
+def _overlap_1d(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def infer_grid_regions_from_h_rules(
+    page: PageText,
+    h_rules_pt: list[tuple[float, float, float, float]],
+) -> list[tuple[float, float, float, float]]:
+    """Group horizontal plot/grid rules into candidate chart rectangles."""
+    candidates: list[tuple[float, float, float, float]] = []
+    min_width = page.width_pt * 0.18
+    max_width = page.width_pt * 0.92
+    for x0, y0, x1, y1 in h_rules_pt:
+        width = x1 - x0
+        if min_width <= width <= max_width:
+            candidates.append((x0, y0, x1, y1))
+    candidates.sort(key=lambda b: (((b[0] + b[2]) / 2), b[1]))
+
+    groups: list[list[tuple[float, float, float, float]]] = []
+    for box in candidates:
+        bx0, _, bx1, _ = box
+        bc = (bx0 + bx1) / 2
+        bw = bx1 - bx0
+        for group in groups:
+            gx0 = min(g[0] for g in group)
+            gx1 = max(g[2] for g in group)
+            gc = (gx0 + gx1) / 2
+            gw = gx1 - gx0
+            overlap = _overlap_1d(bx0, bx1, gx0, gx1)
+            if abs(bc - gc) <= page.width_pt * 0.08 and overlap >= min(bw, gw) * 0.55:
+                group.append(box)
+                break
+        else:
+            groups.append([box])
+
+    regions: list[tuple[float, float, float, float]] = []
+    for group in groups:
+        group.sort(key=lambda g: (g[1] + g[3]) / 2)
+        chunks: list[list[tuple[float, float, float, float]]] = []
+        for box in group:
+            center_y = (box[1] + box[3]) / 2
+            if chunks:
+                prev_center_y = (chunks[-1][-1][1] + chunks[-1][-1][3]) / 2
+                if center_y - prev_center_y <= 28:
+                    chunks[-1].append(box)
+                    continue
+            chunks.append([box])
+
+        for chunk in chunks:
+            if len(chunk) < 4:
+                continue
+            x0 = min(g[0] for g in chunk)
+            y0 = min((g[1] + g[3]) / 2 for g in chunk)
+            x1 = max(g[2] for g in chunk)
+            y1 = max((g[1] + g[3]) / 2 for g in chunk)
+            if y1 - y0 < 60:
+                continue
+            regions.append((x0, y0, x1, y1))
+    regions.sort(key=lambda b: (b[1], b[0]))
+    return regions
+
+
+def choose_caption_panel_bbox(
+    page: PageText,
+    title: DiagramTitle,
+    grid_regions: list[tuple[float, float, float, float]],
+) -> tuple[float, float, float, float] | None:
+    tx0, ty0, tx1, ty1 = title.bbox_pt
+    tcx = (tx0 + tx1) / 2
+    best: tuple[float, tuple[float, float, float, float]] | None = None
+    candidates = []
+    for region in grid_regions:
+        x0, y0, x1, y1 = region
+        rcx = (x0 + x1) / 2
+        width = x1 - x0
+        horizontal_penalty = abs(tcx - rcx)
+        if horizontal_penalty > max(width * 0.85, page.width_pt * 0.10):
+            continue
+        if ty1 < y0:
+            vertical_gap = y0 - ty1
+        elif ty0 > y1:
+            vertical_gap = ty0 - y1
+        else:
+            vertical_gap = 0.0
+        if vertical_gap > 85:
+            continue
+        candidates.append((horizontal_penalty, vertical_gap, region))
+
+    plot_width_candidates = [item for item in candidates if item[2][2] - item[2][0] <= page.width_pt * 0.62]
+    if plot_width_candidates:
+        candidates = plot_width_candidates
+
+    for horizontal_penalty, vertical_gap, region in candidates:
+        score = vertical_gap + 0.25 * horizontal_penalty
+        if best is None or score < best[0]:
+            best = (score, region)
+    if best is None:
+        return None
+
+    x0, y0, x1, y1 = best[1]
+    pad_x = min(12.0, (x1 - x0) * 0.04)
+    pad_y = min(12.0, (y1 - y0) * 0.06)
+    return (
+        max(0.0, x0 - pad_x),
+        max(0.0, y0 - pad_y),
+        min(page.width_pt, x1 + pad_x),
+        min(page.height_pt, y1 + pad_y),
+    )
+
+
 def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) -> list[Word]:
     x0, y0, x1, y1 = bbox
     selected = []
@@ -398,8 +562,61 @@ def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) ->
     return selected
 
 
+def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    inter = _overlap_1d(ax0, ax1, bx0, bx1) * _overlap_1d(ay0, ay1, by0, by1)
+    if inter <= 0:
+        return 0.0
+    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
+    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
+    return inter / max(1e-9, area_a + area_b - inter)
+
+
+def _append_panel(
+    panels: list[ChartPanel],
+    pdf: Path,
+    page: PageText,
+    page_png: Path,
+    out_dir: Path,
+    lines: list[list[Word]],
+    title: DiagramTitle,
+    bbox: tuple[float, float, float, float],
+) -> None:
+    text_words = words_in_bbox(page.words, bbox)
+    text = " ".join(w.text for w in sorted(text_words, key=lambda w: (w.y0, w.x0)))
+    mentions = sorted(
+        {
+            w.text
+            for w in text_words
+            if w.text.lower().replace("‑", "-").strip(" ,;:()[]") in CAPACITANCE_WORDS
+            or w.text in {"Ciss", "Coss", "Crss"}
+        }
+    )
+    kind = classify_chart(title.title, text)
+    rel_crop = Path(pdf.stem) / f"p{page.page_num:02d}_diagram_{title.number:02d}.png"
+    crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
+    panels.append(
+        ChartPanel(
+            pdf=str(pdf.resolve()),
+            part=pdf.name.split(".pdf")[0],
+            page=page.page_num,
+            diagram=title.number,
+            title=title.title,
+            kind=kind,
+            bbox_pt=tuple(round(v, 3) for v in bbox),
+            crop_png=str(Path("crops") / rel_crop),
+            text=text,
+            formula=formula_from_text(lines, bbox),
+            mentions=mentions,
+        )
+    )
+
+
 def classify_chart(title: str, text: str) -> str:
-    haystack = f"{title} {text}".lower()
+    haystack = f"{title} {text}".lower().replace("‑", "-").replace("–", "-")
+    haystack = re.sub(r"[-_]+", " ", haystack)
+    haystack = re.sub(r"\s+", " ", haystack)
     if any(word in haystack for word in CAPACITANCE_WORDS):
         return "capacitances"
     if "gate charge" in haystack:
@@ -466,7 +683,8 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
         tmpdir = Path(tmp)
         for page in pages:
             titles = find_diagram_titles(page)
-            if not titles:
+            caption_titles = find_caption_titles(page)
+            if not titles and not caption_titles:
                 continue
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
             rendered = Image.open(page_png)
@@ -474,40 +692,22 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
             v_rules_px, h_rules_px = detect_rule_boxes(page_png)
             v_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in v_rules_px]
             h_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in h_rules_px]
+            grid_regions = infer_grid_regions_from_h_rules(page, h_rules_pt)
 
             lines = group_words_into_lines(page.words)
             for title in titles:
                 bbox = choose_panel_bbox(page, title, titles, v_rules_pt, h_rules_pt)
                 if bbox is None:
                     continue
-                text_words = words_in_bbox(page.words, bbox)
-                text = " ".join(w.text for w in sorted(text_words, key=lambda w: (w.y0, w.x0)))
-                mentions = sorted(
-                    {
-                        w.text
-                        for w in text_words
-                        if w.text.lower().replace("‑", "-").strip(" ,;:()[]") in CAPACITANCE_WORDS
-                        or w.text in {"Ciss", "Coss", "Crss"}
-                    }
-                )
-                kind = classify_chart(title.title, text)
-                rel_crop = Path(pdf.stem) / f"p{page.page_num:02d}_diagram_{title.number:02d}.png"
-                crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
-                panels.append(
-                    ChartPanel(
-                        pdf=str(pdf.resolve()),
-                        part=pdf.name.split(".pdf")[0],
-                        page=page.page_num,
-                        diagram=title.number,
-                        title=title.title,
-                        kind=kind,
-                        bbox_pt=tuple(round(v, 3) for v in bbox),
-                        crop_png=str(Path("crops") / rel_crop),
-                        text=text,
-                        formula=formula_from_text(lines, bbox),
-                        mentions=mentions,
-                    )
-                )
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
+
+            for title in caption_titles:
+                bbox = choose_caption_panel_bbox(page, title, grid_regions)
+                if bbox is None:
+                    continue
+                if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
+                    continue
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
     return panels
 
 
