@@ -30,6 +30,7 @@ The command-line tools require `pdftotext` and `pdftoppm` from Poppler.
 ```bash
 dsdig find /path/to/datasheets/*.pdf --out work/charts
 dsdig digitize-capacitance work/charts/charts.json --out work/charts
+dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
 dsdig digitize-vpl /path/to/datasheet.pdf --datasheet-root /path/to/pwr-mosfet-lib --out work/vpl
 ```
 
@@ -54,6 +55,31 @@ Key outputs:
 - `overlays/...overlay.png`: digitized traces overlaid on the chart.
 - `points/...points.csv`: pixel and calibrated data-space trace points.
 - `capacitance_digitization.json`: diagnostics and validation manifest.
+
+## Coss SPICE Export
+
+For compact storage, keep Coss as adaptive log-space knots rather than a global
+polynomial capacitance fit. For simulator use, integrate those knots to charge:
+
+```text
+digitized Coss(V) -> adaptive log-space Coss knots -> Qoss(V) table -> simulator-specific model
+```
+
+`export-coss-spice` reads the calibrated `Coss` rows from a `.points.csv` file,
+stores compact adaptive knots in `log10(Coss)` versus `log1p(VDS/Vscale)`, then
+integrates that model to a monotone `Qoss(V)` table. It writes:
+
+- `<name>.coss_model.json`: adaptive Coss knots plus the derived table.
+- `<name>.qoss_table.csv`: `VDS`, `Coss`, `Qoss`, and `Eoss` samples.
+- `<name>.qoss_table.cir`: a QSPICE-oriented behavioral current-source snippet
+  using `I = ddt(Qoss(VDS))`.
+
+The `.cir` snippet uses QSPICE/LTspice-style `table()` syntax, but it is not an
+LTspice switching-loss validation artifact. In the dcdc-tools loss harness,
+LTspice over-counted switching loss with behavioral charge models during fast
+Coss rings; QSPICE handled the same charge formulation correctly. Treat the
+JSON/CSV outputs as the portable source of truth and build simulator-specific
+primitive or fitted models from them when needed.
 
 ## Local Regression Corpus
 
