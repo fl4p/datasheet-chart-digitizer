@@ -94,6 +94,32 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 6)
         self.assertEqual(titles[0].title, "Gate Charge")
 
+    def test_accepts_decimal_dynamic_input_output_caption(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Fig.", 120, 250, 142, 260),
+                find_charts.Word("8.13", 146, 250, 170, 260),
+                find_charts.Word("Capacitance", 174, 250, 240, 260),
+                find_charts.Word("-", 244, 250, 250, 260),
+                find_charts.Word("V", 254, 250, 262, 260),
+                find_charts.Word("DS", 263, 250, 275, 260),
+                find_charts.Word("Fig.", 330, 250, 352, 260),
+                find_charts.Word("8.14", 356, 250, 380, 260),
+                find_charts.Word("Dynamic", 384, 250, 430, 260),
+                find_charts.Word("Input/Output", 434, 250, 512, 260),
+                find_charts.Word("Characteristics", 516, 250, 590, 260),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].number, 814)
+        self.assertEqual(titles[0].title, "Dynamic Input/Output Characteristics")
+
     def test_accepts_wrapped_gate_charge_caption(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -223,6 +249,84 @@ class CaptionTitleTests(unittest.TestCase):
         assert bbox is not None
         self.assertLess(bbox[1], title.bbox_pt[1])
         self.assertLess(bbox[3], title.bbox_pt[1])
+
+    def test_gate_charge_axis_label_span_is_local_on_shared_line(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("V", 120, 300, 126, 310),
+                find_charts.Word("DS", 127, 300, 140, 310),
+                find_charts.Word(",", 141, 300, 143, 310),
+                find_charts.Word("DRAIN-TO-SOURCE", 146, 300, 240, 310),
+                find_charts.Word("VOLTAGE", 243, 300, 292, 310),
+                find_charts.Word("(V)", 295, 300, 315, 310),
+                find_charts.Word("Q", 382, 300, 390, 310),
+                find_charts.Word("G", 391, 300, 398, 310),
+                find_charts.Word(",", 399, 300, 401, 310),
+                find_charts.Word("TOTAL", 404, 300, 440, 310),
+                find_charts.Word("GATE", 443, 300, 472, 310),
+                find_charts.Word("CHARGE", 475, 300, 525, 310),
+                find_charts.Word("(nC)", 528, 300, 558, 310),
+            ],
+        )
+
+        spans = find_charts.gate_charge_axis_label_spans(page)
+
+        self.assertEqual(len(spans), 1)
+        self.assertGreater(spans[0][0], 370)
+        self.assertLess(spans[0][2], 565)
+
+    def test_axis_label_grid_bbox_binds_to_plot_above(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+
+        bbox = find_charts.choose_axis_label_grid_bbox(
+            page,
+            (382.0, 300.0, 558.0, 310.0),
+            [
+                (95.0, 100.0, 305.0, 285.0),
+                (340.0, 100.0, 550.0, 285.0),
+                (340.0, 390.0, 550.0, 520.0),
+            ],
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[0], 340.0)
+        self.assertGreater(bbox[2], 550.0)
+        self.assertLess(bbox[1], 105.0)
+        self.assertGreater(bbox[3], 285.0)
+
+    def test_axis_label_synthetic_bbox_covers_plot_above_light_grid(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+
+        bbox = find_charts.choose_axis_label_synthetic_bbox(page, (260.0, 347.0, 347.0, 356.0))
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLessEqual(bbox[0], 205.0)
+        self.assertGreaterEqual(bbox[2], 402.0)
+        self.assertLessEqual(bbox[1], 158.0)
+        self.assertGreaterEqual(bbox[3], 343.0)
+
+    def test_caption_synthetic_bbox_covers_plot_below_light_grid(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        title = find_charts.DiagramTitle(
+            number=7,
+            title="Gate charge vs gate-source voltage",
+            bbox_pt=(73.0, 94.0, 295.0, 103.0),
+            line_text="Figure 7. Gate charge vs gate-source voltage",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLessEqual(bbox[0], 127.0)
+        self.assertGreaterEqual(bbox[2], 262.0)
+        self.assertLessEqual(bbox[1], 132.0)
+        self.assertGreaterEqual(bbox[3], 264.0)
 
 
 if __name__ == "__main__":

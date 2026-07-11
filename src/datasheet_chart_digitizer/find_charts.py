@@ -24,8 +24,8 @@ from PIL import Image
 
 
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
-FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+)[\.:]?\s*(.*)$", re.IGNORECASE)
-COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
+FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:\.\d+)?)[\.:]?\s*(.*)$", re.IGNORECASE)
+COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:\.\d+)?)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
 CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
 
 
@@ -203,12 +203,12 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
         if lower in {"figure", "fig"} and idx + 1 < len(line):
-            if re.match(r"^\d+[\.:]?$", line[idx + 1].text):
+            if re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx + 1].text):
                 starts.append(idx)
             continue
 
         if lower in {"typ", "typical", "typicaly", "typycal"}:
-            if idx > 0 and re.match(r"^\d+[\.:]?$", line[idx - 1].text.strip()):
+            if idx > 0 and re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx - 1].text.strip()):
                 continue
             tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
             if any(phrase in tail for phrase in ("gate", "capacitance", "breakdown")):
@@ -226,13 +226,13 @@ def _caption_starts(line: list[Word]) -> list[int]:
 def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
     match = FIGURE_RE.match(text)
     if match:
-        return int(match.group(1)), match.group(2).strip()
+        return int(match.group(1).replace(".", "")), match.group(2).strip()
     match = COMPACT_FIGURE_RE.match(text)
     if match:
         title = match.group(2).strip()
         if title.startswith("-"):
             title = title[1:].strip()
-        return int(match.group(1)), title
+        return int(match.group(1).replace(".", "")), title
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[0].isdigit():
         return int(parts[0]), parts[1].strip()
@@ -651,6 +651,52 @@ def _is_gate_charge_axis_label(text: str) -> bool:
     return has_qg and has_charge_unit
 
 
+def _token_norm(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", text.lower().replace("‑", "-").replace("–", "-"))
+
+
+def _is_qg_token_pair(line: list[Word], idx: int) -> bool:
+    token = _token_norm(line[idx].text)
+    if token in {"qg", "qgate", "qgtot", "qtotal"}:
+        return True
+    if token == "q" and idx + 1 < len(line):
+        return _token_norm(line[idx + 1].text) in {"g", "gate", "gtot", "total"}
+    return False
+
+
+def gate_charge_axis_label_spans(page: PageText) -> list[tuple[float, float, float, float]]:
+    """Return local Qg/Gate-Charge axis-label spans.
+
+    Many datasheets put two charts on the same row and pdftotext emits both
+    x-axis labels as one line.  The broad line bbox is not precise enough to
+    decide which plot is the gate-charge plot, so this keeps only the local
+    token span around ``QG ... (nC)`` / ``QG ... Gate Charge``.
+    """
+    spans: list[tuple[float, float, float, float]] = []
+    for line in group_words_into_lines(page.words):
+        for idx, word in enumerate(line):
+            if not _is_qg_token_pair(line, idx):
+                continue
+            selected = [word]
+            saw_charge_or_unit = False
+            for next_word in line[idx + 1 : idx + 9]:
+                norm = _token_norm(next_word.text)
+                if selected and next_word.x0 - selected[-1].x1 > 58.0:
+                    break
+                if norm in {"vds", "vgs", "vdd", "tj", "tc", "id"} and saw_charge_or_unit:
+                    break
+                selected.append(next_word)
+                if "charge" in norm or norm in {"nc", "nanocoulomb", "nanocoulombs"}:
+                    saw_charge_or_unit = True
+                    if norm in {"nc", "nanocoulomb", "nanocoulombs"}:
+                        break
+            text = " ".join(w.text for w in selected)
+            if not _is_gate_charge_axis_label(text):
+                continue
+            spans.append(line_bbox(selected))
+    return spans
+
+
 def choose_caption_axis_label_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -700,6 +746,82 @@ def choose_caption_axis_label_bbox(
         y0 = max(0.0, ty1 + 2.0)
         y1 = min(page.height_pt, ly1 + 18.0)
     if y1 - y0 < 90:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def choose_axis_label_grid_bbox(
+    page: PageText,
+    axis_label_bbox: tuple[float, float, float, float],
+    grid_regions: list[tuple[float, float, float, float]],
+) -> tuple[float, float, float, float] | None:
+    """Bind a local Qg axis label to the plot grid directly above it."""
+    lx0, ly0, lx1, ly1 = axis_label_bbox
+    lcx = 0.5 * (lx0 + lx1)
+    best: tuple[float, tuple[float, float, float, float]] | None = None
+    for region in grid_regions:
+        x0, y0, x1, y1 = region
+        width = x1 - x0
+        if not (x0 - 18.0 <= lcx <= x1 + 18.0):
+            continue
+        if ly0 >= y1:
+            vertical_gap = ly0 - y1
+        elif y0 <= ly0 <= y1:
+            vertical_gap = 0.0
+        else:
+            continue
+        if vertical_gap > 45.0:
+            continue
+        horizontal_penalty = abs(lcx - 0.5 * (x0 + x1))
+        score = vertical_gap + 0.10 * horizontal_penalty
+        if best is None or score < best[0]:
+            best = (score, region)
+    if best is None:
+        return None
+    x0, y0, x1, y1 = best[1]
+    pad_x = min(12.0, (x1 - x0) * 0.04)
+    pad_y = min(12.0, (y1 - y0) * 0.06)
+    return (
+        max(0.0, x0 - pad_x),
+        max(0.0, y0 - pad_y),
+        min(page.width_pt, x1 + pad_x),
+        min(page.height_pt, y1 + pad_y),
+    )
+
+
+def choose_axis_label_synthetic_bbox(
+    page: PageText,
+    axis_label_bbox: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    """Fallback panel around a Qg axis label when plot rules are too light."""
+    lx0, ly0, lx1, ly1 = axis_label_bbox
+    lcx = 0.5 * (lx0 + lx1)
+    label_width = lx1 - lx0
+    half_width = min(max(155.0, label_width * 1.25), page.width_pt * 0.38)
+    x0 = max(0.0, lcx - half_width)
+    x1 = min(page.width_pt, lcx + half_width)
+    y0 = max(0.0, ly0 - 190.0)
+    y1 = min(page.height_pt, ly1 + 22.0)
+    if y1 - y0 < 105.0 or x1 - x0 < 130.0:
+        return None
+    return (x0, y0, x1, y1)
+
+
+def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[float, float, float, float] | None:
+    """Fallback from a gate-charge caption/header when plot rules are absent."""
+    tx0, ty0, tx1, ty1 = title.bbox_pt
+    tcx = 0.5 * (tx0 + tx1)
+    title_width = tx1 - tx0
+    half_width = min(max(170.0, title_width * 0.80), page.width_pt * 0.40)
+    x0 = max(0.0, tcx - half_width)
+    x1 = min(page.width_pt, tcx + half_width)
+    if ty0 < page.height_pt * 0.35:
+        y0 = min(page.height_pt, ty1 + 4.0)
+        y1 = min(page.height_pt, y0 + 215.0)
+    else:
+        y0 = max(0.0, ty1 + 4.0)
+        y1 = min(page.height_pt, y0 + 235.0)
+    if y1 - y0 < 105.0:
         return None
     return (x0, y0, x1, y1)
 
@@ -768,11 +890,13 @@ def _append_panel(
 
 def classify_chart(title: str, text: str) -> str:
     haystack = f"{title} {text}".lower().replace("‑", "-").replace("–", "-")
-    haystack = re.sub(r"[-_]+", " ", haystack)
+    haystack = re.sub(r"[-_/]+", " ", haystack)
     haystack = re.sub(r"\s+", " ", haystack)
     if any(word in haystack for word in CAPACITANCE_WORDS):
         return "capacitances"
     if "gate charge" in haystack:
+        return "gate_charge"
+    if "dynamic input output" in haystack:
         return "gate_charge"
     if "safe operating" in haystack:
         return "safe_operating_area"
@@ -837,7 +961,8 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
         for page in pages:
             titles = find_diagram_titles(page)
             caption_titles = find_caption_titles(page)
-            if not titles and not caption_titles:
+            axis_label_spans = gate_charge_axis_label_spans(page)
+            if not titles and not caption_titles and not axis_label_spans:
                 continue
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
             rendered = Image.open(page_png)
@@ -859,6 +984,8 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
                 axis_label_bbox = choose_caption_axis_label_bbox(page, title)
                 if bbox is None:
                     bbox = axis_label_bbox
+                if bbox is None:
+                    bbox = choose_caption_synthetic_bbox(page, title)
                 elif (
                     axis_label_bbox is not None
                     and _caption_prefers_plot_above(title)
@@ -869,6 +996,22 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
                     continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
+
+            for axis_idx, axis_label_bbox in enumerate(axis_label_spans, start=1):
+                bbox = choose_axis_label_grid_bbox(page, axis_label_bbox, grid_regions)
+                if bbox is None:
+                    bbox = choose_axis_label_synthetic_bbox(page, axis_label_bbox)
+                if bbox is None:
+                    continue
+                if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
+                    continue
+                title = DiagramTitle(
+                    number=950 + axis_idx,
+                    title="Gate charge",
+                    bbox_pt=axis_label_bbox,
+                    line_text=" ".join(w.text for w in words_in_bbox(page.words, axis_label_bbox)),
+                )
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
     return panels
 
