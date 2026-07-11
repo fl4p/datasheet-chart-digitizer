@@ -167,6 +167,52 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 901)
         self.assertEqual(titles[0].title, "Typ. gate charge")
 
+    def test_splits_paired_typ_gate_charge_and_breakdown_headers(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Typ.", 120, 450, 145, 462),
+                find_charts.Word("gate", 150, 450, 178, 462),
+                find_charts.Word("charge", 182, 450, 225, 462),
+                find_charts.Word("Drain-source", 340, 450, 405, 462),
+                find_charts.Word("breakdown", 410, 450, 470, 462),
+                find_charts.Word("voltage", 475, 450, 520, 462),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].title, "Typ. gate charge")
+        self.assertLess(titles[0].bbox_pt[2], 230)
+
+    def test_splits_gate_charge_characteristic_from_transfer_header(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Transfer", 40, 430, 95, 442),
+                find_charts.Word("characteristic", 100, 430, 178, 442),
+                find_charts.Word("(typical),", 183, 430, 240, 442),
+                find_charts.Word("IGBT,", 245, 430, 280, 442),
+                find_charts.Word("T1", 285, 430, 300, 442),
+                find_charts.Word("/", 305, 430, 310, 442),
+                find_charts.Word("T4", 315, 430, 330, 442),
+                find_charts.Word("Gate", 360, 430, 390, 442),
+                find_charts.Word("charge", 395, 430, 435, 442),
+                find_charts.Word("characteristic", 440, 430, 520, 442),
+                find_charts.Word("(typical),", 525, 430, 580, 442),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].title, "Gate charge characteristic (typical),")
+
     def test_caption_axis_label_fallback_synthesizes_panel(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -250,6 +296,39 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertLess(bbox[1], title.bbox_pt[1])
         self.assertLess(bbox[3], title.bbox_pt[1])
 
+    def test_formula_below_caption_prefers_lower_plot_with_larger_gap(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("15", 60, 448, 72, 457),
+                find_charts.Word("Typ.", 76, 448, 105, 457),
+                find_charts.Word("gate", 110, 448, 138, 457),
+                find_charts.Word("charge", 143, 448, 185, 457),
+                find_charts.Word("V", 60, 467, 68, 477),
+                find_charts.Word("GS", 69, 467, 84, 477),
+                find_charts.Word("=", 88, 467, 95, 477),
+                find_charts.Word("f(Q", 100, 467, 118, 477),
+                find_charts.Word("gate", 119, 467, 145, 477),
+                find_charts.Word(")", 146, 467, 150, 477),
+            ],
+        )
+        title = find_charts.find_caption_titles(page)[0]
+
+        bbox = find_charts.choose_caption_panel_bbox(
+            page,
+            title,
+            [
+                (100.0, 170.0, 284.0, 401.0),
+                (100.0, 628.0, 283.0, 744.0),
+            ],
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(bbox[1], title.bbox_pt[3])
+
     def test_gate_charge_axis_label_span_is_local_on_shared_line(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -327,6 +406,22 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertGreaterEqual(bbox[2], 262.0)
         self.assertLessEqual(bbox[1], 132.0)
         self.assertGreaterEqual(bbox[3], 264.0)
+
+    def test_caption_synthetic_bbox_uses_above_plot_for_midpage_figure_caption(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        title = find_charts.DiagramTitle(
+            number=10,
+            title="Gate Charge Characteristics",
+            bbox_pt=(380.0, 344.0, 528.0, 358.0),
+            line_text="10 Gate Charge Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLessEqual(bbox[1], 146.0)
+        self.assertGreaterEqual(bbox[3], 340.0)
 
 
 if __name__ == "__main__":

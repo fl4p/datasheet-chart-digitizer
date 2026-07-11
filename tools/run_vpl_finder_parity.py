@@ -35,13 +35,7 @@ EXPECTED_PACKAGED_FINDER_MISSES = {
     # Current state before consolidating dslib.viz into this package.  These are
     # mostly non-Infineon caption/layout styles that dslib.viz handles with its
     # Vpl-specific title/axis heuristics.
-    "PSMN1R2-55SLH",
-    "AGM025N13LL",
-    "SIHD6N65ET4-GE3-HXY",
-    "IAUC28N08S5L230ATMA1",
-    "F3L3MR12W3M1HH11BPSA1",
     # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
-    "PSMN3R3-80BS,118",
     "IPI65R190CFD",
 }
 
@@ -65,6 +59,37 @@ def _center_inside(bbox: tuple[float, float, float, float], point: tuple[float, 
     x0, y0, x1, y1 = bbox
     x, y = point
     return x0 <= x <= x1 and y0 <= y <= y1
+
+
+def _overlap_1d(a0: float, a1: float, b0: float, b1: float) -> float:
+    return max(0.0, min(a1, b1) - max(a0, b0))
+
+
+def _overlap_fraction(
+    a: tuple[float, float, float, float],
+    b: tuple[float, float, float, float],
+) -> float:
+    ax0, ay0, ax1, ay1 = a
+    bx0, by0, bx1, by1 = b
+    inter = _overlap_1d(ax0, ax1, bx0, bx1) * _overlap_1d(ay0, ay1, by0, by1)
+    if inter <= 0.0:
+        return 0.0
+    area_a = max(1e-9, (ax1 - ax0) * (ay1 - ay0))
+    area_b = max(1e-9, (bx1 - bx0) * (by1 - by0))
+    return inter / min(area_a, area_b)
+
+
+def _panel_matches_legacy(
+    panel_bbox: tuple[float, float, float, float],
+    legacy_bbox: tuple[float, float, float, float],
+    legacy_center: tuple[float, float],
+) -> bool:
+    if _center_inside(panel_bbox, legacy_center):
+        return True
+    # dslib.viz sometimes returns one broad row bbox spanning two side-by-side
+    # plots.  A packaged panel that strongly overlaps that row is still a valid
+    # finder match even when the broad legacy center falls between the plots.
+    return _overlap_fraction(panel_bbox, legacy_bbox) >= 0.35
 
 
 def _pick_legacy_hit(hits: list[tuple[Any, Any, str | None]], ref_vpl: float | None) -> tuple[Any, Any, str | None] | None:
@@ -167,7 +192,7 @@ def run_parity(
             matching = [
                 panel
                 for panel in packaged
-                if panel.page == legacy_page and _center_inside(panel.bbox_pt, legacy_center)
+                if panel.page == legacy_page and _panel_matches_legacy(panel.bbox_pt, legacy_bbox, legacy_center)
             ]
             status = "match" if matching else "missing"
             if strict and not matching:

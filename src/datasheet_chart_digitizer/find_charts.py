@@ -215,6 +215,21 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
 
+        if lower.startswith("drain-source"):
+            tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
+            if "breakdown" in tail:
+                starts.append(idx)
+            continue
+
+        if lower == "gate" and idx + 1 < len(line):
+            tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
+            prev = _token_norm(line[idx - 1].text) if idx > 0 else ""
+            prev_prev = _token_norm(line[idx - 2].text) if idx > 1 else ""
+            follows_figure_number = bool(re.match(r"^\d+$", prev) and prev_prev in {"fig", "figure"})
+            if "charge" in tail and "characteristic" in tail and not follows_figure_number:
+                starts.append(idx)
+            continue
+
         if not token.isdigit() or idx + 1 >= len(line):
             continue
         tail = " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
@@ -236,6 +251,8 @@ def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[0].isdigit():
         return int(parts[0]), parts[1].strip()
+    if re.match(r"(?i)^gate\s+charge\b", text):
+        return None, text.strip()
     if re.match(r"(?i)^Typ(?:ical|ycal)?\.?\s+", text):
         return None, text.strip()
     return None
@@ -590,6 +607,20 @@ def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitl
     return False
 
 
+def _has_gate_charge_formula_below_caption(page: PageText, title: DiagramTitle) -> bool:
+    tx0, ty0, tx1, ty1 = title.bbox_pt
+    for line in group_words_into_lines(page.words):
+        lx0, ly0, lx1, ly1 = line_bbox(line)
+        if not (ty1 <= ly0 <= ty1 + 38.0):
+            continue
+        if _overlap_1d(tx0, tx1, lx0, lx1) < max(8.0, min(tx1 - tx0, lx1 - lx0) * 0.20):
+            continue
+        normalized = _token_norm(line_text(line))
+        if "fqg" in normalized or "fqgate" in normalized or "vgsfq" in normalized or "vgefq" in normalized:
+            return True
+    return False
+
+
 def choose_caption_panel_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -599,6 +630,8 @@ def choose_caption_panel_bbox(
     tcx = (tx0 + tx1) / 2
     best: tuple[float, tuple[float, float, float, float]] | None = None
     candidates = []
+    has_formula_below = _has_gate_charge_formula_below_caption(page, title)
+    max_vertical_gap = 220.0 if has_formula_below else 85.0
     for region in grid_regions:
         x0, y0, x1, y1 = region
         rcx = (x0 + x1) / 2
@@ -612,7 +645,7 @@ def choose_caption_panel_bbox(
             vertical_gap = ty0 - y1
         else:
             vertical_gap = 0.0
-        if vertical_gap > 85:
+        if vertical_gap > max_vertical_gap:
             continue
         candidates.append((horizontal_penalty, vertical_gap, region))
 
@@ -624,6 +657,10 @@ def choose_caption_panel_bbox(
         above = [item for item in candidates if item[2][3] <= ty0]
         if above:
             candidates = above
+    elif has_formula_below:
+        below = [item for item in candidates if item[2][1] >= ty1]
+        if below:
+            candidates = below
 
     for horizontal_penalty, vertical_gap, region in candidates:
         score = vertical_gap + 0.25 * horizontal_penalty
@@ -815,7 +852,10 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
     half_width = min(max(170.0, title_width * 0.80), page.width_pt * 0.40)
     x0 = max(0.0, tcx - half_width)
     x1 = min(page.width_pt, tcx + half_width)
-    if ty0 < page.height_pt * 0.35:
+    if _caption_prefers_plot_above(title) and ty0 > page.height_pt * 0.40:
+        y0 = max(0.0, ty0 - 215.0)
+        y1 = max(0.0, ty0 - 4.0)
+    elif ty0 < page.height_pt * 0.35:
         y0 = min(page.height_pt, ty1 + 4.0)
         y1 = min(page.height_pt, y0 + 215.0)
     else:
