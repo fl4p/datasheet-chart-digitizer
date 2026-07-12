@@ -52,6 +52,31 @@ class QossTable:
     co_er_pf: float
 
 
+@dataclass(frozen=True)
+class ExportJob:
+    """One Coss export input discovered from a points CSV or manifest."""
+
+    points_csv: Path
+    name: str
+
+
+@dataclass(frozen=True)
+class ExportResult:
+    """Summary of files and fit quality written for one exported curve."""
+
+    name: str
+    points_csv: str
+    model_json: str
+    qoss_csv: str
+    spice_cir: str
+    knots: int
+    source_points: int
+    achieved_max_rel_error: float
+    qoss_pc: float
+    co_tr_pf: float
+    co_er_pf: float
+
+
 SPICE_ENGINE_NOTE = (
     "QSPICE-oriented behavioral charge-current snippet. LTspice can over-count "
     "switching loss with behavioral charge models during fast Coss rings; use "
@@ -258,6 +283,70 @@ def write_spice(path: Path, model_name: str, table: QossTable, *, drain: str = "
     path.write_text(spice_qoss_table(model_name, table, drain=drain, source=source))
 
 
+def discover_export_jobs(input_path: Path) -> list[ExportJob]:
+    """Discover Coss export jobs from a points CSV, manifest JSON, or output dir."""
+
+    if input_path.is_dir():
+        manifest = input_path / "capacitance_digitization.json"
+        if manifest.exists():
+            return _jobs_from_manifest(manifest)
+        jobs = [ExportJob(path, _default_name_for_points(path)) for path in sorted(input_path.rglob("*.points.csv"))]
+        return _dedupe_job_names(jobs)
+    if input_path.suffix.lower() == ".json":
+        return _jobs_from_manifest(input_path)
+    return [ExportJob(input_path, _default_name_for_points(input_path))]
+
+
+def export_coss_points(
+    points_csv: Path,
+    out_dir: Path,
+    *,
+    name: str,
+    trace: str = "Coss",
+    max_rel_error: float = 0.02,
+    max_knots: int = 256,
+    table_points: int = 256,
+    vmax: float | None = None,
+    drain: str = "d",
+    source: str = "s",
+) -> ExportResult:
+    """Export one calibrated points CSV to JSON, Qoss CSV, and SPICE files."""
+
+    vds, coss = load_coss_points_csv(points_csv, trace)
+    model = build_adaptive_coss_model(
+        vds,
+        coss,
+        max_rel_error=max_rel_error,
+        max_knots=max_knots,
+    )
+    table = build_qoss_table(model, v_max=vmax, samples=table_points)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    safe = _safe_name(name)
+    model_json = out_dir / f"{safe}.coss_model.json"
+    qoss_csv = out_dir / f"{safe}.qoss_table.csv"
+    spice_cir = out_dir / f"{safe}.qoss_table.cir"
+    write_model_json(model_json, model, table)
+    write_qoss_csv(qoss_csv, table)
+    write_spice(spice_cir, name, table, drain=drain, source=source)
+    return ExportResult(
+        name=name,
+        points_csv=str(points_csv),
+        model_json=str(model_json),
+        qoss_csv=str(qoss_csv),
+        spice_cir=str(spice_cir),
+        knots=len(model.vds),
+        source_points=model.source_points,
+        achieved_max_rel_error=model.achieved_max_rel_error,
+        qoss_pc=table.qoss_pc,
+        co_tr_pf=table.co_tr_pf,
+        co_er_pf=table.co_er_pf,
+    )
+
+
+def write_export_manifest(path: Path, results: list[ExportResult]) -> None:
+    path.write_text(json.dumps([asdict(result) for result in results], indent=2) + "\n")
+
+
 def _z_of_v(vds: np.ndarray, v_scale: float) -> np.ndarray:
     return np.log1p(np.maximum(vds, 0.0) / float(v_scale))
 
@@ -277,11 +366,62 @@ def _safe_name(name: str) -> str:
     return safe.strip("_") or "coss"
 
 
+def _jobs_from_manifest(manifest_path: Path) -> list[ExportJob]:
+    payload = json.loads(manifest_path.read_text())
+    if not isinstance(payload, list):
+        raise ValueError(f"{manifest_path} is not a capacitance digitization manifest")
+    root = manifest_path.parent
+    jobs: list[ExportJob] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        points = row.get("points")
+        if not points:
+            continue
+        points_path = Path(str(points))
+        if not points_path.is_absolute():
+            points_path = root / points_path
+        part = str(row.get("part") or points_path.parent.name)
+        diagram = str(row.get("diagram") or points_path.stem.replace(".points", ""))
+        jobs.append(ExportJob(points_path, _manifest_job_name(part, diagram)))
+    return _dedupe_job_names(jobs)
+
+
+def _manifest_job_name(part: str, diagram: str) -> str:
+    diagram = diagram.strip()
+    if not diagram:
+        return part
+    return f"{part}_{diagram}"
+
+
+def _default_name_for_points(points_csv: Path) -> str:
+    stem = points_csv.stem.replace(".points", "")
+    part = points_csv.parent.name
+    if part and part != "points":
+        return f"{part}_{stem}"
+    return stem or points_csv.parent.name
+
+
+def _dedupe_job_names(jobs: list[ExportJob]) -> list[ExportJob]:
+    seen: dict[str, int] = {}
+    deduped: list[ExportJob] = []
+    for job in jobs:
+        count = seen.get(job.name, 0)
+        seen[job.name] = count + 1
+        name = job.name if count == 0 else f"{job.name}_{count + 1}"
+        deduped.append(ExportJob(job.points_csv, name))
+    return deduped
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export digitized Coss(V) as adaptive knots and a SPICE Qoss table.")
-    parser.add_argument("points_csv", type=Path, help="Digitizer .points.csv file containing calibrated Coss rows.")
+    parser.add_argument(
+        "input_path",
+        type=Path,
+        help="Digitizer .points.csv, capacitance_digitization.json manifest, or digitizer output directory.",
+    )
     parser.add_argument("--out", type=Path, required=True, help="Output directory for JSON/CSV/SPICE files.")
-    parser.add_argument("--name", default=None, help="Model name; defaults to the points CSV parent part name.")
+    parser.add_argument("--name", default=None, help="Model name for single points CSV input.")
     parser.add_argument("--trace", default="Coss", help="Trace name to export, default Coss.")
     parser.add_argument("--max-rel-error", type=float, default=0.02, help="Adaptive Coss knot target relative error.")
     parser.add_argument("--max-knots", type=int, default=256, help="Maximum adaptive Coss knots.")
@@ -294,24 +434,35 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    vds, coss = load_coss_points_csv(args.points_csv, args.trace)
-    model = build_adaptive_coss_model(
-        vds,
-        coss,
-        max_rel_error=args.max_rel_error,
-        max_knots=args.max_knots,
-    )
-    table = build_qoss_table(model, v_max=args.vmax, samples=args.table_points)
-    name = args.name or args.points_csv.parent.name
-    args.out.mkdir(parents=True, exist_ok=True)
-    write_model_json(args.out / f"{_safe_name(name)}.coss_model.json", model, table)
-    write_qoss_csv(args.out / f"{_safe_name(name)}.qoss_table.csv", table)
-    write_spice(args.out / f"{_safe_name(name)}.qoss_table.cir", name, table, drain=args.drain, source=args.source)
-    print(
-        f"{name}: knots={len(model.vds)} source_points={model.source_points} "
-        f"max_err={100 * model.achieved_max_rel_error:.2f}% "
-        f"Qoss={table.qoss_pc:.3g} pC Co(tr)={table.co_tr_pf:.3g} pF"
-    )
+    jobs = discover_export_jobs(args.input_path)
+    if args.name is not None and len(jobs) != 1:
+        raise SystemExit("--name can only be used with a single points CSV input")
+    if not jobs:
+        raise SystemExit(f"no .points.csv inputs found in {args.input_path}")
+    results: list[ExportResult] = []
+    for job in jobs:
+        name = args.name or job.name
+        result = export_coss_points(
+            job.points_csv,
+            args.out,
+            name=name,
+            trace=args.trace,
+            max_rel_error=args.max_rel_error,
+            max_knots=args.max_knots,
+            table_points=args.table_points,
+            vmax=args.vmax,
+            drain=args.drain,
+            source=args.source,
+        )
+        results.append(result)
+        print(
+            f"{name}: knots={result.knots} source_points={result.source_points} "
+            f"max_err={100 * result.achieved_max_rel_error:.2f}% "
+            f"Qoss={result.qoss_pc:.3g} pC Co(tr)={result.co_tr_pf:.3g} pF"
+        )
+    if len(results) > 1:
+        write_export_manifest(args.out / "coss_export_manifest.json", results)
+        print(f"wrote {args.out / 'coss_export_manifest.json'}")
 
 
 if __name__ == "__main__":

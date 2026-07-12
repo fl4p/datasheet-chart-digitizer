@@ -31,6 +31,7 @@ The command-line tools require `pdftotext` and `pdftoppm` from Poppler.
 dsdig find /path/to/datasheets/*.pdf --out work/charts
 dsdig digitize-capacitance work/charts/charts.json --out work/charts
 dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
+dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
 dsdig digitize-vpl /path/to/datasheet.pdf --datasheet-root /path/to/pwr-mosfet-lib --out work/vpl
 ```
 
@@ -66,13 +67,19 @@ digitized Coss(V) -> adaptive log-space Coss knots -> Qoss(V) table -> simulator
 ```
 
 `export-coss-spice` reads the calibrated `Coss` rows from a `.points.csv` file,
-stores compact adaptive knots in `log10(Coss)` versus `log1p(VDS/Vscale)`, then
-integrates that model to a monotone `Qoss(V)` table. It writes:
+from a `capacitance_digitization.json` manifest, or from a digitizer output
+directory. It stores compact adaptive knots in `log10(Coss)` versus
+`log1p(VDS/Vscale)`, then integrates that model to a monotone `Qoss(V)` table.
+For each exported curve it writes:
 
 - `<name>.coss_model.json`: adaptive Coss knots plus the derived table.
 - `<name>.qoss_table.csv`: `VDS`, `Coss`, `Qoss`, and `Eoss` samples.
 - `<name>.qoss_table.cir`: a QSPICE-oriented behavioral current-source snippet
   using `I = ddt(Qoss(VDS))`.
+
+When the input is a manifest or directory, all discovered `.points.csv` files
+are exported and `coss_export_manifest.json` records the generated paths plus
+fit error and effective-capacitance summary values.
 
 The `.cir` snippet uses QSPICE/LTspice-style `table()` syntax, but it is not an
 LTspice switching-loss validation artifact. In the dcdc-tools loss harness,
