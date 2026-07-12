@@ -462,6 +462,8 @@ def main() -> None:
         raise SystemExit("--name can only be used with a single points CSV input")
     if not jobs:
         raise SystemExit(f"no .points.csv inputs found in {args.input_path}")
+    if batch_input:
+        args.out.mkdir(parents=True, exist_ok=True)
     results: list[ExportResult] = []
     errors: list[ExportError] = []
     for job in jobs:

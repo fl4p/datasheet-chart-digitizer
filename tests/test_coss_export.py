@@ -302,6 +302,95 @@ class CossExportTests(unittest.TestCase):
             payload = json.loads((out / "coss_export_manifest.json").read_text())
             self.assertEqual([row["name"] for row in payload], ["GOOD_diagram_02"])
 
+    def test_batch_writes_error_manifest_for_bad_export_rows(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "points" / "crops" / "GOOD" / "p01_diagram_02.points.csv"
+            bad = root / "points" / "crops" / "BAD" / "p01_diagram_02.points.csv"
+            _write_points(good)
+            _write_blank_physical_points(bad)
+            manifest = root / "capacitance_digitization.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "part": "BAD",
+                            "diagram": "diagram_02",
+                            "points": str(bad.relative_to(root)),
+                            "axis_calibration_trusted": True,
+                        },
+                        {
+                            "part": "GOOD",
+                            "diagram": "diagram_02",
+                            "points": str(good.relative_to(root)),
+                            "axis_calibration_trusted": True,
+                        },
+                    ]
+                )
+                + "\n"
+            )
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(manifest),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            exported = json.loads((out / "coss_export_manifest.json").read_text())
+            errors = json.loads((out / "coss_export_errors.json").read_text())
+            self.assertEqual([row["name"] for row in exported], ["GOOD_diagram_02"])
+            self.assertEqual([row["name"] for row in errors], ["BAD_diagram_02"])
+
+    def test_all_bad_batch_still_writes_error_manifest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad = root / "points" / "crops" / "BAD" / "p01_diagram_02.points.csv"
+            _write_blank_physical_points(bad)
+            manifest = root / "capacitance_digitization.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "part": "BAD",
+                            "diagram": "diagram_02",
+                            "points": str(bad.relative_to(root)),
+                            "axis_calibration_trusted": True,
+                        }
+                    ]
+                )
+                + "\n"
+            )
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(manifest),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 1)
+            self.assertEqual(json.loads((out / "coss_export_manifest.json").read_text()), [])
+            errors = json.loads((out / "coss_export_errors.json").read_text())
+            self.assertEqual([row["name"] for row in errors], ["BAD_diagram_02"])
+
 
 def _write_points(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
