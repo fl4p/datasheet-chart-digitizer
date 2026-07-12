@@ -159,6 +159,150 @@ class CossExportTests(unittest.TestCase):
                 self.assertTrue(Path(row["qoss_csv"]).exists())
                 self.assertTrue(Path(row["spice_cir"]).exists())
 
+    def test_single_points_csv_default_name_keeps_parent_part(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = root / "PART1" / "p01_diagram_02.points.csv"
+            _write_points(points)
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(points),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertTrue((out / "PART1.coss_model.json").exists())
+            self.assertFalse((out / "PART1_p01_diagram_02.coss_model.json").exists())
+
+    def test_batch_names_are_deduped_after_filename_sanitizing(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = []
+            for part in ("PART-A", "PART_A"):
+                points = root / "points" / "crops" / part / "p01_diagram_02.points.csv"
+                _write_points(points)
+                rows.append({"part": part, "diagram": "diagram_02", "points": str(points.relative_to(root))})
+            manifest = root / "capacitance_digitization.json"
+            manifest.write_text(json.dumps(rows) + "\n")
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(manifest),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads((out / "coss_export_manifest.json").read_text())
+            model_paths = [row["model_json"] for row in payload]
+            self.assertEqual(len(model_paths), len(set(model_paths)))
+            self.assertTrue((out / "PART_A_diagram_02.coss_model.json").exists())
+            self.assertTrue((out / "PART_A_diagram_02_2.coss_model.json").exists())
+
+    def test_single_row_manifest_still_writes_export_manifest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            points = root / "points" / "crops" / "PART1" / "p01_diagram_02.points.csv"
+            _write_points(points)
+            manifest = root / "capacitance_digitization.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "part": "PART1",
+                            "diagram": "diagram_02",
+                            "points": str(points.relative_to(root)),
+                        }
+                    ]
+                )
+                + "\n"
+            )
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(manifest),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads((out / "coss_export_manifest.json").read_text())
+            self.assertEqual(len(payload), 1)
+
+    def test_manifest_skips_untrusted_axis_rows(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            good = root / "points" / "crops" / "GOOD" / "p01_diagram_02.points.csv"
+            bad = root / "points" / "crops" / "BAD" / "p01_diagram_02.points.csv"
+            _write_points(good)
+            _write_blank_physical_points(bad)
+            manifest = root / "capacitance_digitization.json"
+            manifest.write_text(
+                json.dumps(
+                    [
+                        {
+                            "part": "BAD",
+                            "diagram": "diagram_02",
+                            "points": str(bad.relative_to(root)),
+                            "axis_calibration_trusted": False,
+                        },
+                        {
+                            "part": "GOOD",
+                            "diagram": "diagram_02",
+                            "points": str(good.relative_to(root)),
+                            "axis_calibration_trusted": True,
+                        },
+                    ]
+                )
+                + "\n"
+            )
+            out = root / "out"
+
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    "-m",
+                    "datasheet_chart_digitizer.coss_export",
+                    str(manifest),
+                    "--out",
+                    str(out),
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads((out / "coss_export_manifest.json").read_text())
+            self.assertEqual([row["name"] for row in payload], ["GOOD_diagram_02"])
+
+
 def _write_points(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="") as f:
@@ -166,6 +310,15 @@ def _write_points(path: Path) -> None:
         writer.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis", "vds_V", "cap_pF"])
         for idx, v in enumerate(np.linspace(0.0, 20.0, 80)):
             writer.writerow(["Coss", idx, idx, "", "", v, 500.0 / math.sqrt(1.0 + v)])
+
+
+def _write_blank_physical_points(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis", "vds_V", "cap_pF"])
+        for idx in range(4):
+            writer.writerow(["Coss", idx, idx, "", "", "", ""])
 
 
 if __name__ == "__main__":

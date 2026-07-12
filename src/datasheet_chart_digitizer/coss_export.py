@@ -77,6 +77,15 @@ class ExportResult:
     co_er_pf: float
 
 
+@dataclass(frozen=True)
+class ExportError:
+    """One failed Coss export in a batch run."""
+
+    name: str
+    points_csv: str
+    error: str
+
+
 SPICE_ENGINE_NOTE = (
     "QSPICE-oriented behavioral charge-current snippet. LTspice can over-count "
     "switching loss with behavioral charge models during fast Coss rings; use "
@@ -294,7 +303,7 @@ def discover_export_jobs(input_path: Path) -> list[ExportJob]:
         return _dedupe_job_names(jobs)
     if input_path.suffix.lower() == ".json":
         return _jobs_from_manifest(input_path)
-    return [ExportJob(input_path, _default_name_for_points(input_path))]
+    return [ExportJob(input_path, _single_file_default_name(input_path))]
 
 
 def export_coss_points(
@@ -347,6 +356,10 @@ def write_export_manifest(path: Path, results: list[ExportResult]) -> None:
     path.write_text(json.dumps([asdict(result) for result in results], indent=2) + "\n")
 
 
+def write_export_errors(path: Path, errors: list[ExportError]) -> None:
+    path.write_text(json.dumps([asdict(error) for error in errors], indent=2) + "\n")
+
+
 def _z_of_v(vds: np.ndarray, v_scale: float) -> np.ndarray:
     return np.log1p(np.maximum(vds, 0.0) / float(v_scale))
 
@@ -375,6 +388,8 @@ def _jobs_from_manifest(manifest_path: Path) -> list[ExportJob]:
     for row in payload:
         if not isinstance(row, dict):
             continue
+        if row.get("axis_calibration_trusted") is False:
+            continue
         points = row.get("points")
         if not points:
             continue
@@ -402,13 +417,20 @@ def _default_name_for_points(points_csv: Path) -> str:
     return stem or points_csv.parent.name
 
 
+def _single_file_default_name(points_csv: Path) -> str:
+    return points_csv.parent.name or points_csv.stem.replace(".points", "")
+
+
 def _dedupe_job_names(jobs: list[ExportJob]) -> list[ExportJob]:
-    seen: dict[str, int] = {}
+    used_safe: set[str] = set()
     deduped: list[ExportJob] = []
     for job in jobs:
-        count = seen.get(job.name, 0)
-        seen[job.name] = count + 1
-        name = job.name if count == 0 else f"{job.name}_{count + 1}"
+        name = job.name
+        suffix = 2
+        while _safe_name(name) in used_safe:
+            name = f"{job.name}_{suffix}"
+            suffix += 1
+        used_safe.add(_safe_name(name))
         deduped.append(ExportJob(job.points_csv, name))
     return deduped
 
@@ -434,35 +456,48 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    batch_input = args.input_path.is_dir() or args.input_path.suffix.lower() == ".json"
     jobs = discover_export_jobs(args.input_path)
-    if args.name is not None and len(jobs) != 1:
+    if args.name is not None and batch_input:
         raise SystemExit("--name can only be used with a single points CSV input")
     if not jobs:
         raise SystemExit(f"no .points.csv inputs found in {args.input_path}")
     results: list[ExportResult] = []
+    errors: list[ExportError] = []
     for job in jobs:
         name = args.name or job.name
-        result = export_coss_points(
-            job.points_csv,
-            args.out,
-            name=name,
-            trace=args.trace,
-            max_rel_error=args.max_rel_error,
-            max_knots=args.max_knots,
-            table_points=args.table_points,
-            vmax=args.vmax,
-            drain=args.drain,
-            source=args.source,
-        )
+        try:
+            result = export_coss_points(
+                job.points_csv,
+                args.out,
+                name=name,
+                trace=args.trace,
+                max_rel_error=args.max_rel_error,
+                max_knots=args.max_knots,
+                table_points=args.table_points,
+                vmax=args.vmax,
+                drain=args.drain,
+                source=args.source,
+            )
+        except Exception as exc:
+            if not batch_input:
+                raise
+            errors.append(ExportError(name=name, points_csv=str(job.points_csv), error=str(exc)))
+            print(f"{name}: ERROR {exc}")
+            continue
         results.append(result)
         print(
             f"{name}: knots={result.knots} source_points={result.source_points} "
             f"max_err={100 * result.achieved_max_rel_error:.2f}% "
             f"Qoss={result.qoss_pc:.3g} pC Co(tr)={result.co_tr_pf:.3g} pF"
         )
-    if len(results) > 1:
+    if batch_input:
         write_export_manifest(args.out / "coss_export_manifest.json", results)
         print(f"wrote {args.out / 'coss_export_manifest.json'}")
+        if errors:
+            write_export_errors(args.out / "coss_export_errors.json", errors)
+            print(f"wrote {args.out / 'coss_export_errors.json'}")
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":
