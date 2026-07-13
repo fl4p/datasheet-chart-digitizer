@@ -8,6 +8,7 @@ def main() -> None:
         "find": "find chart panels and emit charts.json",
         "digitize-capacitance": "digitize MOSFET Ciss/Coss/Crss charts",
         "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
+        "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
         "export-coss-spice": "export digitized Coss(V) as knots and a SPICE Qoss table",
     }
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
@@ -38,6 +39,12 @@ def main() -> None:
 
         sys.argv = ["dsdig digitize-vpl", *rest]
         raise SystemExit(gate_charge_vpl.main())
+        return
+    if command == "digitize-reverse-recovery":
+        from . import reverse_recovery
+
+        sys.argv = ["dsdig digitize-reverse-recovery", *rest]
+        reverse_recovery.main()
         return
     if command == "export-coss-spice":
         from . import coss_export

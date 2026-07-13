@@ -2,10 +2,13 @@
 
 Standalone datasheet chart digitizer.
 
-The package currently ships two MOSFET chart plugins: capacitance plots
-(`Ciss`, `Coss`, `Crss` versus `VDS`) and gate-charge plots for Miller plateau
-voltage (`Vpl`) extraction. The core pieces are kept generic so other datasheet
-chart types can be added as plugins.
+The package currently ships three MOSFET chart plugins: capacitance plots
+(`Ciss`, `Coss`, `Crss` versus `VDS`), gate-charge plots for Miller plateau
+voltage (`Vpl`) extraction, and diode reverse-recovery panels (`Qrr`/`Irm`/
+`trr`/`S` versus `IF` or `di/dt` at 25/125 °C, Alpha & Omega layout — filled
+outline curves, dual linear y axes, spec-table + cross-panel scale
+verification in `reverse_recovery_validation.py`). The core pieces are kept
+generic so other datasheet chart types can be added as plugins.
 
 ## What It Does
 
@@ -33,6 +36,7 @@ dsdig digitize-capacitance work/charts/charts.json --out work/charts
 dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
 dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
 dsdig digitize-vpl /path/to/datasheet.pdf --datasheet-root /path/to/pwr-mosfet-lib --out work/vpl
+dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 ```
 
 `digitize-vpl` is currently packaged with the repository but still depends on
@@ -87,6 +91,14 @@ LTspice over-counted switching loss with behavioral charge models during fast
 Coss rings; QSPICE handled the same charge formulation correctly. Treat the
 JSON/CSV outputs as the portable source of truth and build simulator-specific
 primitive or fitted models from them when needed.
+
+## Downstream Consumers
+
+This package stops at chart-native artifacts: calibrated point CSVs, validation
+manifests, compact Coss knot JSON, and Qoss/Eoss tables. Consumer-specific
+database adapters belong in the consumer repository. For example, dslib/fetlib
+imports `datasheet-chart-digitizer` and converts reviewed C(V) point CSVs into
+its own `COSS_CURVES`/`CISS_CURVES` database format.
 
 ## Local Regression Corpus
 
