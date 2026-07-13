@@ -19,6 +19,13 @@ silently-exported curve.  Gates:
 The exported curve keeps the digitizer's values (no snapping); anchor agreement is
 reported so a consumer can decide to snap.  Coss knots are selected with the adaptive
 log-space model (max_rel_error target), Crss is interpolated onto the same knots.
+
+Anchor voltages are additionally pinned as explicit knots: the adaptive knots are
+error-optimal for LOG-space interpolation, but dslib consumers interpolate LINEARLY,
+and when the knots merely straddle the spec-table Vds the linear chord reads the convex
+knee high (measured +2.4% on IPP040N08NF2S at the 40 V anchor).  Since the anchor V is
+exactly the point every downstream cross-check probes, each anchor gets a knot carrying
+the digitized (not snapped) values there.
 """
 
 from __future__ import annotations
@@ -135,6 +142,8 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     crss_scale = max(float(v_crss[-1] - v_crss[0]) * 0.01, 1e-6)
     kx = evaluate_coss_knots(kv, v_crss, c_crss, crss_scale)
     curve = [(float(v), _sig4(c), _sig4(x)) for v, c, x in zip(kv, kc, kx)]
+    curve = _pin_anchor_knots(curve, anchors, (v_coss, c_coss), (v_crss, c_crss),
+                              v_scale, crss_scale)
     if curve[0][0] > 0:
         # dslib curves start at Vds=0; consumers integrate Qoss/Eoss from 0 with a
         # flat-C hold below the first knot — make that hold explicit.
@@ -167,6 +176,34 @@ def export_manifest(manifest_path: Path, out_dir: Path, *, max_rel_error: float 
     (out_dir / "dslib_coss_manifest.json").write_text(
         json.dumps([asdict(r) for r in results], indent=2) + "\n")
     return results
+
+
+def _pin_anchor_knots(curve: list, anchors: dict, coss_pts, crss_pts,
+                      coss_scale: float, crss_scale: float) -> list:
+    """Insert a knot at each spec-table anchor Vds (digitized values, not the anchor's).
+
+    dslib consumers interpolate the triples LINEARLY; without a knot AT the anchor V the
+    linear chord between straddling log-space knots mis-reads the curve exactly where the
+    downstream cross-checks probe it.  Skipped when an existing knot already sits at the
+    anchor V (within 0.3% of the span) or the anchor V falls outside the digitized range.
+    """
+    v_coss, c_coss = coss_pts
+    v_crss, c_crss = crss_pts
+    span = curve[-1][0] - curve[0][0]
+    tol = max(0.003 * span, 1e-3)
+    out = list(curve)
+    anchor_vs = sorted({float(a["vds_v"]) for name, a in anchors.items()
+                        if name in ("Coss", "Crss") and a and a.get("vds_v") is not None})
+    for va in anchor_vs:
+        if va < v_coss[0] or va > v_coss[-1]:
+            continue
+        if any(abs(k[0] - va) <= tol for k in out):
+            continue
+        coss = _sig4(_interp_at(v_coss, c_coss, va, coss_scale))
+        crss = _sig4(_interp_at(v_crss, c_crss, va, crss_scale))
+        out.append((va, coss, crss))
+    out.sort(key=lambda k: k[0])
+    return out
 
 
 def _abs_or_none(rel: object, base_dir: Path) -> str | None:

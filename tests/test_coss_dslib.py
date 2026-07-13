@@ -12,7 +12,11 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from datasheet_chart_digitizer.coss_dslib import export_manifest, export_row
+from datasheet_chart_digitizer.coss_dslib import (
+    _pin_anchor_knots,
+    export_manifest,
+    export_row,
+)
 
 
 def _coss(v: float) -> float:
@@ -75,6 +79,25 @@ class CossDslibExportTests(unittest.TestCase):
             self.assertLess(abs(coss / _coss(v) - 1.0), 0.05)
             self.assertLess(abs(crss / _crss(v) - 1.0), 0.08)
         self.assertLess(abs(res.anchor_check["Coss"]["rel_error"]), 0.02)
+
+    def test_anchor_voltage_is_pinned_as_knot(self) -> None:
+        # dslib consumers interpolate linearly, so the spec-table Vds must be a knot —
+        # a chord between straddling log-space knots reads the convex knee high.
+        res = export_row(_good_row(), self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        at40 = [k for k in res.curve if k[0] == 40.0]
+        self.assertEqual(len(at40), 1)
+        self.assertLess(abs(at40[0][1] / _coss(40.0) - 1.0), 0.02)
+        self.assertLess(abs(at40[0][2] / _crss(40.0) - 1.0), 0.02)
+
+    def test_anchor_pinning_skips_existing_and_out_of_range(self) -> None:
+        pts = ([0.05, 40.0, 80.0], [4000.0, 620.0, 450.0])
+        crss = ([0.05, 40.0, 80.0], [900.0, 29.0, 21.0])
+        curve = [(0.0, 4000.0, 900.0), (40.0, 620.0, 29.0), (80.0, 450.0, 21.0)]
+        anchors = {"Coss": {"value_pf": 620.0, "vds_v": 40.0},
+                   "Crss": {"value_pf": 29.0, "vds_v": 200.0}}
+        out = _pin_anchor_knots(curve, anchors, pts, crss, 0.8, 0.8)
+        self.assertEqual(out, curve)   # 40 V already a knot; 200 V outside the range
 
     def test_untrusted_axis_calibration_is_rejected(self) -> None:
         row = _good_row()
