@@ -188,10 +188,24 @@ def verify_axis_sides(panel: "Panel", words, quantity_unit: dict[str, str]) -> N
                 f"labeled {sorted(side_units)} not ({expect}) — values suspect")
 
 
-def scale_verdict(checks: list[dict], warnings: list[str]) -> str:
-    """'verified' / 'FAIL' / 'unverified' — no applicable check is stated
-    explicitly, never passed off as success."""
+def scale_verdict(checks: list[dict], warnings: list[str],
+                  curves: list[dict] | None = None, expected_curves: int = 4) -> str:
+    """'verified' / 'incomplete' / 'FAIL' / 'unverified'.
+
+    'verified' requires BOTH passing anchor checks and structural completeness
+    (expected curve count, every curve identified and calibrated, no duplicate
+    identities) — a panel that only extracted a subset must not read as fully
+    trusted even when the subset anchors cleanly. No applicable check is stated
+    explicitly ('unverified'), never passed off as success."""
     if any(abs(k["err"]) > SCALE_TOL for k in checks) or any(
             "violates physics" in w or "values suspect" in w for w in warnings):
         return "FAIL"
+    if curves is not None:
+        ids = [(c.get("quantity"), c.get("temp_c")) for c in curves]
+        complete = (len(curves) == expected_curves
+                    and all(q not in (None, "?") and t is not None for q, t in ids)
+                    and len(set(ids)) == len(ids)
+                    and all(c.get("n_points", 0) > 0 for c in curves))
+        if not complete:
+            return "incomplete"
     return "verified" if checks else "unverified"

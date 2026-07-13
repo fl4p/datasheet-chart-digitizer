@@ -475,12 +475,17 @@ def _x_quantity(panel_plot, words, title: str, warnings: list[str]) -> str:
     return from_axis
 
 
-def digitize_pdf(pdf: Path, out_dir: Path) -> list[dict]:
+def digitize_pdf(pdf: Path, out_dir: Path, mpn: str | None = None) -> list[dict]:
+    """Digitize one PDF's reverse-recovery panels into out_dir.
+
+    mpn overrides the output identity (default: the PDF's stem) — batch callers
+    must pass a unique one when two inputs share a filename, or their artifacts
+    would overwrite each other."""
     import fitz
 
     doc = fitz.open(pdf)
     results = []
-    mpn = pdf.stem
+    mpn = mpn or pdf.stem
     out_dir.mkdir(parents=True, exist_ok=True)
     anchors = spec_anchors(doc)
     panels: list[Panel] = []
@@ -524,19 +529,59 @@ def digitize_pdf(pdf: Path, out_dir: Path) -> list[dict]:
             pages.append((panel, pno))
     verify_scale(panels, anchors)
     if pages:
-        # stale per-curve CSVs from a previous run are removed only once THIS
-        # run has something to write — a regressed PDF must not eat old data
+        # emit into a staging dir and swap in only after EVERY panel of this
+        # PDF emitted — a crash or partial regression must not eat the previous
+        # run's known-good artifacts
+        stage = out_dir / f".staging-{mpn}"
+        stage.mkdir(parents=True, exist_ok=True)
+        emitted = []
+        try:
+            for panel, pno in pages:
+                emitted.append(_emit(panel, doc, pno, pdf, mpn, stage))
+        except BaseException:
+            for f in stage.glob("*"):
+                f.unlink()
+            stage.rmdir()
+            raise
         for old in out_dir.glob(f"{mpn}_fig*"):
             old.unlink()
-    for panel, pno in pages:
-        results.append(_emit(panel, doc, pno, pdf, mpn, out_dir))
+        for f in sorted(stage.glob("*")):
+            f.rename(out_dir / f.name)
+        stage.rmdir()
+        for m in emitted:  # manifest paths must point at the final location
+            m["overlay"] = m["overlay"].replace(str(stage), str(out_dir))
+            for c in m["curves"]:
+                if "csv" in c:
+                    c["csv"] = c["csv"].replace(str(stage), str(out_dir))
+        results += emitted
     if not results:
+        # No RR figure captions anywhere (a caption WITH failed extraction
+        # would have produced an orphan/error entry above). Most such PDFs
+        # only quote reverse recovery in the spec table — benign; carry the
+        # text-mention distinction in the note so an unrecognized caption
+        # style is still countable in the manifest.
         results.append(dict(
             pdf=str(pdf),
-            error="no reverse-recovery panels detected"
-                  + (" (page text DOES mention reverse recovery)" if saw_rr_text else "")))
+            skip="no reverse-recovery chart captions"
+                 + (" (text mentions reverse recovery — table-only datasheet"
+                    " or unrecognized caption style)" if saw_rr_text else "")))
     doc.close()
     return results
+
+
+def _unique_mpns(pdfs: list[Path]) -> dict[Path, str]:
+    """Output identities; colliding stems get a parent-dir disambiguator."""
+    by_stem: dict[str, list[Path]] = {}
+    for p in pdfs:
+        by_stem.setdefault(p.stem, []).append(p)
+    out = {}
+    for stem, group in by_stem.items():
+        if len(group) == 1:
+            out[group[0]] = stem
+        else:
+            for p in group:
+                out[p] = f"{stem}__{p.resolve().parent.name}"
+    return out
 
 
 def _as_words(words):
@@ -646,7 +691,7 @@ def _emit(panel: Panel, doc, pno: int, pdf: Path, mpn: str, out_dir: Path) -> di
                  for c in curves_meta
                  if c["quantity"] == "?" or c["temp_c"] is None]
     checks = panel.checks
-    scale = scale_verdict(checks, warnings)
+    scale = scale_verdict(checks, warnings, curves=curves_meta)
     return dict(pdf=str(pdf), page=pno + 1, number=panel.number, title=panel.title,
                 warnings=warnings, scale=scale, scale_checks=checks,
                 conditions=panel.conditions,
@@ -665,17 +710,23 @@ def main() -> None:
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     manifest = []
+    mpns = _unique_mpns(args.pdfs)
     for pdf in args.pdfs:
         try:
-            manifest += digitize_pdf(pdf, args.out)
+            manifest += digitize_pdf(pdf, args.out, mpn=mpns[pdf])
         except Exception as e:  # noqa: BLE001 — batch over many PDFs, record and continue
             manifest.append(dict(pdf=str(pdf), error=f"{type(e).__name__}: {e}"))
     args.out.mkdir(parents=True, exist_ok=True)
     mf = args.out / "reverse_recovery_digitization.json"
     mf.write_text(json.dumps(manifest, indent=2))
-    n_ok = sum(1 for m in manifest if "error" not in m)
-    print(f"digitized {n_ok}/{len(manifest)} panels -> {mf}")
+    n_err = sum(1 for m in manifest if "error" in m)
+    n_skip = sum(1 for m in manifest if "skip" in m)
+    n_ok = len(manifest) - n_err - n_skip
+    print(f"digitized {n_ok} panels, {n_skip} PDFs without RR content, "
+          f"{n_err} errors -> {mf}")
     for m in manifest:
+        if "skip" in m:
+            continue
         if "error" in m:
             print(f"  FAIL {m.get('pdf')} fig{m.get('number', '?')}: {m['error']}")
             continue
@@ -688,6 +739,8 @@ def main() -> None:
             for k in checks:
                 if abs(k["err"]) > SCALE_TOL:
                     print(f"       {k}")
+    if n_err:
+        raise SystemExit(1)  # scripts/CI must see failed digitization
 
 
 if __name__ == "__main__":

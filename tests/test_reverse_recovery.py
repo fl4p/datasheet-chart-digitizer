@@ -106,6 +106,9 @@ class SiblingDatasheets(unittest.TestCase):
 
 
 class VerdictUnit(unittest.TestCase):
+    FULL = [dict(quantity=q, temp_c=t, n_points=10)
+            for q in ("Qrr", "Irm") for t in (25.0, 125.0)]
+
     def test_verdict_states(self):
         self.assertEqual(rrv.scale_verdict([], []), "unverified")
         self.assertEqual(rrv.scale_verdict([dict(err=0.1)], []), "verified")
@@ -115,8 +118,59 @@ class VerdictUnit(unittest.TestCase):
                               ["temp order violates physics for Qrr: ..."]),
             "FAIL")
 
+    def test_verdict_requires_structural_completeness(self):
+        ok = rrv.scale_verdict([dict(err=0.1)], [], curves=self.FULL)
+        self.assertEqual(ok, "verified")
+        # missing curve -> incomplete even with clean anchors
+        self.assertEqual(
+            rrv.scale_verdict([dict(err=0.1)], [], curves=self.FULL[:3]),
+            "incomplete")
+        # duplicate identity
+        dup = self.FULL[:3] + [dict(self.FULL[0])]
+        self.assertEqual(rrv.scale_verdict([dict(err=0.1)], [], curves=dup),
+                         "incomplete")
+        # unidentified / uncalibrated curve
+        broken = self.FULL[:3] + [dict(quantity="?", temp_c=None, n_points=0)]
+        self.assertEqual(rrv.scale_verdict([dict(err=0.1)], [], curves=broken),
+                         "incomplete")
+        # a failing anchor still outranks incompleteness
+        self.assertEqual(rrv.scale_verdict([dict(err=0.4)], [], curves=self.FULL[:2]),
+                         "FAIL")
+
     def test_interp_refuses_extrapolation(self):
         self.assertIsNone(rrv.interp_curve([(1.0, 1.0), (2.0, 2.0)], 3.0))
+
+
+class BatchHygiene(unittest.TestCase):
+    def test_unique_mpns_disambiguates_colliding_stems(self):
+        a = Path("/x/ao/PART1.pdf")
+        b = Path("/x/mirror/PART1.pdf")
+        c = Path("/x/ao/PART2.pdf")
+        mpns = rr._unique_mpns([a, b, c])
+        self.assertEqual(mpns[c], "PART2")
+        self.assertNotEqual(mpns[a], mpns[b])
+        self.assertTrue(mpns[a].startswith("PART1__"))
+
+    @unittest.skipUnless(AOT418L.exists(), "local datasheet library not available")
+    def test_cli_exits_nonzero_on_errors(self):
+        import subprocess
+        import sys
+        out = tempfile.mkdtemp(prefix="rr-exit-")
+        r = subprocess.run(
+            [sys.executable, "-m", "datasheet_chart_digitizer.reverse_recovery",
+             str(AOT418L), "--out", out],
+            capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+
+    @unittest.skipUnless(AOT414.exists(), "local datasheet library not available")
+    def test_rerun_keeps_artifacts_and_no_staging_left(self):
+        manifest, out = _digitize(AOT414)
+        first = sorted(p.name for p in out.glob("AOT414_fig*"))
+        manifest2 = rr.digitize_pdf(AOT414, out)
+        self.assertEqual(sorted(p.name for p in out.glob("AOT414_fig*")), first)
+        self.assertFalse(list(out.glob(".staging-*")))
+        for m in manifest2:
+            self.assertNotIn(".staging-", m.get("overlay", ""))
 
 
 if __name__ == "__main__":
