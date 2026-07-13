@@ -344,7 +344,10 @@ def _fill_outline_centerlines(page, plot) -> list[list[tuple[float, float]]]:
     for ch in chains:
         ch.sort(key=lambda p: p[0])  # segment overlap makes raw chains non-monotone
         span = ch[-1][0] - ch[0][0]
-        if span < plot.width * 0.25 or len(ch) < 12:
+        # the span gate does the real work; keep the point minimum low — a
+        # full-span curve drawn with few Beziers legitimately yields <12 bins
+        # (AOD4126 fig19 Qrr@25C: 10 centerline points over the whole chart)
+        if span < plot.width * 0.25 or len(ch) < 6:
             continue  # labels, arrows, legend marks, leftovers
         near_edge = sum(1 for _, y in ch
                         if min(abs(y - plot.y0), abs(y - plot.y1)) < 2.0) / len(ch)
