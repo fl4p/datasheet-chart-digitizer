@@ -10,6 +10,7 @@ def main() -> None:
         "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
         "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
         "export-coss-spice": "export digitized Coss(V) as knots and a SPICE Qoss table",
+        "export-coss-dslib": "export validation-gated dslib (V, Coss, Crss) knot triples",
     }
     if len(sys.argv) < 2 or sys.argv[1] in {"-h", "--help"}:
         print("usage: dsdig <command> [args...]")
@@ -51,6 +52,12 @@ def main() -> None:
 
         sys.argv = ["dsdig export-coss-spice", *rest]
         coss_export.main()
+        return
+    if command == "export-coss-dslib":
+        from . import coss_dslib
+
+        sys.argv = ["dsdig export-coss-dslib", *rest]
+        coss_dslib.main()
         return
     raise SystemExit(f"unknown command: {command}")
 
