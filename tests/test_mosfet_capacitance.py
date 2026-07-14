@@ -195,6 +195,120 @@ class AxisCalibrationTests(unittest.TestCase):
         self.assertIn("ciss_not_flatter_than_coss", summary["reasons"])
 
 
+class AnchorAssignmentTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.plot = mc.PlotBox(x0=0, y0=0, x1=100, y1=400)
+        self.calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=100.0,
+            y_min_decade=0.0,
+            y_max_decade=4.0,
+            source="grid_text",
+            x_ticks_v=(0.0, 100.0),
+            y_decades=(0.0, 1.0, 2.0, 3.0, 4.0),
+            x_scale=1.0,
+            x_offset=0.0,
+            y_scale=-0.01,
+            y_offset=4.0,
+        )
+
+    @staticmethod
+    def _trace(name: str, y: int) -> mc.Trace:
+        return mc.Trace(
+            name=name,
+            area=81,
+            bbox=(10, y, 81, 1),
+            points=[(x, y) for x in range(10, 91)],
+        )
+
+    def test_multiple_anchors_relabel_swapped_candidate_traces(self) -> None:
+        traces = [
+            self._trace("Ciss", 200),
+            self._trace("Coss", 100),
+            self._trace("Crss", 300),
+        ]
+        anchors = {
+            "Ciss": mc.CapAnchor("Ciss", 1000.0, 50.0),
+            "Coss": mc.CapAnchor("Coss", 100.0, 50.0),
+            "Crss": mc.CapAnchor("Crss", 10.0, 50.0),
+        }
+
+        assigned, diagnostics = mc.select_trace_assignment(
+            traces, self.plot, self.calibration, anchors
+        )
+
+        self.assertTrue(diagnostics["assignment_changed"])
+        self.assertEqual(diagnostics["selection_reason"], "anchor_evidence_selected")
+        self.assertEqual(
+            diagnostics["selected_source_assignment"],
+            {"Ciss": "Coss", "Coss": "Ciss", "Crss": "Crss"},
+        )
+        self.assertEqual(dict(assigned[0].points)[50], 100)
+        self.assertEqual(dict(assigned[1].points)[50], 200)
+        for residual in diagnostics["anchor_residuals"].values():
+            self.assertAlmostEqual(residual["relative_error"], 0.0)
+
+    def test_single_anchor_reports_residual_without_relabeling(self) -> None:
+        traces = [
+            self._trace("Ciss", 200),
+            self._trace("Coss", 100),
+            self._trace("Crss", 300),
+        ]
+        anchors = {"Ciss": mc.CapAnchor("Ciss", 1000.0, 50.0)}
+
+        assigned, diagnostics = mc.select_trace_assignment(
+            traces, self.plot, self.calibration, anchors
+        )
+
+        self.assertFalse(diagnostics["assignment_changed"])
+        self.assertEqual(diagnostics["selection_reason"], "insufficient_anchor_coverage")
+        self.assertEqual([trace.name for trace in assigned], ["Ciss", "Coss", "Crss"])
+        self.assertAlmostEqual(diagnostics["anchor_residuals"]["Ciss"]["log10_ratio"], -1.0)
+
+    def test_poor_table_fit_is_diagnostic_not_forced_assignment(self) -> None:
+        traces = [
+            self._trace("Ciss", 100),
+            self._trace("Coss", 200),
+            self._trace("Crss", 300),
+        ]
+        anchors = {
+            "Ciss": mc.CapAnchor("Ciss", 10.0**1.4, 50.0),
+            "Coss": mc.CapAnchor("Coss", 10.0**2.4, 50.0),
+            "Crss": mc.CapAnchor("Crss", 10.0**3.4, 50.0),
+        }
+
+        assigned, diagnostics = mc.select_trace_assignment(
+            traces, self.plot, self.calibration, anchors
+        )
+
+        self.assertFalse(diagnostics["assignment_changed"])
+        self.assertEqual(diagnostics["selection_reason"], "best_anchor_fit_too_poor")
+        self.assertEqual([dict(trace.points)[50] for trace in assigned], [100, 200, 300])
+        self.assertLess(
+            diagnostics["best_candidate_total_score_decades"],
+            diagnostics["baseline_total_score_decades"],
+        )
+
+    def test_anchor_outside_all_trace_spans_has_finite_diagnostics(self) -> None:
+        traces = [
+            self._trace("Ciss", 100),
+            self._trace("Coss", 200),
+            self._trace("Crss", 300),
+        ]
+        anchors = {"Ciss": mc.CapAnchor("Ciss", 1000.0, 5.0)}
+
+        assigned, diagnostics = mc.select_trace_assignment(
+            traces, self.plot, self.calibration, anchors
+        )
+
+        self.assertEqual(diagnostics["status"], "unavailable")
+        self.assertEqual(diagnostics["selection_reason"], "anchors_outside_trace_spans")
+        self.assertEqual(assigned, traces)
+        self.assertIsNone(diagnostics["anchor_residuals"]["Ciss"]["sampled_pf"])
+        for candidate in diagnostics["candidates"]:
+            self.assertTrue(np.isfinite(candidate["total_score_decades"]))
+
+
 class TraceRepairTests(unittest.TestCase):
     def test_track_direction_waits_for_trace_after_label_gap(self) -> None:
         centers_by_x = [[100.0] for _ in range(120)]

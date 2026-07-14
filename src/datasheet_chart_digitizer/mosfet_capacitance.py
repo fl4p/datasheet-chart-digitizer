@@ -58,6 +58,7 @@ from .capacitance_axis import (
     reject_bad_position_calibration,
     trace_data_points,
 )
+from .capacitance_assignment import select_trace_assignment
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
 from .capacitance_refs import (
     _anchor_csv_path,
@@ -205,6 +206,12 @@ def process_chart(
         vector_error = str(vector_exc)
     else:
         vector_error = None
+    traces, anchor_diagnostics = select_trace_assignment(
+        traces,
+        plot,
+        axis_calibration if axis_trusted else None,
+        anchors,
+    )
     overlay = draw_trace_overlay(image, plot, traces)
 
     overlay_path = out_dir / "overlays" / rel_stem.with_suffix(".overlay.png")
@@ -306,6 +313,7 @@ def process_chart(
         "axis_error": axis_error,
         "axis_warning": axis_warning,
         "axis_calibration_trusted": axis_trusted,
+        "anchor_diagnostics": anchor_diagnostics,
         "output_charge_reference": output_charge_reference_to_json(output_ref),
         "qoss_metrics": qoss_metrics,
         "qoss_vendor_tail_validation": qoss_vendor_tail_validation,

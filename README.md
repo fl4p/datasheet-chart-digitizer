@@ -26,6 +26,10 @@ types can be added as plugins.
 - Writes calibrated point CSVs plus overlays.
 - For MOSFET capacitance charts, validates `Coss(V)` against datasheet `Qoss`,
   `Co(tr)`, and `Co(er)` where available.
+- Scores candidate `Ciss`/`Coss`/`Crss` assignments against datasheet table
+  anchors and records per-anchor log/relative residuals in the manifest. Anchor
+  evidence can relabel vector or raster traces only when multiple anchors agree;
+  graph/table inconsistencies remain diagnostics rather than forced fits.
 
 ## Install
 

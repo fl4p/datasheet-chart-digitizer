@@ -156,6 +156,10 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
     trace_statuses = Counter(result.get("trace_validation_status") for result in results)
     qoss_statuses = Counter(result.get("qoss_validation_status") for result in results)
     axis_sources = Counter((result.get("axis_calibration") or {}).get("source") for result in results)
+    anchor_relabels = sum(
+        bool((result.get("anchor_diagnostics") or {}).get("assignment_changed"))
+        for result in results
+    )
     missing_axis_parts = {
         str(result.get("part"))
         for result in results
@@ -166,7 +170,10 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
         for result in results
         if result.get("axis_calibration") is not None and not result.get("axis_calibration_trusted")
     }
-    print(f"  charts={len(results)} axis={dict(axis_sources)} trace={dict(trace_statuses)} qoss={dict(qoss_statuses)}")
+    print(
+        f"  charts={len(results)} axis={dict(axis_sources)} trace={dict(trace_statuses)} "
+        f"qoss={dict(qoss_statuses)} anchor_relabels={anchor_relabels}"
+    )
 
     if trace_statuses - Counter({"pass": trace_statuses.get("pass", 0)}):
         for result in results:
@@ -191,6 +198,7 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
         if status not in case.allowed_qoss_statuses:
             failures.append(f"{result.get('part')} unexpected qoss status {status!r}")
         failures.extend(_validate_trace_spans(result))
+        failures.extend(_validate_anchor_diagnostics(result))
     return failures
 
 
@@ -211,6 +219,22 @@ def _validate_trace_spans(result: dict[str, Any]) -> list[str]:
         if span < 0.75:
             failures.append(f"{result.get('part')} {name} short span: {span:.3f}")
     return failures
+
+
+def _validate_anchor_diagnostics(result: dict[str, Any]) -> list[str]:
+    anchors = result.get("anchors")
+    diagnostics = result.get("anchor_diagnostics")
+    if not isinstance(anchors, dict):
+        return [f"{result.get('part')} missing anchors"]
+    if not isinstance(diagnostics, dict):
+        return [f"{result.get('part')} missing anchor diagnostics"]
+    residuals = diagnostics.get("anchor_residuals")
+    if not isinstance(residuals, dict):
+        return [f"{result.get('part')} missing anchor residuals"]
+    missing = set(anchors) - set(residuals)
+    if missing:
+        return [f"{result.get('part')} anchor residuals missing {sorted(missing)}"]
+    return []
 
 
 if __name__ == "__main__":
