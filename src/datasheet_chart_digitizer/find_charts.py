@@ -63,6 +63,7 @@ class ChartPanel:
     title: str
     kind: str
     bbox_pt: tuple[float, float, float, float]
+    crop_box_pt: tuple[float, float, float, float]
     crop_png: str
     text: str
     formula: str
@@ -216,6 +217,10 @@ def _caption_starts(line: list[Word]) -> list[int]:
             continue
 
         if lower.startswith("drain-source"):
+            if idx > 0 and re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx - 1].text.strip()):
+                # "15 Drain-source breakdown voltage": the number rule already
+                # starts this caption; a second start here would split it.
+                continue
             tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
             if "breakdown" in tail:
                 starts.append(idx)
@@ -301,7 +306,11 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 continuation = _caption_continuation(lines, line_idx, segment)
                 if continuation:
                     title_for_classification = f"{title_for_classification} {continuation}".strip()
-            if classify_chart(title_for_classification, "") != "gate_charge":
+            # Caption-style pages (older Infineon layouts caption charts as
+            # "15 Drain-source breakdown voltage" instead of "Diagram 15:").
+            # The caption pipeline was originally gate-charge only; breakdown
+            # captions are let through so those parts get a BV(Tj) panel too.
+            if classify_chart(title_for_classification, "") not in {"gate_charge", "breakdown_voltage"}:
                 continue
             title = title_for_classification
             titles.append(
@@ -910,7 +919,7 @@ def _append_panel(
     )
     kind = classify_chart(title.title, text)
     rel_crop = Path(pdf.stem) / f"p{page.page_num:02d}_diagram_{title.number:02d}.png"
-    crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
+    crop_box = crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
     panels.append(
         ChartPanel(
             pdf=str(pdf.resolve()),
@@ -920,6 +929,7 @@ def _append_panel(
             title=title.title,
             kind=kind,
             bbox_pt=tuple(round(v, 3) for v in bbox),
+            crop_box_pt=tuple(round(v, 3) for v in crop_box),
             crop_png=str(Path("crops") / rel_crop),
             text=text,
             formula=formula_from_text(lines, bbox),
@@ -973,24 +983,40 @@ def formula_from_text(lines: list[list[Word]], bbox: tuple[float, float, float, 
     return " ".join(candidates)
 
 
+CROP_MARGIN_PT = 2.0
+
+
 def crop_panel(
     page_png: Path,
     page: PageText,
     bbox_pt: tuple[float, float, float, float],
     out_png: Path,
-) -> None:
+) -> tuple[float, float, float, float]:
+    """Crop the panel image; return the EFFECTIVE crop region in PDF points.
+
+    The crop adds a margin and truncates to whole pixels, so the saved image
+    does not cover bbox_pt exactly. Digitizers that map PDF coordinates onto
+    crop pixels must use the returned region, not bbox_pt — the mismatch is
+    ~5 px at the panel edges at 180 dpi, enough to visibly misplace overlay
+    tick markers.
+    """
     img = Image.open(page_png).convert("RGB")
     width_px, height_px = img.size
     x0, y0, x1, y1 = bbox_pt
-    margin_pt = 2.0
     crop = (
-        max(0, int((x0 - margin_pt) * width_px / page.width_pt)),
-        max(0, int((y0 - margin_pt) * height_px / page.height_pt)),
-        min(width_px, int((x1 + margin_pt) * width_px / page.width_pt)),
-        min(height_px, int((y1 + margin_pt) * height_px / page.height_pt)),
+        max(0, int((x0 - CROP_MARGIN_PT) * width_px / page.width_pt)),
+        max(0, int((y0 - CROP_MARGIN_PT) * height_px / page.height_pt)),
+        min(width_px, int((x1 + CROP_MARGIN_PT) * width_px / page.width_pt)),
+        min(height_px, int((y1 + CROP_MARGIN_PT) * height_px / page.height_pt)),
     )
     out_png.parent.mkdir(parents=True, exist_ok=True)
     img.crop(crop).save(out_png)
+    return (
+        crop[0] * page.width_pt / width_px,
+        crop[1] * page.height_pt / height_px,
+        crop[2] * page.width_pt / width_px,
+        crop[3] * page.height_pt / height_px,
+    )
 
 
 def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
