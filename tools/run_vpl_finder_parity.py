@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -48,6 +49,15 @@ EXPECTED_LEGACY_UNAVAILABLE = {
     "GSFP1080",
     "IRF150DM115XTMA1",
     "HY3912W",
+}
+
+EXPECTED_TOOL_ERRORS = {
+    # poppler pdftotext SIGABRTs on this PDF's broken embedded font ("Unknown
+    # character collection 'PDFAUTOCAD-Indentity0'", libc++abi out_of_range) —
+    # an environment/PDF defect, not a finder property. One uncaught crash used
+    # to abort the ENTIRE parity harness, silencing all other samples. Like the
+    # other allowlists this should only shrink (e.g. after a poppler fix).
+    "STL70N4LLF5",
 }
 
 
@@ -171,7 +181,17 @@ def run_parity(
                 rows.append({"mpn": mpn, "rel": rel, "ref_vpl": ref_vpl, "comment": comment, "status": status})
                 continue
 
-            legacy = _pick_legacy_hit(find_in_pdf(str(pdf), enable_raster=True, enable_ocr=False), ref_vpl)
+            try:
+                legacy = _pick_legacy_hit(find_in_pdf(str(pdf), enable_raster=True, enable_ocr=False), ref_vpl)
+            except subprocess.CalledProcessError as exc:
+                # a crashing extraction tool is an environment failure of THIS
+                # sample — record it as such; it is not a match, and it must not
+                # take the rest of the corpus down with it
+                if mpn not in EXPECTED_TOOL_ERRORS:
+                    failures.append(f"{mpn}: extraction tool crashed (legacy): {exc}")
+                rows.append({"mpn": mpn, "rel": rel, "ref_vpl": ref_vpl, "comment": comment,
+                             "status": "tool_error", "error": str(exc)})
+                continue
             if legacy is None:
                 status = "legacy_missing"
                 if mpn not in EXPECTED_LEGACY_UNAVAILABLE:
@@ -187,7 +207,14 @@ def run_parity(
             )
             legacy_page = int(legacy_chart.page_num) + 1
 
-            panels = process_pdf(pdf, tmpdir / mpn, dpi=120)
+            try:
+                panels = process_pdf(pdf, tmpdir / mpn, dpi=120)
+            except subprocess.CalledProcessError as exc:
+                if mpn not in EXPECTED_TOOL_ERRORS:
+                    failures.append(f"{mpn}: extraction tool crashed (packaged): {exc}")
+                rows.append({"mpn": mpn, "rel": rel, "ref_vpl": ref_vpl, "comment": comment,
+                             "status": "tool_error", "error": str(exc)})
+                continue
             packaged = [panel for panel in panels if panel.kind == "gate_charge"]
             matching = [
                 panel
@@ -241,6 +268,13 @@ def run_parity(
                 "legacy baseline became available; remove from EXPECTED_LEGACY_UNAVAILABLE: "
                 + ", ".join(sorted(stale_legacy_allowlist))
             )
+        current_tool_errors = {row["mpn"] for row in rows if row["status"] == "tool_error"}
+        stale_tool_errors = EXPECTED_TOOL_ERRORS - current_tool_errors
+        if stale_tool_errors:
+            print(
+                "extraction tool recovered; remove from EXPECTED_TOOL_ERRORS: "
+                + ", ".join(sorted(stale_tool_errors))
+            )
 
     if out_json is not None:
         out_json.parent.mkdir(parents=True, exist_ok=True)
@@ -248,9 +282,12 @@ def run_parity(
 
     matched = sum(1 for row in rows if row["status"] == "match")
     unavailable = sum(1 for row in rows if row["status"] in {"missing_pdf", "legacy_missing"})
+    tool_errors = sum(1 for row in rows if row["status"] == "tool_error")
     print(
-        f"Vpl finder parity: matched={matched} missing={len(rows) - matched - unavailable} "
-        f"legacy_unavailable={unavailable} strict={strict} source={sample_source} samples={len(rows)}"
+        f"Vpl finder parity: matched={matched} "
+        f"missing={len(rows) - matched - unavailable - tool_errors} "
+        f"legacy_unavailable={unavailable} tool_errors={tool_errors} "
+        f"strict={strict} source={sample_source} samples={len(rows)}"
     )
     return failures
 
