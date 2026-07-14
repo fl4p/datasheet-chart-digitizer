@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
@@ -33,6 +34,8 @@ class RegressionCase:
     max_untrusted_axes: int = 0
     expected_untrusted_parts: frozenset[str] = frozenset()
     allowed_qoss_statuses: frozenset[str | None] = frozenset({"pass", None})
+    expected_anchor_relabels: int = 0
+    expected_graph_table_inconsistent_parts: frozenset[str] = frozenset()
 
 
 CASES = (
@@ -55,6 +58,7 @@ CASES = (
         max_untrusted_axes=1,
         expected_untrusted_parts=frozenset({"IMBG75R007M2H"}),
         allowed_qoss_statuses=frozenset({"pass", "graph_table_inconsistent", None}),
+        expected_graph_table_inconsistent_parts=frozenset({"BSC016N06NS", "IPF009N10NM8"}),
     ),
 )
 
@@ -146,8 +150,11 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
     errors_path = out_dir / "capacitance_digitization_errors.json"
     if not manifest_path.exists():
         return [f"missing manifest {manifest_path}"]
-    results = json.loads(manifest_path.read_text())
-    errors = json.loads(errors_path.read_text()) if errors_path.exists() else []
+    try:
+        results = _load_strict_json(manifest_path)
+        errors = _load_strict_json(errors_path) if errors_path.exists() else []
+    except (json.JSONDecodeError, ValueError) as exc:
+        return [f"invalid JSON output: {exc}"]
     if errors:
         failures.append(f"{len(errors)} digitization errors")
     if len(results) != case.expected_charts:
@@ -160,6 +167,11 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
         bool((result.get("anchor_diagnostics") or {}).get("assignment_changed"))
         for result in results
     )
+    graph_table_inconsistent_parts = {
+        str(result.get("part"))
+        for result in results
+        if result.get("qoss_validation_status") == "graph_table_inconsistent"
+    }
     missing_axis_parts = {
         str(result.get("part"))
         for result in results
@@ -192,6 +204,16 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
     missing_untrusted = set(case.expected_untrusted_parts) - untrusted_parts
     if missing_untrusted:
         failures.append(f"expected untrusted axes no longer present: {sorted(missing_untrusted)}")
+    if anchor_relabels != case.expected_anchor_relabels:
+        failures.append(
+            f"expected {case.expected_anchor_relabels} anchor relabels, got {anchor_relabels}"
+        )
+    expected_inconsistent = set(case.expected_graph_table_inconsistent_parts)
+    if graph_table_inconsistent_parts != expected_inconsistent:
+        failures.append(
+            "graph/table inconsistency parts changed: "
+            f"expected {sorted(expected_inconsistent)}, got {sorted(graph_table_inconsistent_parts)}"
+        )
 
     for result in results:
         status = result.get("qoss_validation_status")
@@ -222,6 +244,7 @@ def _validate_trace_spans(result: dict[str, Any]) -> list[str]:
 
 
 def _validate_anchor_diagnostics(result: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
     anchors = result.get("anchors")
     diagnostics = result.get("anchor_diagnostics")
     if not isinstance(anchors, dict):
@@ -233,8 +256,26 @@ def _validate_anchor_diagnostics(result: dict[str, Any]) -> list[str]:
         return [f"{result.get('part')} missing anchor residuals"]
     missing = set(anchors) - set(residuals)
     if missing:
-        return [f"{result.get('part')} anchor residuals missing {sorted(missing)}"]
-    return []
+        failures.append(f"{result.get('part')} anchor residuals missing {sorted(missing)}")
+    candidates = diagnostics.get("candidates")
+    if not isinstance(candidates, list):
+        failures.append(f"{result.get('part')} anchor candidates are not a list")
+    elif candidates:
+        if len(candidates) != 6:
+            failures.append(f"{result.get('part')} expected 6 anchor candidates, got {len(candidates)}")
+        for candidate in candidates:
+            score = candidate.get("total_score_decades") if isinstance(candidate, dict) else None
+            if not isinstance(score, (int, float)) or not math.isfinite(float(score)):
+                failures.append(f"{result.get('part')} non-finite anchor candidate score {score!r}")
+                break
+    return failures
+
+
+def _load_strict_json(path: Path) -> Any:
+    def reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant {value} in {path}")
+
+    return json.loads(path.read_text(), parse_constant=reject_constant)
 
 
 if __name__ == "__main__":

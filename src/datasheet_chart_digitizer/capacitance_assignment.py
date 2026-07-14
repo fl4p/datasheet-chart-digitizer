@@ -21,6 +21,8 @@ SHAPE_PRIOR_WEIGHT = 0.08
 MIN_ASSIGNMENT_IMPROVEMENT_DEC = 0.12
 MAX_ASSIGNMENT_RMS_DEC = 0.18
 MAX_ASSIGNMENT_RESIDUAL_DEC = 0.25
+MAX_ANCHOR_GAP_FRACTION = 0.03
+MIN_ANCHOR_GAP_PX = 4
 
 
 def select_trace_assignment(
@@ -59,7 +61,7 @@ def select_trace_assignment(
         if tuple(candidate["source_assignment"][name] for name in TRACE_NAMES) == baseline_key
     )
     if not any(int(candidate["anchors_compared"]) for candidate in candidates):
-        diagnostics = _unavailable_diagnostics("anchors_outside_trace_spans", anchors)
+        diagnostics = _unavailable_diagnostics("no_locally_sampled_anchors", anchors)
         diagnostics["anchor_residuals"] = baseline_score["anchor_residuals"]
         diagnostics["candidates"] = candidates
         return traces, diagnostics
@@ -159,7 +161,11 @@ def _anchor_residual(
     calibration: AxisCalibration,
 ) -> dict[str, object]:
     x = calibration_x_of_v(calibration, plot, anchor.vds_v)
-    y = _interp_y_in_range(trace.points, int(round(x)))
+    sample_x = int(round(x))
+    trace_xs = [point_x for point_x, _ in trace.points]
+    outside_span = not trace_xs or sample_x < min(trace_xs) or sample_x > max(trace_xs)
+    max_gap = max(MIN_ANCHOR_GAP_PX, int(round(plot.width * MAX_ANCHOR_GAP_FRACTION)))
+    y = _interp_y_in_range(trace.points, sample_x, max_gap=max_gap)
     if y is None:
         return {
             "vds_v": anchor.vds_v,
@@ -167,7 +173,7 @@ def _anchor_residual(
             "sampled_pf": None,
             "log10_ratio": None,
             "relative_error": None,
-            "reason": "anchor_outside_trace_span",
+            "reason": "anchor_outside_trace_span" if outside_span else "anchor_inside_trace_gap",
         }
     sampled_pf = 10.0 ** calibration_log_c_of_y(calibration, plot, y)
     log_ratio = math.log10(sampled_pf / anchor.value_pf)

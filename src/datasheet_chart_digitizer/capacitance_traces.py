@@ -846,12 +846,22 @@ def _is_bottom_branch(points: list[tuple[int, int]], peers: dict[str, list[tuple
     return samples < 4 or bottom / samples >= 0.80
 
 
-def _interp_y_in_range(points: list[tuple[int, int]], x: int) -> float | None:
+def _interp_y_in_range(
+    points: list[tuple[int, int]],
+    x: int,
+    max_gap: int | None = None,
+) -> float | None:
     if not points:
         return None
     ordered = sorted(points)
     if x < ordered[0][0] or x > ordered[-1][0]:
         return None
+    if max_gap is not None:
+        for (x0, _), (x1, _) in zip(ordered, ordered[1:]):
+            if x0 <= x <= x1:
+                if x not in (x0, x1) and x1 - x0 > max_gap:
+                    return None
+                break
     return _interp_y(ordered, x)
 
 
@@ -1051,4 +1061,3 @@ def _smooth_points(points: list[tuple[int, int]], window: int = 7) -> list[tuple
         hi = min(len(points), idx + half + 1)
         smoothed.append((x, int(round(float(np.median([py for _, py in points[lo:hi]]))))))
     return smoothed
-
