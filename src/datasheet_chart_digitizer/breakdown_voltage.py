@@ -43,7 +43,6 @@ import cv2
 import numpy as np
 
 from .capacitance_traces import find_plot_box
-from .find_charts import CROP_MARGIN_PT
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
     _chain_vector_components,
@@ -53,6 +52,7 @@ from .capacitance_vector import (
     _resample_vector_trace_pixels,
     _vector_curve_edges,
 )
+from .crop_transform import CropTransform
 
 INT_RE = re.compile(r"^-?\d+$")
 NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -70,40 +70,6 @@ MAX_CAL_RESID_FRAC = 0.02
 MIN_TICKS_PER_AXIS = 4
 MIN_X_SPAN_FRAC = 0.5
 ANCHOR_TOL = 0.02
-
-
-@dataclass
-class CropTransform:
-    """Exact PDF-point <-> crop-pixel map for a chart panel image.
-
-    Built from the finder's effective crop region (crop_box_pt). The panel
-    bbox_pt alone is NOT that region — the crop adds a margin and truncates
-    to pixels; mapping through bbox_pt lands overlay markers a few pixels off
-    the gridlines at the panel edges (human-verification finding, 2026-07-14).
-    """
-
-    x0_pt: float
-    y0_pt: float
-    scale_x: float  # px per pt
-    scale_y: float
-
-    @classmethod
-    def for_chart(cls, chart: dict, image_shape: tuple[int, int]) -> "CropTransform":
-        height, width = image_shape
-        box = chart.get("crop_box_pt")
-        if not (isinstance(box, (list, tuple)) and len(box) == 4):
-            # older charts.json without the effective crop region: fall back
-            # to bbox +/- the finder margin (accurate to pixel truncation)
-            bx0, by0, bx1, by1 = [float(v) for v in chart["bbox_pt"]]
-            box = (bx0 - CROP_MARGIN_PT, by0 - CROP_MARGIN_PT, bx1 + CROP_MARGIN_PT, by1 + CROP_MARGIN_PT)
-        x0, y0, x1, y1 = [float(v) for v in box]
-        return cls(x0, y0, width / max(1e-9, x1 - x0), height / max(1e-9, y1 - y0))
-
-    def to_px(self, x_pt: float, y_pt: float) -> tuple[float, float]:
-        return (x_pt - self.x0_pt) * self.scale_x, (y_pt - self.y0_pt) * self.scale_y
-
-    def to_pt(self, x_px: float, y_px: float) -> tuple[float, float]:
-        return self.x0_pt + x_px / self.scale_x, self.y0_pt + y_px / self.scale_y
 
 
 @dataclass

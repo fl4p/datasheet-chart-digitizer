@@ -19,6 +19,7 @@ except Exception:  # pragma: no cover - optional standalone use
 from .capacitance_traces import _interp_y
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
 from .capacitance_vector import _load_fitz
+from .crop_transform import CropTransform
 
 def infer_text_order_axis_calibration(chart: dict[str, object]) -> AxisCalibration:
     text = str(chart.get("text") or "")
@@ -49,19 +50,14 @@ def infer_position_axis_calibration(
     fitz = _load_fitz()
     if fitz is None:
         raise RuntimeError("PyMuPDF is not available")
-    bbox = chart.get("bbox_pt")
-    if not isinstance(bbox, list) or len(bbox) != 4:
-        raise RuntimeError("chart bbox_pt missing")
-
-    height, width = image.shape[:2]
-    chart_x0, chart_y0, chart_x1, chart_y1 = [float(v) for v in bbox]
-    scale_x = width / max(1e-9, chart_x1 - chart_x0)
-    scale_y = height / max(1e-9, chart_y1 - chart_y0)
+    transform = CropTransform.for_chart(chart, image.shape)
+    plot_x0, plot_y0 = transform.to_pt(plot.x0, plot.y0)
+    plot_x1, plot_y1 = transform.to_pt(plot.x1, plot.y1)
     plot_rect = fitz.Rect(
-        chart_x0 + plot.x0 / scale_x,
-        chart_y0 + plot.y0 / scale_y,
-        chart_x0 + plot.x1 / scale_x,
-        chart_y0 + plot.y1 / scale_y,
+        plot_x0,
+        plot_y0,
+        plot_x1,
+        plot_y1,
     )
     doc = fitz.open(Path(str(chart["pdf"])))
     page = doc[int(chart["page"]) - 1]
@@ -74,10 +70,10 @@ def infer_position_axis_calibration(
 
     # Convert page-coordinate fits to crop-pixel-coordinate fits, because trace
     # points are stored in crop pixels.
-    x_scale = float(pos_cal.mx) / scale_x
-    x_offset = float(pos_cal.mx) * chart_x0 + float(pos_cal.bx)
-    y_scale = float(pos_cal.my) / scale_y
-    y_offset = float(pos_cal.my) * chart_y0 + float(pos_cal.by)
+    x_scale = float(pos_cal.mx) / transform.scale_x
+    x_offset = float(pos_cal.mx) * transform.x0_pt + float(pos_cal.bx)
+    y_scale = float(pos_cal.my) / transform.scale_y
+    y_offset = float(pos_cal.my) * transform.y0_pt + float(pos_cal.by)
     x_ticks = tuple(float(v) for v, _ in pos_cal.x_ticks)
     y_decades = tuple(float(e) for e, _ in pos_cal.y_decades)
     return AxisCalibration(

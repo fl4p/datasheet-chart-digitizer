@@ -1,4 +1,8 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from PIL import Image
 
 from datasheet_chart_digitizer import find_charts
 
@@ -27,6 +31,27 @@ class ChartClassificationTests(unittest.TestCase):
         for title, text in cases:
             with self.subTest(title=title):
                 self.assertNotEqual(find_charts.classify_chart(title, text), "gate_charge")
+
+
+class CropPanelTests(unittest.TestCase):
+    def test_returns_effective_pdf_box_from_integer_crop(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=500.0, height_pt=400.0, words=[])
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            page_png = root / "page.png"
+            out_png = root / "crop.png"
+            Image.new("RGB", (1000, 800), "white").save(page_png)
+
+            crop_box = find_charts.crop_panel(
+                page_png,
+                page,
+                (10.4, 20.6, 110.7, 120.9),
+                out_png,
+            )
+
+            self.assertEqual(crop_box, (8.0, 18.5, 112.5, 122.5))
+            with Image.open(out_png) as crop:
+                self.assertEqual(crop.size, (209, 208))
 
 
 class CaptionTitleTests(unittest.TestCase):

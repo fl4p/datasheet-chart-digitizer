@@ -22,6 +22,11 @@ import cv2
 import numpy as np
 from PIL import Image
 
+try:
+    from .crop_transform import CROP_MARGIN_PT
+except ImportError:  # pragma: no cover - direct script compatibility
+    from crop_transform import CROP_MARGIN_PT
+
 
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
 FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:\.\d+)?)[\.:]?\s*(.*)$", re.IGNORECASE)
@@ -981,9 +986,6 @@ def formula_from_text(lines: list[list[Word]], bbox: tuple[float, float, float, 
         if "=" in txt or "parameter" in txt.lower():
             candidates.append(txt)
     return " ".join(candidates)
-
-
-CROP_MARGIN_PT = 2.0
 
 
 def crop_panel(

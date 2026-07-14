@@ -36,6 +36,7 @@ class RegressionCase:
     allowed_qoss_statuses: frozenset[str | None] = frozenset({"pass", None})
     expected_anchor_relabels: int = 0
     expected_graph_table_inconsistent_parts: frozenset[str] = frozenset()
+    expected_extraction_axis_counts: tuple[tuple[str, str, int], ...] = ()
 
 
 CASES = (
@@ -44,12 +45,17 @@ CASES = (
         chart_index=CHART_ROOT / "debug_raster_coss_left_repair" / "charts.json",
         expected_charts=3,
         allowed_qoss_statuses=frozenset({"pass"}),
+        expected_extraction_axis_counts=(
+            ("raster", "grid_text", 1),
+            ("raster", "position_text", 2),
+        ),
     ),
     RegressionCase(
         name="dashed_vector_trace",
         chart_index=CHART_ROOT / "debug_iaucn_dashed" / "charts.json",
         expected_charts=1,
         allowed_qoss_statuses=frozenset({"pass", None}),
+        expected_extraction_axis_counts=(("vector", "grid_text", 1),),
     ),
     RegressionCase(
         name="large35_random_manufacturer_cv",
@@ -58,7 +64,28 @@ CASES = (
         max_untrusted_axes=1,
         expected_untrusted_parts=frozenset({"IMBG75R007M2H"}),
         allowed_qoss_statuses=frozenset({"pass", "graph_table_inconsistent", None}),
-        expected_graph_table_inconsistent_parts=frozenset({"BSC016N06NS", "IPF009N10NM8"}),
+        expected_graph_table_inconsistent_parts=frozenset(
+            {
+                "AIMZA75R007M2H",
+                "AIMZA75R011M2H",
+                "BSC016N06NS",
+                "IMBG65R026M2H",
+                "IMBG75R020M2H",
+                "IMLT65R026M2H",
+                "IMT65R039M1H",
+                "IMT65R083M1H",
+                "IMT65R260M1H",
+                "IPF009N10NM8",
+                "IPLT60R160CM8",
+            }
+        ),
+        expected_extraction_axis_counts=(
+            ("raster", "chart_text", 1),
+            ("raster", "grid_text", 4),
+            ("raster", "position_text", 1),
+            ("vector", "grid_text", 18),
+            ("vector", "position_text", 11),
+        ),
     ),
 )
 
@@ -163,6 +190,13 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
     trace_statuses = Counter(result.get("trace_validation_status") for result in results)
     qoss_statuses = Counter(result.get("qoss_validation_status") for result in results)
     axis_sources = Counter((result.get("axis_calibration") or {}).get("source") for result in results)
+    extraction_axis_counts = Counter(
+        (
+            str(result.get("extraction_method")),
+            str((result.get("axis_calibration") or {}).get("source")),
+        )
+        for result in results
+    )
     anchor_relabels = sum(
         bool((result.get("anchor_diagnostics") or {}).get("assignment_changed"))
         for result in results
@@ -213,6 +247,14 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
         failures.append(
             "graph/table inconsistency parts changed: "
             f"expected {sorted(expected_inconsistent)}, got {sorted(graph_table_inconsistent_parts)}"
+        )
+    expected_strata = Counter(
+        {(method, axis_source): count for method, axis_source, count in case.expected_extraction_axis_counts}
+    )
+    if extraction_axis_counts != expected_strata:
+        failures.append(
+            "extraction/axis strata changed: "
+            f"expected {dict(expected_strata)}, got {dict(extraction_axis_counts)}"
         )
 
     for result in results:

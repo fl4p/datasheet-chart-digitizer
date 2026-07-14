@@ -8,6 +8,7 @@ import numpy as np
 
 from .capacitance_traces import _smooth_points
 from .capacitance_types import PlotBox, Trace, VectorEdge
+from .crop_transform import CropTransform
 
 def extract_vector_trace_components(
     chart: dict[str, object], image: np.ndarray, plot: PlotBox
@@ -17,19 +18,14 @@ def extract_vector_trace_components(
         raise RuntimeError("PyMuPDF is not available")
 
     pdf_path = Path(str(chart["pdf"]))
-    bbox = chart.get("bbox_pt")
-    if not isinstance(bbox, list) or len(bbox) != 4:
-        raise RuntimeError("chart bbox_pt missing")
-
-    height, width = image.shape[:2]
-    chart_x0, chart_y0, chart_x1, chart_y1 = [float(v) for v in bbox]
-    scale_x = width / max(1e-9, chart_x1 - chart_x0)
-    scale_y = height / max(1e-9, chart_y1 - chart_y0)
+    transform = CropTransform.for_chart(chart, image.shape)
+    plot_x0, plot_y0 = transform.to_pt(plot.x0, plot.y0)
+    plot_x1, plot_y1 = transform.to_pt(plot.x1, plot.y1)
     plot_rect = fitz.Rect(
-        chart_x0 + plot.x0 / scale_x,
-        chart_y0 + plot.y0 / scale_y,
-        chart_x0 + plot.x1 / scale_x,
-        chart_y0 + plot.y1 / scale_y,
+        plot_x0,
+        plot_y0,
+        plot_x1,
+        plot_y1,
     )
 
     doc = fitz.open(pdf_path)
@@ -47,10 +43,7 @@ def extract_vector_trace_components(
         if not _mostly_inside_plot(component, plot_rect):
             continue
         raw_points = [
-            (
-                int(round((x - chart_x0) * scale_x)),
-                int(round((y - chart_y0) * scale_y)),
-            )
+            tuple(int(round(value)) for value in transform.to_px(x, y))
             for x, y in component
         ]
         points = _smooth_points(_resample_vector_trace_pixels(raw_points, plot), window=9)
@@ -334,4 +327,3 @@ def _resample_vector_trace_pixels(points: list[tuple[int, int]], plot: PlotBox) 
             y = int(round(float(np.median(ys))))
         dense.append((x, y))
     return dense
-

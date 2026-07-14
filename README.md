@@ -21,6 +21,10 @@ types can be added as plugins.
 
 - Finds chart panels in PDF datasheets and writes `charts.json`.
 - Emits chart crops for visual inspection.
+- Records each crop's effective PDF region as `crop_box_pt`; digitizers use a
+  shared PDF-point/crop-pixel transform so vector geometry, raster traces, and
+  position-based calibration stay aligned. Legacy indexes fall back to the
+  historical two-point crop margin.
 - Digitizes vector PDF traces first, with raster fallback.
 - Calibrates axes from tick labels/gridlines.
 - Writes calibrated point CSVs plus overlays.
