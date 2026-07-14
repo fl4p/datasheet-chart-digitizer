@@ -2,13 +2,20 @@
 
 Standalone datasheet chart digitizer.
 
-The package currently ships three MOSFET chart plugins: capacitance plots
+The package currently ships four MOSFET chart plugins: capacitance plots
 (`Ciss`, `Coss`, `Crss` versus `VDS`), gate-charge plots for Miller plateau
-voltage (`Vpl`) extraction, and diode reverse-recovery panels (`Qrr`/`Irm`/
+voltage (`Vpl`) extraction, diode reverse-recovery panels (`Qrr`/`Irm`/
 `trr`/`S` versus `IF` or `di/dt` at 25/125 °C, Alpha & Omega layout — filled
 outline curves, dual linear y axes, spec-table + cross-panel scale
-verification in `reverse_recovery_validation.py`). The core pieces are kept
-generic so other datasheet chart types can be added as plugins.
+verification in `reverse_recovery_validation.py`), and breakdown-voltage
+plots (`V(BR)DSS` versus `Tj`, Infineon Diagram-15 layout and the older
+numbered-caption layout — one stroked vector line on linear/linear axes with
+negative-`Tj` ticks; plot frame from the vector uniform-pitch gridline
+family with raster fallback, a clipping warning when the curve touches the
+frame, and a fitted `V(25 °C)`/slope summary plus a tri-state spec-table
+anchor verdict that verifies the chart's min-anchored interpretation instead
+of assuming it). The core pieces are kept generic so other datasheet chart
+types can be added as plugins.
 
 ## What It Does
 
@@ -37,6 +44,7 @@ dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv 
 dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
 dsdig digitize-vpl /path/to/datasheet.pdf --datasheet-root /path/to/pwr-mosfet-lib --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
+dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 ```
 
 `digitize-vpl` is currently packaged with the repository but still depends on

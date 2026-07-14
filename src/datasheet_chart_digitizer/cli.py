@@ -9,6 +9,7 @@ def main() -> None:
         "digitize-capacitance": "digitize MOSFET Ciss/Coss/Crss charts",
         "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
         "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
+        "digitize-breakdown-voltage": "digitize V(BR)DSS vs Tj charts (Infineon Diagram 15 style)",
         "export-coss-spice": "export digitized Coss(V) as knots and a SPICE Qoss table",
         "export-coss-dslib": "export validation-gated dslib (V, Coss, Crss) knot triples",
     }
@@ -46,6 +47,12 @@ def main() -> None:
 
         sys.argv = ["dsdig digitize-reverse-recovery", *rest]
         reverse_recovery.main()
+        return
+    if command == "digitize-breakdown-voltage":
+        from . import breakdown_voltage
+
+        sys.argv = ["dsdig digitize-breakdown-voltage", *rest]
+        breakdown_voltage.main()
         return
     if command == "export-coss-spice":
         from . import coss_export
