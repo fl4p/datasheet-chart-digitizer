@@ -12,20 +12,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "datasheet_chart_digitizer"
 
-from .gate_charge_estimation import (
-    _estimate_vpl_from_curve,
-    _line_sse,
-    _local_y_ticks_for_plot,
-    _middle_slope_y,
-    _parse_numeric_label,
-    _reject_ambiguous_broad_context,
-    _reject_non_gate_context,
-    _text_near_rect,
-    _v_from_local_ticks,
-    _v_from_plot_axis,
-    _v_from_y_pixel,
-    _y_pixel_from_local_ticks,
-)
+from .gate_charge import digitize_gate_charge
 from .gate_charge_samples import (
     DEFAULT_DATASHEET_ROOT,
     DEFAULT_DPI,
@@ -35,18 +22,6 @@ from .gate_charge_samples import (
     _sample_pdf_path,
     _samples_from_chart_extraction,
     _save_sheet,
-)
-from .gate_charge_trace import (
-    _candidate_masks,
-    _cluster_runs,
-    _curve_score,
-    _detect_inner_plot_box,
-    _mask_page_text,
-    _pdf_to_px,
-    _smooth_polyline,
-    _trace_component,
-    _trace_gate_curve,
-    _trace_vector_gate_curve,
 )
 
 
@@ -61,7 +36,7 @@ def main() -> int:
         "--datasheet-root",
         type=Path,
         default=DEFAULT_DATASHEET_ROOT,
-        help="pwr-mosfet-lib checkout containing datasheets/ and dslib. Defaults to Fab's local checkout.",
+        help="Root containing datasheets/ for relative PDF arguments and local regression samples.",
     )
     parser.add_argument(
         "--out",
@@ -105,17 +80,6 @@ def main() -> int:
         samples = _samples_from_chart_extraction(chart_extraction_md, start, count)
         batch_name = f"chart_extraction_{start}_{start + len(samples) - 1}"
 
-    sys.path.insert(0, str(root))
-    try:
-        from dslib.viz import find_in_pdf
-    except ModuleNotFoundError as exc:
-        if exc.name != "dslib":
-            raise
-        raise SystemExit(
-            "digitize-vpl currently requires pwr-mosfet-lib's dslib chart finder. "
-            f"Pass --datasheet-root pointing at a checkout that contains dslib/ (got {root})."
-        ) from exc
-
     out.mkdir(parents=True, exist_ok=True)
     images = []
     rows = []
@@ -142,31 +106,12 @@ def main() -> int:
                 had_errors = True
             continue
 
-        hits = find_in_pdf(str(pdf), enable_raster=True, enable_ocr=False)
-        usable = [(c, h, s) for c, h, s in hits if h is not None]
-        if usable:
-            filtered = []
-            doc_filter = pymupdf.open(str(pdf))
-            try:
-                for c, h, s in usable:
-                    page_filter = doc_filter[c.page_num]
-                    tight_ctx = _text_near_rect(page_filter, c.bbox, pad=4.0)
-                    broad_ctx = _text_near_rect(page_filter, c.bbox, pad=90.0)
-                    if not _reject_non_gate_context(tight_ctx) and not _reject_ambiguous_broad_context(tight_ctx, broad_ctx):
-                        filtered.append((c, h, s))
-                usable = filtered
-            finally:
-                doc_filter.close()
+        results = digitize_gate_charge(pdf, dpi=dpi)
+        usable = [result for result in results if result.vpl is not None]
         if usable and ref_vpl is not None and args.reference_assisted:
-            chart, hit, source = min(
-                usable,
-                key=lambda t: (
-                    abs(float(getattr(t[1], "v_pl", float("inf"))) - ref_vpl),
-                    -float(getattr(t[1], "score", 0.0)),
-                ),
-            )
+            result = min(usable, key=lambda candidate: abs(float(candidate.vpl) - ref_vpl))
         elif usable:
-            chart, hit, source = max(usable, key=lambda t: getattr(t[1], "score", 0.0))
+            result = usable[0]
         else:
             img = Image.new("RGB", (900, 180), "white")
             ImageDraw.Draw(img).text((12, 20), f"{mpn}: no Vpl chart hit", fill=(0, 0, 0), font=_font(18))
@@ -178,42 +123,18 @@ def main() -> int:
 
         doc = pymupdf.open(str(pdf))
         try:
-            page = doc[chart.page_num]
-            rect = (chart.bbox + (-46, -38, 42, 52)) & page.rect
+            page = doc[result.panel.page - 1]
+            rect = pymupdf.Rect(result.crop_box_pt)
             scale = dpi / 72.0
             pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=rect, alpha=False)
             crop = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-            trace_crop = _mask_page_text(crop, page, rect, chart.bbox, scale)
-
-            bx0, by0 = _pdf_to_px(rect, scale, chart.bbox.x0, chart.bbox.y0)
-            bx1, by1 = _pdf_to_px(rect, scale, chart.bbox.x1, chart.bbox.y1)
-            loose_plot_box = (int(round(bx0)), int(round(by0)), int(round(bx1)), int(round(by1)))
-            plot_box = _detect_inner_plot_box(crop, loose_plot_box)
-            local_y_ticks = _local_y_ticks_for_plot(page, rect, scale, plot_box)
-            if (
-                (source or "").startswith("vector")
-                and plot_box[0] - loose_plot_box[0] > 10
-                and plot_box[0] - loose_plot_box[0] < 0.22 * max(1, loose_plot_box[2] - loose_plot_box[0])
-            ):
-                plot_box = (loose_plot_box[0], plot_box[1], plot_box[2], plot_box[3])
-            curve = _smooth_polyline(_trace_gate_curve(trace_crop, plot_box))
-            if len(curve) < 10 and (source or "").startswith("vector"):
-                curve = _smooth_polyline(_trace_vector_gate_curve(page, rect, scale, plot_box), stride=1)
         finally:
             doc.close()
 
-        loose_w0 = max(1, loose_plot_box[2] - loose_plot_box[0])
-        loose_h0 = max(1, loose_plot_box[3] - loose_plot_box[1])
-        plot_w0 = max(1, plot_box[2] - plot_box[0])
-        plot_h0 = max(1, plot_box[3] - plot_box[1])
+        plot_box = result.plot_box_px
+        loose_plot_box = plot_box
+        curve = list(result.curve_px)
         visual_plot_box = plot_box
-        if (
-            (source or "").startswith("vector")
-            and plot_h0 < 0.75 * loose_h0
-            and plot_box[1] - loose_plot_box[1] > 0.08 * loose_h0
-            and loose_plot_box[3] - plot_box[3] > 0.08 * loose_h0
-        ):
-            visual_plot_box = loose_plot_box
 
         draw = ImageDraw.Draw(crop)
         draw.rectangle(list(loose_plot_box), outline=(255, 220, 128), width=2)
@@ -223,52 +144,23 @@ def main() -> int:
             for x, y in curve[:: max(1, len(curve) // 35)]:
                 draw.ellipse([x - 2, y - 2, x + 2, y + 2], fill=(0, 40, 220))
 
-        old_est = getattr(hit, "v_pl", None) if hit is not None else None
-        curve_est, y_curve_vpl = _estimate_vpl_from_curve(curve, chart, rect, scale, plot_box, local_y_ticks)
-        loose_h = max(1, loose_plot_box[3] - loose_plot_box[1])
-        stacked_inner_plot = (plot_box[1] - loose_plot_box[1]) > 0.25 * loose_h
-        est_source = "dslib"
-        if ref_vpl is not None and args.reference_assisted:
-            candidates: list[tuple[float, float | None, str]] = []
-            if isinstance(old_est, (int, float)):
-                y_pdf = getattr(hit, "y_pdf", None) if hit is not None else None
-                y_old = _pdf_to_px(rect, scale, chart.bbox.x0, float(y_pdf))[1] if y_pdf is not None else None
-                candidates.append((float(old_est), y_old, "dslib"))
-            if curve_est is not None and y_curve_vpl is not None:
-                candidates.append((float(curve_est), y_curve_vpl, "curve"))
-                candidates.append((_v_from_plot_axis(plot_box, y_curve_vpl, -5.0, 20.0), y_curve_vpl, "curve/axis_-5_20"))
-                candidates.append((_v_from_plot_axis(plot_box, y_curve_vpl, 0.0, 15.0), y_curve_vpl, "curve/axis_0_15"))
-            if candidates:
-                est, y_vpl, est_source = min(candidates, key=lambda item: abs(item[0] - ref_vpl))
-            else:
-                est, y_vpl, est_source = None, None, "none"
-        elif curve_est is not None and y_curve_vpl is not None:
-            est = curve_est
-            y_vpl = y_curve_vpl
-            est_source = "curve"
-        elif stacked_inner_plot and curve_est is not None:
-            est = curve_est
-            y_vpl = y_curve_vpl
-            est_source = "curve/local-axis"
-        elif isinstance(old_est, (int, float)):
-            est = old_est
-            y_pdf = getattr(hit, "y_pdf", None) if hit is not None else None
-            y_vpl = _pdf_to_px(rect, scale, chart.bbox.x0, float(y_pdf))[1] if y_pdf is not None else None
-        else:
-            est = curve_est
-            y_vpl = y_curve_vpl
-            est_source = "curve"
+        est = result.vpl
+        y_vpl = result.vpl_y_px
         est_s = f"{est:.2f}" if isinstance(est, (int, float)) else "none"
         err_s = f"{est - ref_vpl:+.2f}" if isinstance(est, (int, float)) and ref_vpl is not None else ""
         ok = isinstance(est, (int, float)) and ref_vpl is not None and abs(est - ref_vpl) <= 0.5
         guide_color = (20, 170, 40) if ok else (255, 40, 40)
         if y_vpl is not None:
             draw.line([(visual_plot_box[0], y_vpl), (visual_plot_box[2], y_vpl)], fill=guide_color, width=2)
-        old_s = f" old={old_est:.2f}" if isinstance(old_est, (int, float)) and est is not None and abs(old_est - est) > 0.05 else ""
         ref_s = f"{ref_vpl:.2f}" if ref_vpl is not None else "n/a"
-        label = f"{mpn}  ref={ref_s}  Vpl={est_s} {err_s}{old_s}  chart={source or '-'}  vpl_src={est_source}  curve_pts={len(curve)}"
-        if local_y_ticks:
-            label += f"  ytick=local/{len(local_y_ticks)}"
+        label = (
+            f"{mpn}  ref={ref_s}  Vpl={est_s} {err_s}  status={result.status} "
+            f"trace={result.trace_source} score={result.score:.2f} curve_pts={len(curve)}"
+        )
+        if result.y_tick_count:
+            label += f"  ytick={result.y_tick_count}"
+        if result.diagnostics:
+            label += "  diag=" + ",".join(result.diagnostics)
         if comment:
             label += f"  ({comment})"
         loose_h = max(1, loose_plot_box[3] - loose_plot_box[1])

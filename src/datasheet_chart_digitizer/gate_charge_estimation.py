@@ -5,9 +5,6 @@ import re
 import numpy as np
 import pymupdf
 
-from .gate_charge_trace import _pdf_to_px
-
-
 def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> float | None:
     ticks = getattr(chart, "y_ticks", None) or []
     if len(ticks) < 2:
@@ -24,6 +21,8 @@ def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> flo
 def _parse_numeric_label(text: str) -> float | None:
     text = text.strip().replace("−", "-").replace("–", "-")
     text = text.replace("O", "0").replace("o", "0")
+    if re.search(r"[A-Za-z]", text):
+        return None
     m = re.search(r"[-+]?\d+(?:\.\d+)?", text)
     if not m:
         return None
@@ -45,7 +44,7 @@ def _local_y_ticks_for_plot(
     px1 = rect.x0 + x1 / scale
     py1 = rect.y0 + y1 / scale
     height = max(1.0, py1 - py0)
-    candidates: list[tuple[float, float]] = []
+    candidates: dict[str, list[tuple[float, float, float]]] = {"left": [], "right": []}
     try:
         words = page.get_text("words")
     except Exception:
@@ -66,7 +65,108 @@ def _local_y_ticks_for_plot(
             continue
         if value < -20 or value > 30:
             continue
-        candidates.append((value, cy))
+        candidates["left" if left_band else "right"].append((value, cy, cx))
+
+    axes = [
+        axis
+        for side in candidates.values()
+        for axis in _cluster_y_tick_columns(side)
+    ]
+    axes = [axis for axis in axes if len(axis) >= 2]
+    if not axes:
+        return []
+    return max(axes, key=len)
+
+
+def _cluster_y_tick_columns(
+    candidates: list[tuple[float, float, float]],
+) -> list[list[tuple[float, float]]]:
+    """Split nearby numeric labels into distinct vertical tick columns."""
+
+    columns: list[list[tuple[float, float, float]]] = []
+    for item in sorted(candidates, key=lambda candidate: candidate[2]):
+        if columns and abs(item[2] - float(np.median([row[2] for row in columns[-1]]))) <= 6.0:
+            columns[-1].append(item)
+        else:
+            columns.append([item])
+    return [
+        _normalize_y_tick_candidates([(value, y) for value, y, _x in column])
+        for column in columns
+    ]
+
+
+def _best_y_ticks_for_panel(
+    page: pymupdf.Page,
+    panel_rect: pymupdf.Rect,
+) -> list[tuple[float, float]]:
+    """Find the most plausible numeric y-axis column near a chart panel."""
+
+    axis = _best_y_axis_for_panel(page, panel_rect)
+    return axis[0] if axis is not None else []
+
+
+def _best_y_axis_for_panel(
+    page: pymupdf.Page,
+    panel_rect: pymupdf.Rect,
+) -> tuple[list[tuple[float, float]], float] | None:
+    """Return the best nearby y-axis as ``(ticks, column_x)``."""
+
+    candidates: list[tuple[float, float, float]] = []
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return None
+    for word in words:
+        wx0, wy0, wx1, wy1 = [float(value) for value in word[:4]]
+        value = _parse_numeric_label(str(word[4]))
+        if value is None or value < -20 or value > 30:
+            continue
+        candidates.append((value, 0.5 * (wy0 + wy1), 0.5 * (wx0 + wx1)))
+
+    best: tuple[float, list[tuple[float, float]], float] | None = None
+    for ticks in _cluster_y_tick_columns(candidates):
+        if len(ticks) < 2:
+            continue
+        ys = [y for _value, y in ticks]
+        y_span = max(ys) - min(ys)
+        if y_span < 20.0:
+            continue
+        matching = [
+            row
+            for row in candidates
+            if any(abs(row[0] - value) < 1e-9 and abs(row[1] - y) < 1e-9 for value, y in ticks)
+        ]
+        if not matching:
+            continue
+        axis_x = float(np.median([row[2] for row in matching]))
+        if axis_x < panel_rect.x0 - 130.0 or axis_x > panel_rect.x1 + 130.0:
+            continue
+        if max(ys) < panel_rect.y0:
+            vertical_gap = panel_rect.y0 - max(ys)
+        elif min(ys) > panel_rect.y1:
+            vertical_gap = min(ys) - panel_rect.y1
+        else:
+            vertical_gap = 0.0
+        if vertical_gap > 300.0:
+            continue
+        horizontal_gap = min(abs(axis_x - panel_rect.x0), abs(axis_x - panel_rect.x1))
+        value_span = max(value for value, _y in ticks) - min(value for value, _y in ticks)
+        score = (
+            20.0 * len(ticks)
+            + 4.0 * value_span
+            + 0.03 * y_span
+            - 0.12 * horizontal_gap
+            - 0.15 * vertical_gap
+        )
+        if best is None or score > best[0]:
+            best = (score, ticks, axis_x)
+    return (best[1], best[2]) if best is not None else None
+
+
+def _normalize_y_tick_candidates(
+    candidates: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Collapse labels on one side of a plot into a monotone y-axis."""
 
     candidates.sort(key=lambda item: item[1])
     grouped: list[list[tuple[float, float]]] = []
@@ -84,17 +184,100 @@ def _local_y_ticks_for_plot(
         return []
 
     ticks.sort(key=lambda item: item[1])
-    vals = np.array([v for v, _ in ticks], dtype=float)
-    if vals[0] < vals[-1]:
-        return []
-    if len(vals) >= 3:
-        diffs = np.diff(vals)
-        if np.any(diffs >= 0):
-            return []
-        med = float(np.median(np.abs(diffs)))
-        if med > 0 and float(np.max(np.abs(np.abs(diffs) - med))) > max(1.5, 0.45 * med):
-            return []
-    return ticks
+    best: tuple[float, list[tuple[float, float]]] | None = None
+    for start in range(len(ticks) - 1):
+        for stop in range(start + 2, len(ticks) + 1):
+            run = ticks[start:stop]
+            vals = np.array([value for value, _y in run], dtype=float)
+            ys = np.array([y for _value, y in run], dtype=float)
+            if np.any(np.diff(vals) >= 0):
+                continue
+            value_span = float(vals[0] - vals[-1])
+            if len(run) == 2 and value_span < 4.0:
+                continue
+            if len(run) >= 3:
+                slope, intercept = np.polyfit(ys, vals, 1)
+                residual = float(np.max(np.abs(vals - (slope * ys + intercept))))
+                if residual > max(0.35, 0.08 * value_span):
+                    continue
+            score = 10.0 * len(run) + 0.01 * float(ys[-1] - ys[0])
+            if best is None or score > best[0]:
+                best = (score, run)
+    return best[1] if best is not None else []
+
+
+def _best_x_axis_for_panel(
+    page: pymupdf.Page,
+    panel_rect: pymupdf.Rect,
+) -> tuple[list[tuple[float, float]], float] | None:
+    """Return the best nearby x-axis as ``(ticks, row_y)``."""
+
+    candidates: list[tuple[float, float, float]] = []
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return None
+    for word in words:
+        wx0, wy0, wx1, wy1 = [float(value) for value in word[:4]]
+        value = _parse_numeric_label(str(word[4]))
+        if value is None or value < 0 or value > 2000:
+            continue
+        candidates.append((value, 0.5 * (wx0 + wx1), 0.5 * (wy0 + wy1)))
+
+    rows: list[list[tuple[float, float, float]]] = []
+    for item in sorted(candidates, key=lambda candidate: candidate[2]):
+        if rows and abs(item[2] - float(np.median([entry[2] for entry in rows[-1]]))) <= 4.0:
+            rows[-1].append(item)
+        else:
+            rows.append([item])
+
+    best: tuple[float, list[tuple[float, float]], float] | None = None
+    for row in rows:
+        ticks = _normalize_x_tick_candidates(
+            [
+                (value, x)
+                for value, x, _y in row
+                if panel_rect.x0 - 20.0 <= x <= panel_rect.x1 + 20.0
+            ]
+        )
+        if len(ticks) < 3:
+            continue
+        xs = [x for _value, x in ticks]
+        x_span = max(xs) - min(xs)
+        overlap = max(0.0, min(max(xs), panel_rect.x1) - max(min(xs), panel_rect.x0))
+        if x_span < 45.0 or overlap / x_span < 0.35:
+            continue
+        row_y = float(np.median([entry[2] for entry in row]))
+        vertical_gap = min(abs(row_y - panel_rect.y0), abs(row_y - panel_rect.y1))
+        if vertical_gap > 180.0:
+            continue
+        score = 18.0 * len(ticks) + 0.05 * x_span - 0.12 * vertical_gap
+        if best is None or score > best[0]:
+            best = (score, ticks, row_y)
+    return (best[1], best[2]) if best is not None else None
+
+
+def _normalize_x_tick_candidates(
+    candidates: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    candidates.sort(key=lambda item: item[1])
+    best: tuple[float, list[tuple[float, float]]] | None = None
+    for start in range(len(candidates) - 2):
+        for stop in range(start + 3, len(candidates) + 1):
+            run = candidates[start:stop]
+            vals = np.array([value for value, _x in run], dtype=float)
+            xs = np.array([x for _value, x in run], dtype=float)
+            if np.any(np.diff(vals) <= 0) or np.ptp(xs) < 1e-9:
+                continue
+            slope, intercept = np.polyfit(xs, vals, 1)
+            value_span = float(vals[-1] - vals[0])
+            residual = float(np.max(np.abs(vals - (slope * xs + intercept))))
+            if residual > max(0.5, 0.06 * value_span):
+                continue
+            score = 10.0 * len(run) + 0.01 * float(xs[-1] - xs[0])
+            if best is None or score > best[0]:
+                best = (score, run)
+    return best[1] if best is not None else []
 
 
 def _text_near_rect(page: pymupdf.Page, bbox: pymupdf.Rect, pad: float = 26.0) -> str:

@@ -1,13 +1,14 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
 from PIL import Image, ImageFont
 
 
-DEFAULT_DATASHEET_ROOT = Path("/Users/fab/dev/pv/pwr-mosfet-lib")
-DEFAULT_OUT = Path("/Users/fab/dev/pv/ee/out/vpl_human_refs_first5_dsdig_fullcurve")
+DEFAULT_DATASHEET_ROOT = Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
+DEFAULT_OUT = Path(os.environ.get("DSDIG_OUT", "out/vpl"))
 DEFAULT_DPI = 220
 
 SAMPLES = [

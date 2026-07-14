@@ -2,20 +2,24 @@
 
 Standalone datasheet chart digitizer.
 
-The package currently ships four MOSFET chart plugins: capacitance plots
-(`Ciss`, `Coss`, `Crss` versus `VDS`), gate-charge plots for Miller plateau
-voltage (`Vpl`) extraction, diode reverse-recovery panels (`Qrr`/`Irm`/
-`trr`/`S` versus `IF` or `di/dt` at 25/125 °C, Alpha & Omega layout — filled
-outline curves, dual linear y axes, spec-table + cross-panel scale
-verification in `reverse_recovery_validation.py`), and breakdown-voltage
-plots (`V(BR)DSS` versus `Tj`, Infineon Diagram-15 layout and the older
-numbered-caption layout — one stroked vector line on linear/linear axes with
-negative-`Tj` ticks; plot frame from the vector uniform-pitch gridline
-family with raster fallback, a clipping warning when the curve touches the
-frame, and a fitted `V(25 °C)`/slope summary plus a tri-state spec-table
-anchor verdict that verifies the chart's min-anchored interpretation instead
-of assuming it). The core pieces are kept generic so other datasheet chart
-types can be added as plugins.
+The package currently ships four MOSFET chart plugins:
+
+1. Capacitance plots (`Ciss`, `Coss`, and `Crss` versus `VDS`).
+2. Gate-charge plots for Miller plateau voltage (`Vpl`) extraction.
+3. Diode reverse-recovery panels (`Qrr`/`Irm`/`trr`/`S` versus `IF` or
+   `di/dt` at 25/125 °C, Alpha & Omega layout — filled outline curves, dual
+   linear y axes, and spec-table + cross-panel scale verification in
+   `reverse_recovery_validation.py`).
+4. Breakdown-voltage plots (`V(BR)DSS` versus `Tj`, Infineon Diagram-15 layout
+   and the older numbered-caption layout — one stroked vector line on
+   linear/linear axes with negative-`Tj` ticks; plot frame from the vector
+   uniform-pitch gridline family with raster fallback, a clipping warning when
+   the curve touches the frame, and a fitted `V(25 °C)`/slope summary plus a
+   tri-state spec-table anchor verdict that verifies the chart's min-anchored
+   interpretation instead of assuming it).
+
+The core pieces are kept generic so other datasheet chart types can be added
+as plugins.
 
 ## What It Does
 
@@ -50,16 +54,17 @@ dsdig find /path/to/datasheets/*.pdf --out work/charts
 dsdig digitize-capacitance work/charts/charts.json --out work/charts
 dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
 dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
-dsdig digitize-vpl /path/to/datasheet.pdf --datasheet-root /path/to/pwr-mosfet-lib --out work/vpl
+dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 ```
 
-`digitize-vpl` is currently packaged with the repository but still depends on
-`pwr-mosfet-lib`'s `dslib.viz` chart finder. Pass `--datasheet-root` pointing at
-a checkout that contains both `datasheets/` and `dslib/`. Relative PDF
-arguments are resolved under `--datasheet-root/datasheets`. This is the next
-piece to replace before Vpl is fully standalone.
+`digitize-vpl` is standalone and uses the package's generic chart finder. Its
+package-owned experimental `GateChargeResult` records the selected panel, Vpl
+estimate, status, trace source, score, curve points, axis evidence, and
+diagnostics. Callers must retain the result metadata; there is intentionally no
+package scalar `find_vpl()` API while numerical migration remains unaccepted.
+Relative PDF arguments are resolved under `--datasheet-root/datasheets`.
 
 If `.pdf.nop.csv` anchor tables are not next to the PDFs, pass their directory:
 
@@ -118,12 +123,12 @@ its own `COSS_CURVES`/`CISS_CURVES` database format.
 
 ## Local Regression Corpus
 
-Fab's workstation has local regression corpora under `/Users/fab/dev/pv/ee/out`
-and `/Users/fab/dev/pv/pwr-mosfet-lib`. Run the combined local regression after
-trace, calibration, or validation changes:
+Maintainers with access to the local regression corpora should run the combined
+regression after trace, calibration, or validation changes:
 
 ```bash
-python tools/run_local_regression.py
+DSDIG_DATASHEET_ROOT=/path/to/datasheet-corpus \
+  python tools/run_local_regression.py
 ```
 
 This runs the C(V) corpus and the Vpl gate-charge full-curve verifier against
@@ -146,15 +151,19 @@ repairs, the dashed-line case, and the 35-chart random-manufacturer C(V) sample.
 The Vpl harness runs the packaged `datasheet_chart_digitizer.gate_charge_vpl`
 module against the 15 human-reviewed gate-charge overlays in explicit
 `--reference-assisted` audit mode. Normal `digitize-vpl` runs do not use human
-reference values to choose the reported estimate.
+reference values to choose the reported estimate. Finder parity measures chart
+discovery only; it does not imply numerical Vpl parity. The downstream dslib
+compatibility default remains on its legacy estimator while the package-native
+numeric corpus still has unresolved and wrong-axis cases. The current dslib
+reference-corpus gate is 46 estimates within ±0.5 V, 12 outside tolerance,
+4 unresolved, and 1 missing PDF out of 63 entries. Finder parity does not waive
+that failed numerical gate.
 
 ## Scope
 
 The repository name is intentionally generic. Planned plugins include Qoss(VDS),
-gate-charge, SOA, diode, thermal-impedance, efficiency, and magnetics curves.
+SOA, diode, thermal-impedance, efficiency, and magnetics curves.
 The existing MOSFET capacitance digitizer is the first production-quality
 plugin and acts as the reference implementation for extraction, calibration,
-overlays, and validation status reporting. The Vpl digitizer is wired as a
-package plugin with local human-reference regressions and will be refactored
-toward the same module boundaries as it matures. Its remaining external
-dependency is chart discovery from `pwr-mosfet-lib`'s `dslib.viz`.
+overlays, and validation status reporting. The Vpl digitizer is a standalone
+package plugin with a public result API and local human-reference regressions.
