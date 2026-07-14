@@ -32,13 +32,7 @@ from datasheet_chart_digitizer.gate_charge_samples import (  # noqa: E402
 
 LEGACY_VPL_TEST = DEFAULT_DATASHEET_ROOT / "test/test_viz_vpl.py"
 
-EXPECTED_PACKAGED_FINDER_MISSES = {
-    # Current state before consolidating dslib.viz into this package.  These are
-    # mostly non-Infineon caption/layout styles that dslib.viz handles with its
-    # Vpl-specific title/axis heuristics.
-    # Expanded legacy Vpl sample corpus from pwr-mosfet-lib/test/test_viz_vpl.py.
-    "IPI65R190CFD",
-}
+EXPECTED_PACKAGED_FINDER_MISSES: set[str] = set()
 
 EXPECTED_LEGACY_UNAVAILABLE = {
     # These entries are present in the legacy Vpl test list but are not useful
@@ -51,14 +45,7 @@ EXPECTED_LEGACY_UNAVAILABLE = {
     "HY3912W",
 }
 
-EXPECTED_TOOL_ERRORS = {
-    # poppler pdftotext SIGABRTs on this PDF's broken embedded font ("Unknown
-    # character collection 'PDFAUTOCAD-Indentity0'", libc++abi out_of_range) —
-    # an environment/PDF defect, not a finder property. One uncaught crash used
-    # to abort the ENTIRE parity harness, silencing all other samples. Like the
-    # other allowlists this should only shrink (e.g. after a poppler fix).
-    "STL70N4LLF5",
-}
+EXPECTED_TOOL_ERRORS: set[str] = set()
 
 
 def _rect_tuple(rect: Any) -> tuple[float, float, float, float]:
@@ -247,6 +234,7 @@ def run_parity(
                             "diagram": panel.diagram,
                             "title": panel.title,
                             "bbox_pt": list(panel.bbox_pt),
+                            "text_source": panel.text_source,
                         }
                         for panel in packaged
                     ],

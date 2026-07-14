@@ -20,6 +20,7 @@ from typing import Iterable
 
 import cv2
 import numpy as np
+import pymupdf
 from PIL import Image
 
 try:
@@ -49,6 +50,7 @@ class PageText:
     width_pt: float
     height_pt: float
     words: list[Word]
+    text_source: str = "pdftotext"
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,7 @@ class ChartPanel:
     text: str
     formula: str
     mentions: list[str]
+    text_source: str = "pdftotext"
 
 
 def run_text_bbox(pdf: Path) -> list[PageText]:
@@ -84,7 +87,7 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
     )
     xml_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", proc.stdout)
     root = ET.fromstring(xml_text)
-    pages: list[PageText] = []
+    primary_pages: list[PageText] = []
     for page_idx, page_el in enumerate(root.iterfind(".//{*}page"), start=1):
         words: list[Word] = []
         for word_el in page_el.iterfind(".//{*}word"):
@@ -100,7 +103,7 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
                     y1=float(word_el.attrib["yMax"]),
                 )
             )
-        pages.append(
+        primary_pages.append(
             PageText(
                 page_num=page_idx,
                 width_pt=float(page_el.attrib["width"]),
@@ -108,7 +111,100 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
                 words=words,
             )
         )
+    if not any(_page_text_looks_corrupt(page) for page in primary_pages):
+        return primary_pages
+    try:
+        fallback_pages = _run_pymupdf_text(pdf)
+    except (RuntimeError, ValueError):
+        return primary_pages
+    fallback_by_number = {page.page_num: page for page in fallback_pages}
+    return [
+        _select_page_text(page, fallback_by_number.get(page.page_num))
+        for page in primary_pages
+    ]
+
+
+def _run_pymupdf_text(pdf: Path) -> list[PageText]:
+    pages: list[PageText] = []
+    with pymupdf.open(pdf) as doc:
+        for page_idx, page in enumerate(doc, start=1):
+            words = [
+                Word(
+                    text=str(raw[4]),
+                    x0=float(raw[0]),
+                    y0=float(raw[1]),
+                    x1=float(raw[2]),
+                    y1=float(raw[3]),
+                )
+                for raw in page.get_text("words")
+                if str(raw[4]).strip()
+            ]
+            pages.append(
+                PageText(
+                    page_num=page_idx,
+                    width_pt=float(page.rect.width),
+                    height_pt=float(page.rect.height),
+                    words=_dedupe_overprinted_words(words),
+                    text_source="pymupdf_fallback",
+                )
+            )
     return pages
+
+
+def _dedupe_overprinted_words(words: list[Word]) -> list[Word]:
+    """Collapse near-identical glyph layers emitted as repeated words."""
+    buckets: dict[tuple[str, int, int], list[Word]] = {}
+    out: list[Word] = []
+    for word in words:
+        cx = 0.5 * (word.x0 + word.x1)
+        cy = 0.5 * (word.y0 + word.y1)
+        gx = int(cx)
+        gy = int(cy)
+        duplicate = False
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for other in buckets.get((word.text, gx + dx, gy + dy), []):
+                    if max(
+                        abs(word.x0 - other.x0),
+                        abs(word.y0 - other.y0),
+                        abs(word.x1 - other.x1),
+                        abs(word.y1 - other.y1),
+                    ) <= 0.8:
+                        duplicate = True
+                        break
+                if duplicate:
+                    break
+            if duplicate:
+                break
+        if duplicate:
+            continue
+        out.append(word)
+        buckets.setdefault((word.text, gx, gy), []).append(word)
+    return out
+
+
+def _readable_word_count(page: PageText) -> int:
+    return sum(bool(re.search(r"[A-Za-z]{2}", word.text)) for word in page.words)
+
+
+def _page_text_looks_corrupt(page: PageText) -> bool:
+    return len(page.words) >= 20 and _readable_word_count(page) / len(page.words) < 0.12
+
+
+def _select_page_text(primary: PageText, fallback: PageText | None) -> PageText:
+    """Use PyMuPDF only when it clearly repairs a corrupted text layer."""
+    if fallback is None or not fallback.words:
+        return primary
+    primary_readable = _readable_word_count(primary)
+    fallback_readable = _readable_word_count(fallback)
+    fallback_fraction = fallback_readable / len(fallback.words)
+    if (
+        fallback_readable >= 8
+        and fallback_readable >= 2 * max(1, primary_readable)
+        and fallback_fraction >= 0.18
+    ):
+        return fallback
+    return primary
 
 
 def group_words_into_lines(words: Iterable[Word]) -> list[list[Word]]:
@@ -939,6 +1035,7 @@ def _append_panel(
             text=text,
             formula=formula_from_text(lines, bbox),
             mentions=mentions,
+            text_source=page.text_source,
         )
     )
 
@@ -1033,8 +1130,8 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
             if not titles and not caption_titles and not axis_label_spans:
                 continue
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
-            rendered = Image.open(page_png)
-            width_px, height_px = rendered.size
+            with Image.open(page_png) as rendered:
+                width_px, height_px = rendered.size
             v_rules_px, h_rules_px = detect_rule_boxes(page_png)
             v_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in v_rules_px]
             h_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in h_rules_px]
@@ -1052,7 +1149,7 @@ def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
                 axis_label_bbox = choose_caption_axis_label_bbox(page, title)
                 if bbox is None:
                     bbox = axis_label_bbox
-                if bbox is None:
+                if bbox is None and page.text_source != "pymupdf_fallback":
                     bbox = choose_caption_synthetic_bbox(page, title)
                 elif (
                     axis_label_bbox is not None

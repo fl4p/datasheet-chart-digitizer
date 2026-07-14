@@ -54,6 +54,47 @@ class CropPanelTests(unittest.TestCase):
                 self.assertEqual(crop.size, (209, 208))
 
 
+class TextFallbackTests(unittest.TestCase):
+    @staticmethod
+    def _page(words: list[find_charts.Word], source: str = "pdftotext") -> find_charts.PageText:
+        return find_charts.PageText(1, 600.0, 800.0, words, source)
+
+    def test_deduplicates_nearly_overprinted_words(self) -> None:
+        words = [
+            find_charts.Word("Typ.", 100.0, 200.0, 120.0, 210.0),
+            find_charts.Word("Typ.", 100.3, 200.2, 120.3, 210.2),
+            find_charts.Word("Typ.", 160.0, 200.0, 180.0, 210.0),
+        ]
+
+        deduped = find_charts._dedupe_overprinted_words(words)
+
+        self.assertEqual(len(deduped), 2)
+        self.assertEqual([word.x0 for word in deduped], [100.0, 160.0])
+
+    def test_selects_substantially_more_readable_fallback(self) -> None:
+        primary = self._page(
+            [find_charts.Word("!", float(i), 0.0, float(i + 1), 1.0) for i in range(20)]
+        )
+        fallback = self._page(
+            [find_charts.Word(f"word{i}", float(i), 0.0, float(i + 1), 1.0) for i in range(10)],
+            "pymupdf_fallback",
+        )
+
+        self.assertTrue(find_charts._page_text_looks_corrupt(primary))
+        self.assertIs(find_charts._select_page_text(primary, fallback), fallback)
+
+    def test_keeps_primary_when_fallback_gain_is_marginal(self) -> None:
+        primary = self._page(
+            [find_charts.Word(f"word{i}", float(i), 0.0, float(i + 1), 1.0) for i in range(10)]
+        )
+        fallback = self._page(
+            [find_charts.Word(f"label{i}", float(i), 0.0, float(i + 1), 1.0) for i in range(12)],
+            "pymupdf_fallback",
+        )
+
+        self.assertIs(find_charts._select_page_text(primary, fallback), primary)
+
+
 class CaptionTitleTests(unittest.TestCase):
     def test_splits_multiple_figure_captions(self) -> None:
         page = find_charts.PageText(
@@ -447,6 +488,27 @@ class CaptionTitleTests(unittest.TestCase):
         assert bbox is not None
         self.assertLessEqual(bbox[1], 146.0)
         self.assertGreaterEqual(bbox[3], 340.0)
+
+
+IPI65R190CFD = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/infineon/IPI65R190CFD.pdf")
+
+
+@unittest.skipUnless(IPI65R190CFD.exists(), "local IPI65R190CFD datasheet not available")
+class CorruptGlyphFinderEndToEnd(unittest.TestCase):
+    def test_recovers_only_the_gate_charge_chart(self) -> None:
+        with TemporaryDirectory(prefix="ipi65r190cfd-finder-test-") as tmp:
+            panels = find_charts.process_pdf(IPI65R190CFD, Path(tmp), dpi=180)
+
+        self.assertEqual(
+            [(panel.page, panel.kind, panel.text_source) for panel in panels],
+            [(11, "gate_charge", "pymupdf_fallback")],
+        )
+        panel = panels[0]
+        self.assertIn("Typ. gate charge", panel.title)
+        self.assertLessEqual(panel.bbox_pt[0], 346.433)
+        self.assertLessEqual(panel.bbox_pt[1], 150.131)
+        self.assertGreaterEqual(panel.bbox_pt[2], 560.393)
+        self.assertGreaterEqual(panel.bbox_pt[3], 393.8)
 
 
 if __name__ == "__main__":

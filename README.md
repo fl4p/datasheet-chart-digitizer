@@ -129,8 +129,10 @@ python tools/run_local_regression.py
 This runs the C(V) corpus and the Vpl gate-charge full-curve verifier against
 the 15 human-checked Vpl samples. It also runs a 66-sample Vpl finder-parity
 guard that compares packaged chart discovery against the current `dslib.viz`
-baseline; known packaged-finder misses and legacy-unavailable samples are
-explicit and should only shrink while the standalone finder is consolidated.
+baseline. The packaged finder currently matches every legacy-available sample;
+legacy-unavailable samples remain explicit while the standalone finder is
+consolidated. Pages whose Poppler text is visibly glyph-corrupted can use a
+conservative PyMuPDF text fallback, recorded as `text_source` in chart metadata.
 For C(V)-only work, use:
 
 ```bash
