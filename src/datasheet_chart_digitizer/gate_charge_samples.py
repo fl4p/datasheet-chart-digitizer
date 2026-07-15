@@ -17,7 +17,7 @@ SAMPLES = [
     ("ao/AOT286L.pdf", 4.2, "line has noise"),
     ("infineon/IPW65R019C7.pdf", 5.4, ""),
     ("infineon/IRF540NL.pdf", 4.6, 'overlapping text box "FOR TEST..."'),
-    ("nxp/PSMN1R2-55SLH.pdf", 2.4, ""),
+    ("nxp/PSMN1R2-55SLH.pdf", 2.4, "three VDS curves"),
     ("onsemi/NVMFS5C468NLT1G.pdf", 3.5, "dimension lines with Qgs,Qgd labels"),
     ("onsemi/NVMYS029N08LHTWG.pdf", 3.0, "dimension lines with Qgs,Qgd labels"),
     ("onsemi/NVTFWS010N10MCLTAG.pdf", 2.6, "dimension lines with Qgs,Qgd labels"),

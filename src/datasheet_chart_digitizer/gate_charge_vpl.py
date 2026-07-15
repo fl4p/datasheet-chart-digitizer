@@ -112,6 +112,10 @@ def main() -> int:
             result = min(usable, key=lambda candidate: abs(float(candidate.vpl) - ref_vpl))
         elif usable:
             result = usable[0]
+        elif results:
+            result = min(results, key=_review_overlay_key)
+            if args.pdfs:
+                had_errors = True
         else:
             img = Image.new("RGB", (900, 180), "white")
             ImageDraw.Draw(img).text((12, 20), f"{mpn}: no Vpl chart hit", fill=(0, 0, 0), font=_font(18))
@@ -211,6 +215,17 @@ def main() -> int:
         print(f"NEXT10_CONTACT_SHEET: {next10_path}")
         print(f"ALL15_CONTACT_SHEET: {all15_path}")
     return 1 if had_errors else 0
+
+
+def _review_overlay_key(result) -> tuple[int, int]:
+    """Prefer a useful unresolved chart over rejected tables in overlays."""
+
+    diagnostics = " ".join(result.diagnostics)
+    if "ambiguous_neighbor" in diagnostics:
+        return 0, result.panel.page
+    reasons = ("breakdown_voltage", "output_characteristics", "on_resistance", "diode", "spec_table")
+    priority = next((index for index, reason in enumerate(reasons) if reason in diagnostics), len(reasons))
+    return priority + 1, result.panel.page
 
 
 if __name__ == "__main__":

@@ -143,6 +143,9 @@ def _run_vpl_regression(tol: float, start: int | None, count: int | None) -> lis
         if row["curve_pts"] <= 0:
             failures.append(f"{mpn} traced no curve points")
             continue
+        if row["err_v"] is None:
+            failures.append(f"{mpn} produced no numeric Vpl")
+            continue
         if abs(row["err_v"]) > tol:
             if mpn in VPL_EXPECTED_FAILURES:
                 xfails.append(f"{mpn} {row['err_v']:+.2f} V ({VPL_EXPECTED_FAILURES[mpn]})")
@@ -159,8 +162,8 @@ def _parse_vpl_output(text: str) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     pattern = re.compile(
         r"^(?P<mpn>\S+)\s+ref=(?P<ref>[-+]?\d+(?:\.\d+)?)\s+"
-        r"Vpl=(?P<vpl>[-+]?\d+(?:\.\d+)?)\s+(?P<err>[-+]\d+(?:\.\d+)?)"
-        r".*?\bcurve_pts=(?P<curve_pts>\d+)",
+        r"Vpl=(?P<vpl>none|[-+]?\d+(?:\.\d+)?)\s*(?P<err>[-+]\d+(?:\.\d+)?)?"
+        r".*?\bstatus=(?P<status>\S+).*?\bcurve_pts=(?P<curve_pts>\d+)",
         re.M,
     )
     for match in pattern.finditer(text):
@@ -168,8 +171,9 @@ def _parse_vpl_output(text: str) -> list[dict[str, object]]:
             {
                 "mpn": match.group("mpn"),
                 "ref_v": float(match.group("ref")),
-                "vpl_v": float(match.group("vpl")),
-                "err_v": float(match.group("err")),
+                "vpl_v": None if match.group("vpl") == "none" else float(match.group("vpl")),
+                "err_v": float(match.group("err")) if match.group("err") else None,
+                "status": match.group("status"),
                 "curve_pts": int(match.group("curve_pts")),
             }
         )

@@ -17,7 +17,10 @@ from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
     _estimate_vpl_from_curve,
+    _has_gate_charge_evidence,
     _local_y_ticks_for_plot,
+    _non_gate_plot_reason,
+    _text_near_rect,
 )
 from .gate_charge_trace import (
     _curve_score,
@@ -160,6 +163,36 @@ def _digitize_panel(
     bx1, by1 = _pdf_to_px(crop_rect, scale, panel_rect.x1, panel_rect.y1)
     loose_plot_box = (int(round(bx0)), int(round(by0)), int(round(bx1)), int(round(by1)))
     plot_box = _detect_inner_plot_box(crop, loose_plot_box)
+    plot_rect = pymupdf.Rect(
+        crop_rect.x0 + plot_box[0] / scale,
+        crop_rect.y0 + plot_box[1] / scale,
+        crop_rect.x0 + plot_box[2] / scale,
+        crop_rect.y0 + plot_box[3] / scale,
+    )
+    tight_context = _text_near_rect(page, plot_rect, pad=12.0)
+    broad_context = _text_near_rect(page, plot_rect, pad=60.0)
+    non_gate_reason = _non_gate_plot_reason(tight_context, broad_context)
+    mixed_gate_context = (
+        non_gate_reason is not None
+        and non_gate_reason != "spec_table"
+        and _has_gate_charge_evidence(broad_context)
+    )
+    if non_gate_reason is not None and not mixed_gate_context:
+        return GateChargeResult(
+            pdf=str(pdf),
+            panel=panel,
+            vpl=None,
+            status="rejected_non_gate",
+            score=-1e9,
+            trace_source="none",
+            dpi=dpi,
+            crop_box_pt=tuple(float(value) for value in crop_rect),
+            plot_box_px=plot_box,
+            curve_px=(),
+            vpl_y_px=None,
+            y_tick_count=len(panel_y_ticks),
+            diagnostics=(f"non_gate_plot:{non_gate_reason}",),
+        )
     local_y_ticks = _local_y_ticks_for_plot(page, crop_rect, scale, plot_box)
     if len(local_y_ticks) < 2:
         local_y_ticks = panel_y_ticks
@@ -215,7 +248,7 @@ def _digitize_panel(
         status = "low_confidence"
     else:
         status = "ok"
-    return GateChargeResult(
+    result = GateChargeResult(
         pdf=str(pdf),
         panel=panel,
         vpl=vpl,
@@ -230,6 +263,20 @@ def _digitize_panel(
         y_tick_count=measured_y_tick_count,
         diagnostics=tuple(diagnostics),
     )
+    if non_gate_reason is not None and mixed_gate_context and (
+        low_trace_confidence or vpl is None or not 1.0 <= vpl <= 12.0
+    ):
+        return replace(
+            result,
+            vpl=None,
+            status="unresolved",
+            score=round(score - 30.0, 6),
+            vpl_y_px=None,
+            diagnostics=tuple(
+                dict.fromkeys((*diagnostics, f"ambiguous_neighbor:{non_gate_reason}", "vpl_unresolved"))
+            ),
+        )
+    return result
 
 
 def _title_score(panel: ChartPanel) -> float:

@@ -81,18 +81,33 @@ def _local_y_ticks_for_plot(
 def _cluster_y_tick_columns(
     candidates: list[tuple[float, float, float]],
 ) -> list[list[tuple[float, float]]]:
-    """Split nearby numeric labels into distinct vertical tick columns."""
+    """Split numeric labels into distinct columns and stacked axis runs."""
 
     columns: list[list[tuple[float, float, float]]] = []
     for item in sorted(candidates, key=lambda candidate: candidate[2]):
-        if columns and abs(item[2] - float(np.median([row[2] for row in columns[-1]]))) <= 6.0:
+        if columns and item[2] - columns[-1][-1][2] <= 6.0:
             columns[-1].append(item)
         else:
             columns.append([item])
-    return [
-        _normalize_y_tick_candidates([(value, y) for value, y, _x in column])
-        for column in columns
-    ]
+    axes: list[list[tuple[float, float]]] = []
+    for column in columns:
+        rows = sorted(column, key=lambda row: row[1])
+        gaps = np.diff([row[1] for row in rows])
+        typical_gap = float(np.median(gaps)) if len(gaps) else 0.0
+        split_gap = max(48.0, 1.6 * typical_gap)
+        start = 0
+        for stop in range(1, len(rows) + 1):
+            at_end = stop == len(rows)
+            separated = not at_end and rows[stop][1] - rows[stop - 1][1] > split_gap
+            if not (at_end or separated):
+                continue
+            axis = _normalize_y_tick_candidates(
+                [(value, y) for value, y, _x in rows[start:stop]]
+            )
+            if axis:
+                axes.append(axis)
+            start = stop
+    return axes
 
 
 def _best_y_ticks_for_panel(
@@ -111,6 +126,11 @@ def _best_y_axis_for_panel(
 ) -> tuple[list[tuple[float, float]], float] | None:
     """Return the best nearby y-axis as ``(ticks, column_x)``."""
 
+    x_axis = _best_x_axis_for_panel(page, panel_rect)
+    x_axis_edges: tuple[float, float] | None = None
+    if x_axis is not None:
+        x_tick_positions = [x for _value, x in x_axis[0]]
+        x_axis_edges = min(x_tick_positions), max(x_tick_positions)
     candidates: list[tuple[float, float, float]] = []
     try:
         words = page.get_text("words")
@@ -141,13 +161,14 @@ def _best_y_axis_for_panel(
         axis_x = float(np.median([row[2] for row in matching]))
         if axis_x < panel_rect.x0 - 130.0 or axis_x > panel_rect.x1 + 130.0:
             continue
-        if max(ys) < panel_rect.y0:
-            vertical_gap = panel_rect.y0 - max(ys)
-        elif min(ys) > panel_rect.y1:
-            vertical_gap = min(ys) - panel_rect.y1
-        else:
-            vertical_gap = 0.0
-        if vertical_gap > 300.0:
+        if x_axis_edges is not None:
+            x_span = x_axis_edges[1] - x_axis_edges[0]
+            cross_axis_gap = min(abs(axis_x - edge) for edge in x_axis_edges)
+            if cross_axis_gap > max(72.0, 0.2 * x_span):
+                continue
+        overlap = max(0.0, min(max(ys), panel_rect.y1) - max(min(ys), panel_rect.y0))
+        reference_span = max(1.0, min(y_span, panel_rect.height))
+        if overlap / reference_span < 0.25:
             continue
         horizontal_gap = min(abs(axis_x - panel_rect.x0), abs(axis_x - panel_rect.x1))
         value_span = max(value for value, _y in ticks) - min(value for value, _y in ticks)
@@ -156,7 +177,6 @@ def _best_y_axis_for_panel(
             + 4.0 * value_span
             + 0.03 * y_span
             - 0.12 * horizontal_gap
-            - 0.15 * vertical_gap
         )
         if best is None or score > best[0]:
             best = (score, ticks, axis_x)
@@ -326,6 +346,63 @@ def _reject_ambiguous_broad_context(tight_text: str, broad_text: str) -> bool:
         return False
     tl = re.sub(r"\s+", " ", broad_text.lower())
     return ("reverse drain current" in tl and ("source-drain" in tl or "source drain" in tl))
+
+
+def _non_gate_plot_reason(tight_text: str, broad_text: str) -> str | None:
+    """Classify a refined plot region that belongs to a different chart.
+
+    Finder panels can overlap neighboring plots. The final, calibrated plot
+    box must therefore carry local gate-charge evidence when its surrounding
+    title/axes identify a different MOSFET characteristic.
+    """
+
+    tight = re.sub(r"\s+", " ", tight_text.lower())
+    broad = re.sub(r"\s+", " ", broad_text.lower())
+    table_markers = (
+        "drain leakage current",
+        "gate leakage current",
+        "gate resistance",
+        "static characteristics",
+        "dynamic characteristics",
+        "pinning information",
+    )
+    if (
+        "symbol parameter conditions" in broad
+        and ("static characteristics" in broad or "pinning information" in broad)
+    ) or sum(marker in broad for marker in table_markers) >= 3:
+        return "spec_table"
+    if _has_gate_charge_evidence(tight):
+        return None
+    if (
+        "normalized d-s breakdown voltage" in broad
+        or "normalized d-s breakdown" in broad
+        or ("breakdown voltage" in broad and "tj" in broad)
+    ):
+        return "breakdown_voltage"
+    if (
+        "drain-source on-state resistance" in broad
+        or "on-resistance vs. drain current" in broad
+        or "rdson" in re.sub(r"[^a-z0-9]+", "", broad)
+    ):
+        return "on_resistance"
+    if "output characteristics" in broad or (
+        "drain current" in broad and "drain-to-source voltage" in broad
+    ):
+        return "output_characteristics"
+    if _reject_non_gate_context(broad, broad=True):
+        return "diode"
+    return None
+
+
+def _has_gate_charge_evidence(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower())
+    compact = re.sub(r"[^a-z0-9]+", "", normalized)
+    return (
+        "gate charge" in normalized
+        or "total gate charge" in normalized
+        or "qgate" in compact
+        or "qg" in compact
+    )
 
 
 def _v_from_local_ticks(y_ticks: list[tuple[float, float]], y_px: float, rect: pymupdf.Rect, scale: float) -> float | None:
