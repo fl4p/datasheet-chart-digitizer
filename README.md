@@ -63,8 +63,15 @@ dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 package-owned experimental `GateChargeResult` records the selected panel, Vpl
 estimate, status, trace source, score, curve points, axis evidence, and
 diagnostics. Callers must retain the result metadata; there is intentionally no
-package scalar `find_vpl()` API while numerical migration remains unaccepted.
+package scalar `find_vpl()` API because the result status and diagnostics are
+part of the experimental compatibility contract.
 Relative PDF arguments are resolved under `--datasheet-root/datasheets`.
+
+When normal gate-charge discovery finds no panels, the Vpl digitizer can use an
+installed `tesseract` executable as a bounded, per-page OCR fallback. OCR words
+are mapped back to PDF-point coordinates and recorded with
+`text_source=tesseract_fallback`. Missing, failed, or timed-out Tesseract runs
+degrade to no fallback; they do not change the normal finder path.
 
 If `.pdf.nop.csv` anchor tables are not next to the PDFs, pass their directory:
 
@@ -152,12 +159,10 @@ The Vpl harness runs the packaged `datasheet_chart_digitizer.gate_charge_vpl`
 module against the 15 human-reviewed gate-charge overlays in explicit
 `--reference-assisted` audit mode. Normal `digitize-vpl` runs do not use human
 reference values to choose the reported estimate. Finder parity measures chart
-discovery only; it does not imply numerical Vpl parity. The downstream dslib
-compatibility default remains on its legacy estimator while the package-native
-numeric corpus still has unresolved and wrong-axis cases. The current dslib
-reference-corpus gate is 59 estimates within ±0.5 V, 0 outside tolerance,
-3 unresolved, and 1 missing PDF out of 63 entries. Finder parity does not waive
-that failed numerical gate.
+discovery only; numerical Vpl acceptance is checked separately. The current
+dslib reference-corpus gate passes all 63 entries: 63 estimates within ±0.5 V,
+0 outside tolerance, 0 unresolved, and 0 missing PDFs. Downstream cutover from
+the legacy estimator remains a separate consumer change.
 
 ## Scope
 

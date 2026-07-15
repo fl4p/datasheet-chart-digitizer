@@ -8,8 +8,10 @@ chart-specific trace digitizers build on top of this index.
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import re
+import shutil
 import subprocess
 import tempfile
 import traceback
@@ -19,7 +21,6 @@ from pathlib import Path
 from typing import Iterable
 
 import cv2
-import numpy as np
 import pymupdf
 from PIL import Image
 
@@ -122,6 +123,109 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
         _select_page_text(page, fallback_by_number.get(page.page_num))
         for page in primary_pages
     ]
+
+
+def _tesseract_tsv(page_png: Path, timeout: float = 20.0) -> str | None:
+    """Return sparse-layout OCR TSV, degrading cleanly when OCR is unavailable."""
+
+    executable = shutil.which("tesseract")
+    if executable is None:
+        return None
+    try:
+        completed = subprocess.run(
+            [executable, str(page_png), "stdout", "--psm", "11", "tsv"],
+            check=True,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        return None
+    return completed.stdout
+
+
+def _page_text_from_tesseract_tsv(
+    tsv: str,
+    *,
+    page_num: int,
+    width_pt: float,
+    height_pt: float,
+    width_px: int,
+    height_px: int,
+) -> PageText:
+    """Map word-level Tesseract pixel boxes into PDF-point coordinates."""
+
+    words: list[Word] = []
+    for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
+        text = (row.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            confidence = float(row.get("conf") or -1)
+            left = float(row["left"])
+            top = float(row["top"])
+            word_width = float(row["width"])
+            word_height = float(row["height"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if confidence < 10:
+            continue
+        x_scale = width_pt / max(1, width_px)
+        y_scale = height_pt / max(1, height_px)
+        words.append(
+            Word(
+                text=text,
+                x0=left * x_scale,
+                y0=top * y_scale,
+                x1=(left + word_width) * x_scale,
+                y1=(top + word_height) * y_scale,
+            )
+        )
+    return PageText(
+        page_num=page_num,
+        width_pt=width_pt,
+        height_pt=height_pt,
+        words=words,
+        text_source="tesseract_fallback",
+    )
+
+
+def run_tesseract_page_text(
+    pdf: Path,
+    *,
+    dpi: int = 160,
+    timeout: float = 20.0,
+) -> list[PageText]:
+    """OCR every page for gate-only fallback discovery."""
+
+    if shutil.which("tesseract") is None:
+        return []
+    private_tmp = Path("/private/tmp")
+    temp_root = private_tmp if private_tmp.is_dir() else None
+    pages: list[PageText] = []
+    with pymupdf.open(pdf) as doc, tempfile.TemporaryDirectory(
+        prefix="dsdig-ocr-", dir=temp_root
+    ) as tmp:
+        scale = dpi / 72.0
+        for page_num, page in enumerate(doc, start=1):
+            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
+            page_png = Path(tmp) / f"page-{page_num}.png"
+            pix.save(page_png)
+            tsv = _tesseract_tsv(page_png, timeout=timeout)
+            if tsv is None:
+                continue
+            pages.append(
+                _page_text_from_tesseract_tsv(
+                    tsv,
+                    page_num=page_num,
+                    width_pt=float(page.rect.width),
+                    height_pt=float(page.rect.height),
+                    width_px=pix.width,
+                    height_px=pix.height,
+                )
+            )
+    return pages
 
 
 def _run_pymupdf_text(pdf: Path) -> list[PageText]:
@@ -790,21 +894,29 @@ def choose_caption_panel_bbox(
     )
 
 
-def _is_gate_charge_axis_label(text: str) -> bool:
+def _is_gate_charge_axis_label(text: str, *, ocr_tolerant: bool = False) -> bool:
     normalized = text.lower().replace("‑", "-").replace("–", "-").replace("_", " ")
     normalized = re.sub(r"\s+", " ", normalized)
-    has_qg = bool(re.search(r"\bq\s*g\b|\bqg\b|\bqgate\b", normalized))
+    has_qg = bool(re.search(r"\bq\s*g\b|\bqg(?:tot|total)?\b|\bqgate\b", normalized))
+    has_ocr_qg = (
+        ocr_tolerant
+        and bool(re.search(r"\bq[qc]\b", normalized))
+        and "gate charge" in normalized
+        and "nc" in normalized
+    )
     has_charge_unit = "charge" in normalized or "nc" in normalized
-    return has_qg and has_charge_unit
+    return (has_qg or has_ocr_qg) and has_charge_unit
 
 
 def _token_norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower().replace("‑", "-").replace("–", "-"))
 
 
-def _is_qg_token_pair(line: list[Word], idx: int) -> bool:
+def _is_qg_token_pair(line: list[Word], idx: int, *, ocr_tolerant: bool = False) -> bool:
     token = _token_norm(line[idx].text)
-    if token in {"qg", "qgate", "qgtot", "qtotal"}:
+    if token in {"qg", "qgate", "qgtot", "qgtotal", "qtotal"}:
+        return True
+    if ocr_tolerant and token in {"qc", "qq"}:
         return True
     if token == "q" and idx + 1 < len(line):
         return _token_norm(line[idx + 1].text) in {"g", "gate", "gtot", "total"}
@@ -820,9 +932,10 @@ def gate_charge_axis_label_spans(page: PageText) -> list[tuple[float, float, flo
     token span around ``QG ... (nC)`` / ``QG ... Gate Charge``.
     """
     spans: list[tuple[float, float, float, float]] = []
+    ocr_tolerant = page.text_source == "tesseract_fallback"
     for line in group_words_into_lines(page.words):
         for idx, word in enumerate(line):
-            if not _is_qg_token_pair(line, idx):
+            if not _is_qg_token_pair(line, idx, ocr_tolerant=ocr_tolerant):
                 continue
             selected = [word]
             saw_charge_or_unit = False
@@ -838,7 +951,7 @@ def gate_charge_axis_label_spans(page: PageText) -> list[tuple[float, float, flo
                     if norm in {"nc", "nanocoulomb", "nanocoulombs"}:
                         break
             text = " ".join(w.text for w in selected)
-            if not _is_gate_charge_axis_label(text):
+            if not _is_gate_charge_axis_label(text, ocr_tolerant=ocr_tolerant):
                 continue
             spans.append(line_bbox(selected))
     return spans
@@ -908,7 +1021,6 @@ def choose_axis_label_grid_bbox(
     best: tuple[float, tuple[float, float, float, float]] | None = None
     for region in grid_regions:
         x0, y0, x1, y1 = region
-        width = x1 - x0
         if not (x0 - 18.0 <= lcx <= x1 + 18.0):
             continue
         if ly0 >= y1:
@@ -1119,7 +1231,17 @@ def crop_panel(
 
 
 def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
-    pages = run_text_bbox(pdf)
+    return process_page_texts(pdf, out_dir, dpi, run_text_bbox(pdf))
+
+
+def process_page_texts(
+    pdf: Path,
+    out_dir: Path,
+    dpi: int,
+    pages: list[PageText],
+) -> list[ChartPanel]:
+    """Run normal panel discovery against an injected page-text source."""
+
     panels: list[ChartPanel] = []
     with tempfile.TemporaryDirectory(prefix="chart-pages-") as tmp:
         tmpdir = Path(tmp)

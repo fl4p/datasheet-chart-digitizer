@@ -12,7 +12,13 @@ import pymupdf
 import numpy as np
 from PIL import Image
 
-from .find_charts import ChartPanel, process_pdf
+from .find_charts import (
+    ChartPanel,
+    PageText,
+    process_page_texts,
+    process_pdf,
+    run_tesseract_page_text,
+)
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -75,19 +81,84 @@ def digitize_gate_charge(
         raise FileNotFoundError(pdf)
 
     with tempfile.TemporaryDirectory(prefix="dsdig-gate-charge-") as tmp:
-        panels = [
-            _detach_transient_panel_artifacts(panel)
-            for panel in process_pdf(pdf, Path(tmp), dpi=finder_dpi)
-            if panel.kind == "gate_charge"
-        ]
+        panels, page_text = _discover_gate_panels(pdf, Path(tmp), finder_dpi)
 
     results: list[GateChargeResult] = []
     with pymupdf.open(pdf) as doc:
         for panel in panels:
-            result = _digitize_panel(pdf, doc, panel, dpi)
+            result = _digitize_panel(pdf, doc, panel, dpi, page_text.get(panel.page))
             if result is not None:
                 results.append(result)
     return sorted(results, key=_result_sort_key)
+
+
+def _discover_gate_panels(
+    pdf: Path, out_dir: Path, dpi: int
+) -> tuple[list[ChartPanel], dict[int, PageText]]:
+    """Use OCR only when normal discovery yields no gate-charge panels."""
+
+    panels = [panel for panel in process_pdf(pdf, out_dir, dpi) if panel.kind == "gate_charge"]
+    ocr_by_page: dict[int, PageText] = {}
+    if not panels:
+        ocr_pages = run_tesseract_page_text(pdf)
+        if ocr_pages:
+            ocr_by_page = {page.page_num: page for page in ocr_pages}
+            panels = [
+                panel
+                for panel in process_page_texts(pdf, out_dir, dpi, ocr_pages)
+                if panel.kind == "gate_charge"
+            ]
+    return [_detach_transient_panel_artifacts(panel) for panel in panels], ocr_by_page
+
+
+class _PageWordOverride:
+    """Delegate page graphics while exposing injected OCR words to text consumers."""
+
+    def __init__(self, page: pymupdf.Page, page_text: PageText):
+        self._page = page
+        self._words = [
+            (word.x0, word.y0, word.x1, word.y1, word.text)
+            for word in page_text.words
+        ]
+
+    def get_text(self, option: str, *args, **kwargs):
+        if option == "words":
+            return self._words
+        return self._page.get_text(option, *args, **kwargs)
+
+    def __getattr__(self, name: str):
+        return getattr(self._page, name)
+
+
+def _ocr_x_ticks_with_zero(
+    ticks: list[tuple[float, float]], panel_rect: pymupdf.Rect
+) -> list[tuple[float, float]]:
+    """Extrapolate an OCR-omitted zero from a short arithmetic x-axis run."""
+
+    ordered = sorted(ticks, key=lambda item: item[1])
+    if len(ordered) < 3 or ordered[0][0] <= 0:
+        return ordered
+    values = np.array([value for value, _x in ordered], dtype=float)
+    xs = np.array([x for _value, x in ordered], dtype=float)
+    value_steps = np.diff(values)
+    x_steps = np.diff(xs)
+    if np.any(value_steps <= 0) or np.any(x_steps <= 0):
+        return ordered
+    value_step = float(np.median(value_steps))
+    x_step = float(np.median(x_steps))
+    if ordered[0][0] > 1.5 * value_step:
+        return ordered
+    if np.max(np.abs(value_steps - value_step)) > 0.12 * value_step:
+        return ordered
+    if np.max(np.abs(x_steps - x_step)) > 0.12 * x_step:
+        return ordered
+    slope, intercept = np.polyfit(values, xs, 1)
+    zero_x = float(intercept)
+    if not panel_rect.x0 - 30.0 <= zero_x < xs[0]:
+        return ordered
+    if xs[0] - zero_x > 1.5 * x_step:
+        return ordered
+    return [(0.0, zero_x), *ordered]
 
 
 def _detach_transient_panel_artifacts(panel: ChartPanel) -> ChartPanel:
@@ -119,16 +190,18 @@ def _digitize_panel(
     doc: pymupdf.Document,
     panel: ChartPanel,
     dpi: int,
+    page_text: PageText | None = None,
 ) -> GateChargeResult | None:
     page_index = panel.page - 1
     if not 0 <= page_index < len(doc):
         return None
     page = doc[page_index]
+    text_page = _PageWordOverride(page, page_text) if page_text is not None else page
     panel_rect = pymupdf.Rect(panel.bbox_pt)
     expanded_image_rect = _containing_chart_image(page, panel_rect)
     if expanded_image_rect is not None:
         panel_rect = expanded_image_rect
-    panel_axis = _best_y_axis_for_panel(page, panel_rect)
+    panel_axis = _best_y_axis_for_panel(text_page, panel_rect)
     panel_y_ticks, axis_x = panel_axis if panel_axis is not None else ([], None)
     panel_x_ticks: list[tuple[float, float]] = []
     if panel_y_ticks:
@@ -148,9 +221,11 @@ def _digitize_panel(
                 panel_rect.x0 = max(panel_rect.x0, axis_x + 3.0)
             else:
                 panel_rect.x1 = min(panel_rect.x1, axis_x - 3.0)
-    panel_x_axis = _best_x_axis_for_panel(page, panel_rect)
+    panel_x_axis = _best_x_axis_for_panel(text_page, panel_rect)
     if panel_x_axis is not None:
         panel_x_ticks, _axis_y = panel_x_axis
+        if page_text is not None:
+            panel_x_ticks = _ocr_x_ticks_with_zero(panel_x_ticks, panel_rect)
         tick_xs = sorted(x for _value, x in panel_x_ticks)
         spacing = float(np.median(np.diff(tick_xs)))
         pad_x = max(6.0, 0.45 * spacing)
@@ -162,7 +237,11 @@ def _digitize_panel(
     scale = dpi / 72.0
     pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=crop_rect, alpha=False)
     crop = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
-    trace_crop = _mask_page_text(crop, page, crop_rect, panel_rect, scale)
+    trace_crops = [_mask_page_text(crop, page, crop_rect, panel_rect, scale)]
+    if page_text is not None:
+        trace_crops.append(
+            _mask_page_text(crop, text_page, crop_rect, panel_rect, scale)
+        )
 
     bx0, by0 = _pdf_to_px(crop_rect, scale, panel_rect.x0, panel_rect.y0)
     bx1, by1 = _pdf_to_px(crop_rect, scale, panel_rect.x1, panel_rect.y1)
@@ -193,8 +272,8 @@ def _digitize_panel(
         crop_rect.x0 + plot_box[2] / scale,
         crop_rect.y0 + plot_box[3] / scale,
     )
-    tight_context = _text_near_rect(page, plot_rect, pad=12.0)
-    broad_context = _text_near_rect(page, plot_rect, pad=60.0)
+    tight_context = _text_near_rect(text_page, plot_rect, pad=12.0)
+    broad_context = _text_near_rect(text_page, plot_rect, pad=60.0)
     non_gate_reason = _non_gate_plot_reason(tight_context, broad_context)
     mixed_gate_context = (
         non_gate_reason is not None
@@ -217,7 +296,7 @@ def _digitize_panel(
             y_tick_count=len(panel_y_ticks),
             diagnostics=(f"non_gate_plot:{non_gate_reason}",),
         )
-    local_y_ticks = _local_y_ticks_for_plot(page, crop_rect, scale, plot_box)
+    local_y_ticks = _local_y_ticks_for_plot(text_page, crop_rect, scale, plot_box)
     if len(local_y_ticks) < 2:
         local_y_ticks = panel_y_ticks
     axis_grid_inferred = False
@@ -240,7 +319,14 @@ def _digitize_panel(
             (0.0, crop_rect.y0 + y1 / scale),
         ]
 
-    raster_curve = _smooth_polyline(_trace_gate_curve(trace_crop, plot_box))
+    raster_curve = _select_raster_curve(
+        [
+            _smooth_polyline(_trace_gate_curve(trace_crop, plot_box))
+            for trace_crop in trace_crops
+        ],
+        crop.height,
+        crop.width,
+    )
     vector_curve = _smooth_polyline(
         _trace_vector_gate_curve(page, crop_rect, scale, plot_box), stride=1
     )
@@ -316,6 +402,14 @@ def _digitize_panel(
             ),
         )
     return result
+
+
+def _select_raster_curve(
+    curves: list[list[tuple[int, int]]], height: int, width: int
+) -> list[tuple[int, int]]:
+    """Choose between native- and OCR-text masking with the normal trace score."""
+
+    return max(curves, key=lambda curve: _curve_score(curve, height, width), default=[])
 
 
 def _bind_plot_box_to_axes(
