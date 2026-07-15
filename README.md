@@ -155,8 +155,8 @@ reference values to choose the reported estimate. Finder parity measures chart
 discovery only; it does not imply numerical Vpl parity. The downstream dslib
 compatibility default remains on its legacy estimator while the package-native
 numeric corpus still has unresolved and wrong-axis cases. The current dslib
-reference-corpus gate is 51 estimates within ±0.5 V, 6 outside tolerance,
-5 unresolved, and 1 missing PDF out of 63 entries. Finder parity does not waive
+reference-corpus gate is 59 estimates within ±0.5 V, 0 outside tolerance,
+3 unresolved, and 1 missing PDF out of 63 entries. Finder parity does not waive
 that failed numerical gate.
 
 ## Scope

@@ -94,18 +94,20 @@ def _cluster_y_tick_columns(
         rows = sorted(column, key=lambda row: row[1])
         gaps = np.diff([row[1] for row in rows])
         typical_gap = float(np.median(gaps)) if len(gaps) else 0.0
-        split_gap = max(48.0, 1.6 * typical_gap)
+        # Keep one missing label inside an axis run, while still separating
+        # genuinely stacked charts such as two panels sharing the same x.
+        split_gap = max(60.0, 2.0 * typical_gap)
         start = 0
         for stop in range(1, len(rows) + 1):
             at_end = stop == len(rows)
             separated = not at_end and rows[stop][1] - rows[stop - 1][1] > split_gap
             if not (at_end or separated):
                 continue
-            axis = _normalize_y_tick_candidates(
-                [(value, y) for value, y, _x in rows[start:stop]]
+            axes.extend(
+                _normalize_y_tick_candidate_runs(
+                    [(value, y) for value, y, _x in rows[start:stop]]
+                )
             )
-            if axis:
-                axes.append(axis)
             start = stop
     return axes
 
@@ -188,6 +190,15 @@ def _normalize_y_tick_candidates(
 ) -> list[tuple[float, float]]:
     """Collapse labels on one side of a plot into a monotone y-axis."""
 
+    runs = _normalize_y_tick_candidate_runs(candidates)
+    return max(runs, key=_y_tick_run_score) if runs else []
+
+
+def _normalize_y_tick_candidate_runs(
+    candidates: list[tuple[float, float]],
+) -> list[list[tuple[float, float]]]:
+    """Return maximal linear descending runs from one label column."""
+
     candidates.sort(key=lambda item: item[1])
     grouped: list[list[tuple[float, float]]] = []
     for item in candidates:
@@ -204,7 +215,7 @@ def _normalize_y_tick_candidates(
         return []
 
     ticks.sort(key=lambda item: item[1])
-    best: tuple[float, list[tuple[float, float]]] | None = None
+    valid: list[tuple[int, int, list[tuple[float, float]]]] = []
     for start in range(len(ticks) - 1):
         for stop in range(start + 2, len(ticks) + 1):
             run = ticks[start:stop]
@@ -220,10 +231,21 @@ def _normalize_y_tick_candidates(
                 residual = float(np.max(np.abs(vals - (slope * ys + intercept))))
                 if residual > max(0.35, 0.08 * value_span):
                     continue
-            score = 10.0 * len(run) + 0.01 * float(ys[-1] - ys[0])
-            if best is None or score > best[0]:
-                best = (score, run)
-    return best[1] if best is not None else []
+            valid.append((start, stop, run))
+    return [
+        run
+        for start, stop, run in valid
+        if not any(
+            other_start <= start
+            and stop <= other_stop
+            and (other_start < start or stop < other_stop)
+            for other_start, other_stop, _other_run in valid
+        )
+    ]
+
+
+def _y_tick_run_score(run: list[tuple[float, float]]) -> float:
+    return 10.0 * len(run) + 0.01 * (run[-1][1] - run[0][1])
 
 
 def _best_x_axis_for_panel(
@@ -268,6 +290,8 @@ def _best_x_axis_for_panel(
         if x_span < 45.0 or overlap / x_span < 0.35:
             continue
         row_y = float(np.median([entry[2] for entry in row]))
+        if row_y < panel_rect.y0 + 0.35 * panel_rect.height:
+            continue
         vertical_gap = min(abs(row_y - panel_rect.y0), abs(row_y - panel_rect.y1))
         if vertical_gap > 180.0:
             continue
@@ -373,6 +397,8 @@ def _non_gate_plot_reason(tight_text: str, broad_text: str) -> str | None:
         return "spec_table"
     if _has_gate_charge_evidence(tight):
         return None
+    if re.search(r"\bdynamic input\s*/\s*output characteristics\b", broad):
+        return None
     if (
         "normalized d-s breakdown voltage" in broad
         or "normalized d-s breakdown" in broad
@@ -476,6 +502,38 @@ def _middle_slope_y(points: list[tuple[int, int]], plot_box: tuple[int, int, int
     return float(np.mean(ys[i:j]))
 
 
+def _resample_flat_x_gaps(
+    points: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Fill sparsely sampled, nearly horizontal curve spans at the trace cadence."""
+
+    if len(points) < 3:
+        return sorted(points)
+    grouped: dict[int, list[int]] = {}
+    for x, y in points:
+        grouped.setdefault(int(x), []).append(int(y))
+    collapsed = [(x, int(round(float(np.median(ys))))) for x, ys in sorted(grouped.items())]
+    gaps = np.diff([x for x, _y in collapsed])
+    positive_gaps = gaps[gaps > 0]
+    if not len(positive_gaps):
+        return collapsed
+    cadence = float(np.median(positive_gaps))
+    _x0, y0, _x1, y1 = plot_box
+    max_flat_rise = 0.06 * max(1, y1 - y0)
+    resampled: list[tuple[int, int]] = []
+    for (xa, ya), (xb, yb) in zip(collapsed, collapsed[1:]):
+        resampled.append((xa, ya))
+        gap = xb - xa
+        if gap <= 2.5 * cadence or abs(yb - ya) > max_flat_rise:
+            continue
+        for x in np.arange(xa + cadence, xb, cadence):
+            fraction = (float(x) - xa) / gap
+            y = ya + fraction * (yb - ya)
+            resampled.append((int(round(float(x))), int(round(y))))
+    resampled.append(collapsed[-1])
+    return sorted(set(resampled))
+
+
 def _estimate_vpl_from_curve(
     curve: list[tuple[int, int]],
     chart,
@@ -488,7 +546,7 @@ def _estimate_vpl_from_curve(
     if len(curve) < 20:
         return None, None
     x0, y0, x1, y1 = plot_box
-    pts = sorted(curve)
+    pts = _resample_flat_x_gaps(curve, plot_box)
     xs = np.array([p[0] for p in pts], dtype=float)
     ys = np.array([p[1] for p in pts], dtype=float)
     middle_y = _middle_slope_y(pts, plot_box)

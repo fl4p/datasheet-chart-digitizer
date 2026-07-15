@@ -176,6 +176,58 @@ def _trace_gate_curve(crop: Image.Image, plot_box: tuple[int, int, int, int]) ->
     return [(x0 + x, y0 + y) for x, y in points]
 
 
+def _connected_segment_components(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    tolerance: float = 1.5,
+) -> list[list[tuple[tuple[float, float], tuple[float, float]]]]:
+    """Group vector strokes by shared endpoints without bridging nearby curves."""
+
+    remaining = set(range(len(segments)))
+    components: list[list[tuple[tuple[float, float], tuple[float, float]]]] = []
+    while remaining:
+        pending = [remaining.pop()]
+        indexes: list[int] = []
+        while pending:
+            index = pending.pop()
+            indexes.append(index)
+            endpoints = segments[index]
+            joined = [
+                other
+                for other in remaining
+                if min(
+                    math.hypot(ax - bx, ay - by)
+                    for ax, ay in endpoints
+                    for bx, by in segments[other]
+                )
+                <= tolerance
+            ]
+            for other in joined:
+                remaining.remove(other)
+                pending.append(other)
+        components.append([segments[index] for index in indexes])
+    return components
+
+
+def _densify_vector_component(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+    rect: pymupdf.Rect,
+    scale: float,
+) -> list[tuple[int, int]]:
+    """Sample connected vector segments at approximately one-pixel cadence."""
+
+    points_by_x: dict[int, list[int]] = {}
+    for (ax, ay), (bx, by) in segments:
+        x0, y0 = _pdf_to_px(rect, scale, ax, ay)
+        x1, y1 = _pdf_to_px(rect, scale, bx, by)
+        steps = max(1, int(math.ceil(max(abs(x1 - x0), abs(y1 - y0)))))
+        for index in range(steps + 1):
+            fraction = index / steps
+            x = int(round(x0 + fraction * (x1 - x0)))
+            y = int(round(y0 + fraction * (y1 - y0)))
+            points_by_x.setdefault(x, []).append(y)
+    return [(x, int(round(float(np.median(ys))))) for x, ys in sorted(points_by_x.items())]
+
+
 def _trace_vector_gate_curve(
     page: pymupdf.Page,
     rect: pymupdf.Rect,
@@ -195,7 +247,7 @@ def _trace_vector_gate_curve(
     plot_pad = pymupdf.Rect(px0 - pad, py0 - 0.35 * plot_h, px1 + pad, py1 + pad)
     min_len = 0.035 * math.hypot(plot_w, plot_h)
 
-    points: list[tuple[float, float]] = []
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
     for drawing in page.get_drawings():
         color = drawing.get("color")
         if color is None:
@@ -219,24 +271,24 @@ def _trace_vector_gate_curve(
                 continue
             if dx < 0.8 and dy > 0.55 * plot_h:
                 continue
-            points.append((ax, ay))
-            points.append((bx, by))
+            segments.append(((ax, ay), (bx, by)))
 
-    if len(points) < 4:
+    if not segments:
         return []
-
-    points.sort(key=lambda p: (p[0], p[1]))
-    dedup: list[tuple[float, float]] = []
-    for px, py in points:
-        if dedup and abs(px - dedup[-1][0]) < 0.6 and abs(py - dedup[-1][1]) < 0.6:
-            dedup[-1] = ((dedup[-1][0] + px) * 0.5, (dedup[-1][1] + py) * 0.5)
-        else:
-            dedup.append((px, py))
-    out: list[tuple[int, int]] = []
-    for px, py in dedup:
-        cx, cy = _pdf_to_px(rect, scale, px, py)
-        out.append((int(round(cx)), int(round(cy))))
-    return out
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    candidates: list[tuple[float, list[tuple[int, int]]]] = []
+    for component in _connected_segment_components(segments):
+        points = _densify_vector_component(component, rect, scale)
+        point_xs = [x for x, _y in points]
+        point_ys = [y for _x, y in points]
+        if np.ptp(point_xs) < 0.30 * width or np.ptp(point_ys) < 0.20 * height:
+            continue
+        local = [(x - x0, y - y0) for x, y in points]
+        score = _curve_score(local, height, width)
+        if score > -1e8:
+            candidates.append((score, points))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else []
 
 
 def _detect_inner_plot_box(crop: Image.Image, fallback: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
@@ -322,6 +374,70 @@ def _detect_inner_plot_box(crop: Image.Image, fallback: tuple[int, int, int, int
     if x1 - x0 < 0.35 * (fx1 - fx0) or y1 - y0 < 0.35 * (fy1 - fy0):
         return fallback
     return (x0, y0, x1, y1)
+
+
+def _detect_regular_grid_box(
+    crop: Image.Image,
+    fallback: tuple[int, int, int, int],
+) -> tuple[tuple[int, int, int, int], tuple[int, ...], tuple[int, ...]] | None:
+    """Detect a regular raster grid, including dotted manufacturer grids."""
+
+    gray = np.asarray(crop.convert("L"))
+    fx0, fy0, fx1, fy1 = fallback
+    fx0, fy0 = max(0, fx0), max(0, fy0)
+    fx1 = min(gray.shape[1] - 1, fx1)
+    fy1 = min(gray.shape[0] - 1, fy1)
+    roi = gray[fy0 : fy1 + 1, fx0 : fx1 + 1]
+    if roi.shape[0] < 40 or roi.shape[1] < 40:
+        return None
+    dark = roi < 210
+    x_candidates = _projection_line_centers(dark.sum(axis=0), 0.16 * roi.shape[0])
+    y_candidates = _projection_line_centers(dark.sum(axis=1), 0.16 * roi.shape[1])
+    xs = _longest_regular_run(x_candidates)
+    ys = _longest_regular_run(y_candidates)
+    if len(xs) < 3 or len(ys) < 3:
+        return None
+    box = (fx0 + xs[0], fy0 + ys[0], fx0 + xs[-1], fy0 + ys[-1])
+    if box[2] - box[0] < 0.35 * (fx1 - fx0) or box[3] - box[1] < 0.35 * (fy1 - fy0):
+        return None
+    return box, tuple(fy0 + y for y in ys), tuple(fx0 + x for x in xs)
+
+
+def _projection_line_centers(counts: np.ndarray, minimum: float) -> list[int]:
+    indexes = np.flatnonzero(counts >= minimum)
+    groups: list[list[int]] = []
+    for index in indexes:
+        value = int(index)
+        if groups and value - groups[-1][-1] <= 3:
+            groups[-1].append(value)
+        else:
+            groups.append([value])
+    return [int(round(float(np.median(group)))) for group in groups]
+
+
+def _longest_regular_run(values: list[int]) -> list[int]:
+    best: tuple[int, int, list[int]] | None = None
+    for start in range(len(values) - 2):
+        for second in range(start + 1, len(values) - 1):
+            gap = values[second] - values[start]
+            if gap < 18:
+                continue
+            tolerance = max(4, int(round(0.08 * gap)))
+            run = [values[start]]
+            target = values[start] + gap
+            while target <= values[-1] + tolerance:
+                nearest = min(values, key=lambda value: abs(value - target))
+                if abs(nearest - target) <= tolerance and nearest > run[-1]:
+                    run.append(nearest)
+                target += gap
+            if len(run) < 3:
+                continue
+            if any(abs(delta - gap) > tolerance for delta in np.diff(run)):
+                continue
+            score = (len(run), run[-1] - run[0])
+            if best is None or score > best[:2]:
+                best = (*score, run)
+    return best[2] if best is not None else []
 
 
 def _smooth_polyline(points: list[tuple[int, int]], stride: int = 4) -> list[tuple[int, int]]:

@@ -25,6 +25,7 @@ from .gate_charge_estimation import (
 from .gate_charge_trace import (
     _curve_score,
     _detect_inner_plot_box,
+    _detect_regular_grid_box,
     _mask_page_text,
     _pdf_to_px,
     _smooth_polyline,
@@ -124,8 +125,12 @@ def _digitize_panel(
         return None
     page = doc[page_index]
     panel_rect = pymupdf.Rect(panel.bbox_pt)
+    expanded_image_rect = _containing_chart_image(page, panel_rect)
+    if expanded_image_rect is not None:
+        panel_rect = expanded_image_rect
     panel_axis = _best_y_axis_for_panel(page, panel_rect)
     panel_y_ticks, axis_x = panel_axis if panel_axis is not None else ([], None)
+    panel_x_ticks: list[tuple[float, float]] = []
     if panel_y_ticks:
         tick_ys = [y for _value, y in panel_y_ticks]
         if len(tick_ys) >= 3:
@@ -145,8 +150,8 @@ def _digitize_panel(
                 panel_rect.x1 = min(panel_rect.x1, axis_x - 3.0)
     panel_x_axis = _best_x_axis_for_panel(page, panel_rect)
     if panel_x_axis is not None:
-        x_ticks, _axis_y = panel_x_axis
-        tick_xs = sorted(x for _value, x in x_ticks)
+        panel_x_ticks, _axis_y = panel_x_axis
+        tick_xs = sorted(x for _value, x in panel_x_ticks)
         spacing = float(np.median(np.diff(tick_xs)))
         pad_x = max(6.0, 0.45 * spacing)
         if axis_x is None:
@@ -162,7 +167,26 @@ def _digitize_panel(
     bx0, by0 = _pdf_to_px(crop_rect, scale, panel_rect.x0, panel_rect.y0)
     bx1, by1 = _pdf_to_px(crop_rect, scale, panel_rect.x1, panel_rect.y1)
     loose_plot_box = (int(round(bx0)), int(round(by0)), int(round(bx1)), int(round(by1)))
-    plot_box = _detect_inner_plot_box(crop, loose_plot_box)
+    detected_plot_box = _detect_inner_plot_box(crop, loose_plot_box)
+    raster_grid = None
+    if not panel_x_ticks and not panel_y_ticks:
+        candidate_grid = _detect_regular_grid_box(crop, loose_plot_box)
+        if candidate_grid is not None and _regular_grid_matches_panel(
+            candidate_grid[0],
+            detected_plot_box,
+            loose_plot_box,
+            allow_neighbor_split=_overlapping_image_count(page, pymupdf.Rect(panel.bbox_pt)) >= 2,
+        ):
+            raster_grid = candidate_grid
+    plot_box = raster_grid[0] if raster_grid is not None else detected_plot_box
+    plot_box = _bind_plot_box_to_axes(
+        plot_box,
+        crop_rect,
+        scale,
+        panel_x_ticks,
+        panel_y_ticks,
+        crop.size,
+    )
     plot_rect = pymupdf.Rect(
         crop_rect.x0 + plot_box[0] / scale,
         crop_rect.y0 + plot_box[1] / scale,
@@ -196,6 +220,17 @@ def _digitize_panel(
     local_y_ticks = _local_y_ticks_for_plot(page, crop_rect, scale, plot_box)
     if len(local_y_ticks) < 2:
         local_y_ticks = panel_y_ticks
+    axis_grid_inferred = False
+    if len(local_y_ticks) < 2 and raster_grid is not None:
+        grid_ys = raster_grid[1]
+        intervals = len(grid_ys) - 1
+        if 2 <= intervals <= 12:
+            v_max = float(intervals * (2 if intervals <= 5 else 1))
+            local_y_ticks = [
+                (v_max * (intervals - index) / intervals, crop_rect.y0 + y / scale)
+                for index, y in enumerate(grid_ys)
+            ]
+            axis_grid_inferred = True
     measured_y_tick_count = len(local_y_ticks)
     axis_assumed = measured_y_tick_count < 2
     if axis_assumed:
@@ -228,6 +263,8 @@ def _digitize_panel(
         diagnostics.append("low_trace_confidence")
     if axis_assumed:
         diagnostics.append("axis_assumed_0_10")
+    elif axis_grid_inferred:
+        diagnostics.append("axis_inferred_from_regular_grid")
     if vpl is None:
         diagnostics.append("vpl_unresolved")
     elif not 1.0 <= vpl <= 12.0:
@@ -244,6 +281,8 @@ def _digitize_panel(
         status = "unresolved"
     elif axis_assumed:
         status = "axis_assumed"
+    elif axis_grid_inferred:
+        status = "axis_grid_inferred"
     elif low_trace_confidence:
         status = "low_confidence"
     else:
@@ -277,6 +316,128 @@ def _digitize_panel(
             ),
         )
     return result
+
+
+def _bind_plot_box_to_axes(
+    detected: tuple[int, int, int, int],
+    crop_rect: pymupdf.Rect,
+    scale: float,
+    x_ticks: list[tuple[float, float]],
+    y_ticks: list[tuple[float, float]],
+    crop_size: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """Bind detected plot edges to calibrated tick spans when available."""
+
+    x0, y0, x1, y1 = detected
+    if len(x_ticks) >= 3:
+        tick_xs = [x for _value, x in x_ticks]
+        tick_x0 = int(round((min(tick_xs) - crop_rect.x0) * scale))
+        tick_x1 = int(round((max(tick_xs) - crop_rect.x0) * scale))
+        if tick_x0 < x0 - 4:
+            x0 = tick_x0
+        if tick_x1 > x1 + 4:
+            x1 = tick_x1
+    if len(y_ticks) >= 3:
+        tick_ys = [y for _value, y in y_ticks]
+        tick_y0 = int(round((min(tick_ys) - crop_rect.y0) * scale))
+        tick_y1 = int(round((max(tick_ys) - crop_rect.y0) * scale))
+        if tick_y0 < y0 - 4:
+            y0 = tick_y0
+        if tick_y1 > y1 + 4:
+            y1 = tick_y1
+    width, height = crop_size
+    x0 = min(max(0, x0), width - 2)
+    x1 = min(max(x0 + 1, x1), width - 1)
+    y0 = min(max(0, y0), height - 2)
+    y1 = min(max(y0 + 1, y1), height - 1)
+    return x0, y0, x1, y1
+
+
+def _regular_grid_matches_panel(
+    grid_box: tuple[int, int, int, int],
+    detected_box: tuple[int, int, int, int],
+    loose_box: tuple[int, int, int, int],
+    *,
+    allow_neighbor_split: bool = False,
+) -> bool:
+    """Reject partial neighboring grids before using their interval scale."""
+
+    gx0, gy0, gx1, gy1 = grid_box
+    dx0, dy0, dx1, dy1 = detected_box
+    fx0, fy0, fx1, fy1 = loose_box
+    grid_width = max(1, gx1 - gx0)
+    grid_height = max(1, gy1 - gy0)
+    detected_width = max(1, dx1 - dx0)
+    detected_height = max(1, dy1 - dy0)
+    loose_width = max(1, fx1 - fx0)
+    loose_height = max(1, fy1 - fy0)
+    if grid_width >= 0.9 * detected_width and grid_height >= 0.9 * detected_height:
+        return True
+    return (
+        allow_neighbor_split
+        and gx0 - fx0 >= 0.2 * loose_width
+        and grid_width >= 0.4 * loose_width
+        and grid_height >= 0.5 * loose_height
+    )
+
+
+def _overlapping_image_count(page: pymupdf.Page, panel_rect: pymupdf.Rect) -> int:
+    """Count raster panels that materially intersect a finder rectangle."""
+
+    count = 0
+    placements: set[tuple[float, float, float, float]] = set()
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return 0
+    for image in images:
+        try:
+            rects = page.get_image_rects(image[0])
+        except Exception:
+            continue
+        for raw_rect in rects:
+            rect = pymupdf.Rect(raw_rect)
+            placement = tuple(round(float(value), 3) for value in rect)
+            if placement in placements:
+                continue
+            placements.add(placement)
+            intersection = rect & panel_rect
+            if intersection.is_empty:
+                continue
+            if intersection.get_area() >= 0.05 * panel_rect.get_area():
+                count += 1
+    return count
+
+
+def _containing_chart_image(
+    page: pymupdf.Page, panel_rect: pymupdf.Rect
+) -> pymupdf.Rect | None:
+    """Expand a severely clipped finder box to its containing chart image."""
+
+    panel_area = panel_rect.get_area()
+    if panel_area <= 0:
+        return None
+    candidates: list[pymupdf.Rect] = []
+    try:
+        images = page.get_images(full=True)
+    except Exception:
+        return None
+    for image in images:
+        try:
+            rects = page.get_image_rects(image[0])
+        except Exception:
+            continue
+        for raw_rect in rects:
+            rect = pymupdf.Rect(raw_rect)
+            if rect.get_area() >= 0.5 * page.rect.get_area():
+                continue
+            intersection = rect & panel_rect
+            if intersection.get_area() < 0.8 * panel_area:
+                continue
+            if rect.get_area() < 2.0 * panel_area:
+                continue
+            candidates.append(rect)
+    return min(candidates, key=lambda rect: rect.get_area()) if candidates else None
 
 
 def _title_score(panel: ChartPanel) -> float:

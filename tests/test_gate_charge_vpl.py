@@ -80,6 +80,13 @@ class GateChargeVplTests(unittest.TestCase):
                 "Gate Charge Characteristics Gate-to-Source Voltage",
             )
         )
+        self.assertIsNone(
+            estimation._non_gate_plot_reason("", "Dynamic Input/Output Characteristics")
+        )
+        self.assertEqual(
+            estimation._non_gate_plot_reason("", "Dynamic Output Characteristics"),
+            "output_characteristics",
+        )
 
     def test_numeric_tick_parser_rejects_axis_words(self) -> None:
         self.assertIsNone(estimation._parse_numeric_label("Gate-to-Source"))
@@ -101,6 +108,218 @@ class GateChargeVplTests(unittest.TestCase):
         ticks = estimation._normalize_y_tick_candidates(candidates)
 
         self.assertEqual([value for value, _y in ticks], [12.0, 10.0, 8.0, 6.0, 4.0, 2.0, 0.0])
+
+    def test_y_tick_column_keeps_run_with_one_missing_label(self) -> None:
+        candidates = [
+            (12.0, 10.0),
+            (10.0, 30.0),
+            (8.0, 50.0),
+            (4.0, 90.0),
+            (2.0, 110.0),
+            (0.0, 130.0),
+        ]
+
+        runs = estimation._normalize_y_tick_candidate_runs(candidates)
+
+        self.assertIn(candidates, runs)
+
+    def test_plateau_estimator_resamples_large_flat_x_gap(self) -> None:
+        plateau_y = 180
+        curve = [
+            (x, int(470 - (x - 20) * (470 - (plateau_y + 25)) / 220))
+            for x in range(20, 241, 4)
+        ]
+        curve.extend([(244, plateau_y + 25), (510, plateau_y + 10)])
+        curve.extend(
+            (x, int(plateau_y + 10 - (x - 514) * (plateau_y - 50) / 266))
+            for x in range(514, 781, 4)
+        )
+
+        value, y_px = estimation._estimate_vpl_from_curve(
+            curve,
+            mock.MagicMock(y_ticks=[]),
+            estimation.pymupdf.Rect(0.0, 0.0, 800.0, 500.0),
+            1.0,
+            (0, 0, 800, 500),
+            [(10.0, 0.0), (0.0, 500.0)],
+        )
+
+        self.assertAlmostEqual(value, 6.05, delta=0.2)
+        self.assertAlmostEqual(y_px, 197.5, delta=10.0)
+
+    def test_plateau_resampler_does_not_bridge_steep_x_gap(self) -> None:
+        curve = [(0, 400), (4, 396), (8, 392), (200, 200), (204, 196)]
+
+        resampled = estimation._resample_flat_x_gaps(curve, (0, 0, 240, 500))
+
+        self.assertEqual(resampled, curve)
+
+    def test_x_axis_refinement_rejects_row_above_panel(self) -> None:
+        panel_rect = estimation.pymupdf.Rect(100.0, 200.0, 400.0, 500.0)
+
+        def row(y: float, count: int) -> list[tuple[object, ...]]:
+            return [
+                (x - 2, y - 2, x + 2, y + 2, str(index * 20))
+                for index, x in enumerate(range(130, 130 + 30 * count, 30))
+            ]
+
+        page = mock.MagicMock()
+        page.get_text.return_value = row(180.0, 8) + row(485.0, 6)
+
+        axis = estimation._best_x_axis_for_panel(page, panel_rect)
+
+        self.assertIsNotNone(axis)
+        assert axis is not None
+        self.assertEqual(axis[1], 485.0)
+        self.assertEqual(len(axis[0]), 6)
+
+    def test_regular_grid_detector_selects_larger_neighboring_grid(self) -> None:
+        from PIL import Image, ImageDraw
+
+        image = Image.new("L", (520, 300), 255)
+        draw = ImageDraw.Draw(image)
+        for x in (10, 55, 100, 145):
+            draw.line((x, 40, x, 240), fill=80, width=2)
+        for x in (210, 264, 318, 372, 426, 480):
+            for y in range(40, 241, 8):
+                draw.line((x, y, x, min(y + 4, 240)), fill=80, width=2)
+        for y in (40, 80, 120, 160, 200, 240):
+            for x in range(210, 481, 8):
+                draw.line((x, y, min(x + 4, 480), y), fill=80, width=2)
+
+        detected = trace._detect_regular_grid_box(image.convert("RGB"), (0, 0, 519, 299))
+
+        self.assertIsNotNone(detected)
+        assert detected is not None
+        box, horizontal, vertical = detected
+        self.assertEqual(box, (210, 40, 480, 240))
+        self.assertEqual(len(horizontal), 6)
+        self.assertEqual(len(vertical), 6)
+
+    def test_vector_trace_densifies_only_connected_curve_segments(self) -> None:
+        def line(a: tuple[float, float], b: tuple[float, float]) -> dict[str, object]:
+            return {
+                "color": (0.13, 0.16, 0.18),
+                "items": [("l", estimation.pymupdf.Point(*a), estimation.pymupdf.Point(*b))],
+            }
+
+        page = mock.MagicMock()
+        page.get_drawings.return_value = [
+            line((0.0, 100.0), (20.0, 60.0)),
+            line((20.0, 60.0), (50.0, 60.0)),
+            line((50.0, 60.0), (100.0, 0.0)),
+            line((5.0, 10.0), (15.0, 14.0)),
+        ]
+
+        points = trace._trace_vector_gate_curve(
+            page,
+            estimation.pymupdf.Rect(0.0, 0.0, 100.0, 100.0),
+            1.0,
+            (0, 0, 100, 100),
+        )
+
+        self.assertGreaterEqual(len(points), 100)
+        self.assertEqual(points[0], (0, 100))
+        self.assertEqual(points[-1], (100, 0))
+
+    def test_vector_trace_rejects_grid_lines_alone(self) -> None:
+        page = mock.MagicMock()
+        page.get_drawings.return_value = [
+            {
+                "color": (0.1, 0.1, 0.1),
+                "items": [
+                    ("l", estimation.pymupdf.Point(0.0, y), estimation.pymupdf.Point(100.0, y))
+                    for y in (0.0, 25.0, 50.0, 75.0, 100.0)
+                ]
+                + [
+                    ("l", estimation.pymupdf.Point(x, 0.0), estimation.pymupdf.Point(x, 100.0))
+                    for x in (0.0, 25.0, 50.0, 75.0, 100.0)
+                ]
+                + [
+                    ("l", estimation.pymupdf.Point(x, 40.0), estimation.pymupdf.Point(x + 20.0, 40.0))
+                    for x in (0.0, 20.0, 40.0, 60.0, 80.0)
+                ],
+            }
+        ]
+
+        points = trace._trace_vector_gate_curve(
+            page,
+            estimation.pymupdf.Rect(0.0, 0.0, 100.0, 100.0),
+            1.0,
+            (0, 0, 100, 100),
+        )
+
+        self.assertEqual(points, [])
+
+    def test_axis_binding_expands_detected_box_without_clipping_curve(self) -> None:
+        detected = (120, 80, 400, 320)
+
+        bound = gate._bind_plot_box_to_axes(
+            detected,
+            estimation.pymupdf.Rect(10.0, 20.0, 210.0, 180.0),
+            2.0,
+            [(0.0, 50.0), (10.0, 100.0), (20.0, 150.0)],
+            [(10.0, 40.0), (5.0, 90.0), (0.0, 140.0)],
+            (500, 400),
+        )
+
+        self.assertEqual(bound, (80, 40, 400, 320))
+
+    def test_regular_grid_rejects_partial_left_neighbor(self) -> None:
+        self.assertFalse(
+            gate._regular_grid_matches_panel(
+                (167, 154, 813, 646),
+                (168, 154, 813, 769),
+                (141, 116, 843, 805),
+            )
+        )
+        self.assertTrue(
+            gate._regular_grid_matches_panel(
+                (471, 176, 1113, 576),
+                (141, 116, 1233, 749),
+                (141, 116, 1233, 749),
+                allow_neighbor_split=True,
+            )
+        )
+
+    def test_clipped_panel_expands_only_to_much_larger_containing_image(self) -> None:
+        page = mock.MagicMock()
+        page.rect = estimation.pymupdf.Rect(0.0, 0.0, 600.0, 800.0)
+        page.get_images.return_value = [(10,), (20,)]
+        page.get_image_rects.side_effect = [
+            [estimation.pymupdf.Rect(90.0, 90.0, 210.0, 210.0)],
+            [estimation.pymupdf.Rect(70.0, 70.0, 230.0, 230.0)],
+        ]
+
+        expanded = gate._containing_chart_image(
+            page, estimation.pymupdf.Rect(100.0, 100.0, 200.0, 200.0)
+        )
+
+        self.assertEqual(expanded, estimation.pymupdf.Rect(70.0, 70.0, 230.0, 230.0))
+
+    def test_clipped_panel_does_not_expand_to_full_page_scan(self) -> None:
+        page = mock.MagicMock()
+        page.rect = estimation.pymupdf.Rect(0.0, 0.0, 400.0, 600.0)
+        page.get_images.return_value = [(10,)]
+        page.get_image_rects.return_value = [page.rect]
+
+        expanded = gate._containing_chart_image(
+            page, estimation.pymupdf.Rect(100.0, 100.0, 200.0, 200.0)
+        )
+
+        self.assertIsNone(expanded)
+
+    def test_neighbor_image_count_deduplicates_repeated_placement(self) -> None:
+        page = mock.MagicMock()
+        placement = estimation.pymupdf.Rect(80.0, 80.0, 220.0, 220.0)
+        page.get_images.return_value = [(10,), (10,)]
+        page.get_image_rects.return_value = [placement]
+
+        count = gate._overlapping_image_count(
+            page, estimation.pymupdf.Rect(100.0, 100.0, 200.0, 200.0)
+        )
+
+        self.assertEqual(count, 1)
 
     def test_y_axis_refinement_rejects_remote_higher_scoring_column(self) -> None:
         panel_rect = estimation.pymupdf.Rect(215.0, 310.0, 595.0, 522.0)
@@ -265,6 +484,107 @@ class GateChargeVplTests(unittest.TestCase):
         self.assertAlmostEqual(result.vpl, 2.9, delta=0.5)
         self.assertLess(result.crop_box_pt[1], result.panel.bbox_pt[3])
         self.assertGreater(result.crop_box_pt[3], result.panel.bbox_pt[1])
+
+    def test_real_axis_binding_backlog_is_numeric_and_local(self) -> None:
+        root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
+        cases = {
+            "xnrusemi/XR150N04.pdf": (
+                3.1,
+                lambda result: (
+                    result.crop_box_pt[1] + result.plot_box_px[1] / (result.dpi / 72) < 190
+                    and result.plot_box_px[3] - result.plot_box_px[1] >= 350
+                ),
+            ),
+            "ti/TPS1100.pdf": (
+                3.1,
+                lambda result: result.crop_box_pt[0] + result.plot_box_px[0] / (result.dpi / 72) < 220,
+            ),
+            "infineon/IPB019N08N3GATMA1.pdf": (4.6, lambda result: result.crop_box_pt[1] < 100),
+            "infineon/IRFS4310TRRPBF.pdf": (6.5, lambda result: result.crop_box_pt[0] < 340),
+            "huayi/HYG016N04LS1B.pdf": (
+                3.6,
+                lambda result: result.crop_box_pt[0] + result.plot_box_px[0] / (result.dpi / 72) > 330,
+            ),
+        }
+        if not all((root / rel).exists() for rel in cases):
+            self.skipTest("axis-binding regression PDFs are not configured")
+
+        for rel, (reference, bbox_gate) in cases.items():
+            with self.subTest(pdf=rel):
+                result = gate.find_vpl_result(root / rel)
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertAlmostEqual(result.vpl, reference, delta=0.5)
+                self.assertNotEqual(result.status, "axis_assumed")
+                self.assertGreaterEqual(result.y_tick_count, 4)
+                self.assertTrue(bbox_gate(result), result)
+
+    def test_real_regular_grid_fallback_preserves_bsb056(self) -> None:
+        pdf = (
+            Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
+            / "datasheets/infineon/BSB056N10NN3GXUMA2.pdf"
+        )
+        if not pdf.exists():
+            self.skipTest("BSB056 regression PDF is not configured")
+
+        result = gate.find_vpl_result(pdf)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertAlmostEqual(result.vpl, 4.2, delta=0.5)
+        self.assertNotIn("axis_inferred_from_regular_grid", result.diagnostics)
+
+    def test_real_irregular_gap_plateau_is_numeric(self) -> None:
+        pdf = (
+            Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
+            / "datasheets/infineon/IPI65R190CFD.pdf"
+        )
+        if not pdf.exists():
+            self.skipTest("IPI65R190CFD regression PDF is not configured")
+
+        result = gate.find_vpl_result(pdf)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertAlmostEqual(result.vpl, 6.4, delta=0.5)
+        self.assertGreaterEqual(result.y_tick_count, 4)
+
+    def test_real_dual_axis_dynamic_input_output_is_numeric(self) -> None:
+        pdf = (
+            Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
+            / "datasheets/toshiba/XPQR8308QB.pdf"
+        )
+        if not pdf.exists():
+            self.skipTest("XPQR8308QB regression PDF is not configured")
+
+        result = gate.find_vpl_result(pdf)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertEqual(result.panel.page, 7)
+        self.assertIn("Dynamic Input/Output", result.panel.title)
+        self.assertAlmostEqual(result.vpl, 5.5, delta=0.5)
+        self.assertEqual(result.status, "axis_grid_inferred")
+        page_three = next(item for item in gate.digitize_gate_charge(pdf) if item.panel.page == 3)
+        self.assertIsNone(page_three.vpl)
+        self.assertEqual(page_three.status, "unresolved")
+
+    def test_real_faint_vector_gate_curve_is_numeric(self) -> None:
+        pdf = (
+            Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
+            / "datasheets/hxy/SIS444DN-T1-GE3-HXY.pdf"
+        )
+        if not pdf.exists():
+            self.skipTest("SIS444DN regression PDF is not configured")
+
+        result = gate.find_vpl_result(pdf)
+
+        self.assertIsNotNone(result)
+        assert result is not None
+        self.assertAlmostEqual(result.vpl, 3.0, delta=0.5)
+        self.assertEqual(result.trace_source, "vector")
+        self.assertGreaterEqual(len(result.curve_px), 100)
+        self.assertGreaterEqual(result.y_tick_count, 4)
 
 
 if __name__ == "__main__":
