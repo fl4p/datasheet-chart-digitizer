@@ -173,12 +173,11 @@ def find_vpl_result(
     dpi: int = 220,
     finder_dpi: int = 120,
 ) -> GateChargeResult | None:
-    """Return the highest-ranked experimental Vpl result, if one exists.
+    """Return the highest-ranked package-native Vpl result, if one exists.
 
-    Callers must inspect ``status`` and ``diagnostics``. The package-native
-    numeric corpus has known wrong-axis cases, including results whose status
-    is currently ``ok``; this API is not a validated scalar replacement for
-    the legacy dslib estimator yet.
+    The numeric compatibility corpus is accepted. Callers that need provenance
+    should still retain the result and inspect ``status`` and ``diagnostics``
+    rather than reducing it to a scalar.
     """
 
     results = digitize_gate_charge(pdf_path, dpi=dpi, finder_dpi=finder_dpi)
