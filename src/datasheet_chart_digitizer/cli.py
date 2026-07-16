@@ -10,6 +10,7 @@ def main() -> None:
         "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
         "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
         "digitize-breakdown-voltage": "digitize V(BR)DSS vs Tj charts (Infineon Diagram 15 style)",
+        "digitize-transfer": "digitize Id(Vgs,Tj) saturation transfer curves and fit temp-co",
         "export-coss-spice": "export digitized Coss(V) as knots and a SPICE Qoss table",
         "export-coss-dslib": "export validation-gated dslib (V, Coss, Crss) knot triples",
     }
@@ -53,6 +54,12 @@ def main() -> None:
 
         sys.argv = ["dsdig digitize-breakdown-voltage", *rest]
         breakdown_voltage.main()
+        return
+    if command == "digitize-transfer":
+        from . import transfer_characteristics
+
+        sys.argv = ["dsdig digitize-transfer", *rest]
+        transfer_characteristics.main()
         return
     if command == "export-coss-spice":
         from . import coss_export

@@ -106,13 +106,14 @@ def _fit_axis(ticks: list[tuple[float, float]], what: str) -> LinearAxis:
     return LinearAxis(float(m), float(b), [(float(v), float(p)) for v, p in zip(values, pixels)], resid)
 
 
-def _calibrate(words_px: list[tuple[str, float, float]], plot: PlotBox, img_h: int) -> tuple[LinearAxis, LinearAxis]:
+def _calibrate(words_px: list[tuple[str, float, float]], plot: PlotBox, img_h: int,
+               x_pattern=INT_RE) -> tuple[LinearAxis, LinearAxis]:
     """Fit X (Tj) and Y (V) axes from tick-label words in crop-pixel space."""
     x_band = (plot.y1 + 0.004 * img_h, plot.y1 + 0.055 * img_h)
     x_ticks = [
         (float(text), cx)
         for text, cx, cy in words_px
-        if INT_RE.match(text) and x_band[0] <= cy <= x_band[1] and plot.x0 - 0.03 * plot.width <= cx <= plot.x1 + 0.03 * plot.width
+        if x_pattern.match(text) and x_band[0] <= cy <= x_band[1] and plot.x0 - 0.03 * plot.width <= cx <= plot.x1 + 0.03 * plot.width
     ]
     y_ticks = [
         (float(text), cy)
