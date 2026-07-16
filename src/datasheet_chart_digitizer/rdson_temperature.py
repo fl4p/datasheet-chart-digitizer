@@ -48,6 +48,7 @@ from .find_charts import (
     words_in_bbox,
 )
 from .numeric_axis import NumericAxis, axis_to_json, tick_aligned_plot
+from .overlay import draw_axis_ticks, draw_plot_frame
 
 REFERENCE_TEMPERATURE_C = 25.0
 MAX_AXIS_RESIDUAL_PX = 1.5
@@ -525,7 +526,7 @@ def _draw_overlay(
         (255, 255, 255),
         -1,
     )
-    cv2.rectangle(image, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 190, 0), 2)
+    draw_plot_frame(image, plot, (0, 190, 0), 2)
     palette = ((255, 80, 0), (180, 0, 220), (0, 120, 255), (0, 170, 80))
     for index, curve in enumerate(curves):
         points = np.asarray(curve["points_px"], dtype=np.int32).reshape((-1, 1, 2))
@@ -543,33 +544,17 @@ def _draw_overlay(
             cv2.LINE_AA,
         )
 
-    for tick in calibration.x_axis.ticks:
-        x = int(round(tick.pixel))
-        cv2.drawMarker(image, (x, plot.y1), (255, 0, 0), cv2.MARKER_CROSS, 5, 1)
-        label = f"{tick.value:g}°C"
-        cv2.putText(
-            image,
-            label,
-            (max(plot.x0 + 1, x - 13), plot.y1 - 3),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.23,
-            (255, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
-    for tick in calibration.y_axis.ticks:
-        y = int(round(tick.pixel))
-        cv2.drawMarker(image, (plot.x0, y), (255, 0, 0), cv2.MARKER_CROSS, 5, 1)
-        cv2.putText(
-            image,
-            f"{tick.value:g}x",
-            (plot.x0 + 3, min(plot.y1 - 2, max(plot.y0 + 9, y + 3))),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.23,
-            (255, 0, 0),
-            1,
-            cv2.LINE_AA,
-        )
+    draw_axis_ticks(
+        image,
+        plot,
+        x_ticks=[(t.pixel, t.value) for t in calibration.x_axis.ticks],
+        y_ticks=[(t.pixel, t.value) for t in calibration.y_axis.ticks],
+        color=(255, 0, 0),
+        font_scale=0.23,
+        marker_size=5,
+        unit_x="°C",
+        unit_y="x",
+    )
     color = (0, 0, 0) if status == "ok" else (0, 0, 190)
     cv2.putText(
         image,

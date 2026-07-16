@@ -201,7 +201,8 @@ class RdsonTemperatureUnitTests(unittest.TestCase):
             "datasheet_chart_digitizer.rdson_temperature.cv2.imread",
             return_value=np.full((100, 100, 3), 255, dtype=np.uint8),
         ), patch(
-            "datasheet_chart_digitizer.rdson_temperature.cv2.drawMarker"
+            # tick crosshairs now render via the shared overlay helper
+            "datasheet_chart_digitizer.overlay.cv2.drawMarker"
         ) as marker:
             _draw_overlay(Path("crop.png"), _panel(), _calibration(), [], "ok")
         centers = [call.args[1] for call in marker.call_args_list]
