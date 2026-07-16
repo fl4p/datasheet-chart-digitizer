@@ -53,6 +53,7 @@ from .capacitance_vector import (
     _vector_curve_edges,
 )
 from .crop_transform import CropTransform
+from .numeric_axis import AxisTick, fit_axis_ticks
 
 INT_RE = re.compile(r"^-?\d+$")
 NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -86,24 +87,38 @@ class LinearAxis:
 
 
 def _fit_axis(ticks: list[tuple[float, float]], what: str) -> LinearAxis:
+    """Linear pixel->value calibration via the ONE shared numeric_axis fitter.
+
+    Delegates the least-squares fit to ``numeric_axis.fit_axis_ticks`` instead of
+    re-deriving np.polyfit + the monotonicity check here (axis-fitter
+    consolidation), then keeps breakdown's own policy on top: a stricter
+    ``>=MIN_TICKS_PER_AXIS`` (4) min-count, linear-only (V(BR)/Tj axes are never
+    logarithmic — refuse a log/ambiguous fit rather than scale off the wrong
+    model), and the value-space residual gate (max abs error <=
+    MAX_CAL_RESID_FRAC of the value span). Ticks are (value, pixel) pairs;
+    breakdown raises on any refusal (transfer relies on that)."""
+    # dedup exact-duplicate (value, pixel) ticks (doubled text layers) so the
+    # shared fitter's strict-monotone gate doesn't reject a zero gap; a
+    # same-value/different-pixel or same-pixel/different-value pair is a real
+    # conflict and stays fail-closed (fit_axis_ticks raises non-monotone).
+    ticks = list(dict.fromkeys(ticks))
     if len(ticks) < MIN_TICKS_PER_AXIS:
         raise RuntimeError(f"{what}: only {len(ticks)} tick labels, need >={MIN_TICKS_PER_AXIS}")
+    fit = fit_axis_ticks([AxisTick(f"{v:g}", v, px) for v, px in ticks], what)
+    if fit.model != "linear":
+        raise RuntimeError(f"{what}: expected a linear axis, got {fit.model!r}")
     values = np.array([v for v, _ in ticks], dtype=float)
     pixels = np.array([p for _, p in ticks], dtype=float)
     order = np.argsort(pixels)
     values, pixels = values[order], pixels[order]
-    diffs = np.diff(values)
-    if not (np.all(diffs > 0) or np.all(diffs < 0)):
-        raise RuntimeError(f"{what}: tick values are not monotone along the axis: {values.tolist()}")
-    m, b = np.polyfit(pixels, values, 1)
-    resid = float(np.max(np.abs(m * pixels + b - values)))
+    resid = float(np.max(np.abs(fit.m * pixels + fit.b - values)))
     span = float(np.max(values) - np.min(values))
     if span <= 0 or resid > MAX_CAL_RESID_FRAC * span:
         raise RuntimeError(
             f"{what}: calibration residual {resid:.3g} exceeds {MAX_CAL_RESID_FRAC:.0%} "
             f"of the {span:g}-unit tick span — label/position pairing untrusted"
         )
-    return LinearAxis(float(m), float(b), [(float(v), float(p)) for v, p in zip(values, pixels)], resid)
+    return LinearAxis(float(fit.m), float(fit.b), [(float(v), float(p)) for v, p in zip(values, pixels)], resid)
 
 
 def _calibrate(words_px: list[tuple[str, float, float]], plot: PlotBox, img_h: int,

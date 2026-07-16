@@ -18,6 +18,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from datasheet_chart_digitizer import breakdown_voltage as bv
 from datasheet_chart_digitizer import find_charts
@@ -109,8 +110,14 @@ class KnownBadInputsRefuse(unittest.TestCase):
         return next(c for c in self.charts if c["kind"] == kind)
 
     def test_multi_curve_panel_refused(self):
+        # a capacitance chart must be refused, not silently digitized. Since the
+        # axis fit moved onto the shared numeric_axis core, this now fails closed
+        # even earlier — at the axis-type mismatch (a capacitance chart's log Y is
+        # ambiguous/non-linear) rather than at the downstream curve-count guard.
+        # Accept either refusal reason so the test tracks the fail-closed outcome,
+        # not one specific guard's wording.
         cap = self._chart("capacitances")
-        with self.assertRaisesRegex(RuntimeError, "expected exactly 1"):
+        with self.assertRaisesRegex(RuntimeError, "ambiguous|not.*monotone|expected exactly 1"):
             bv.process_chart(cap, self.out / cap["crop_png"], self.out / "bad", Path("bad/cap"))
 
     def test_wrong_spec_anchor_fails_loud(self):
@@ -199,7 +206,8 @@ class AxisFitUnit(unittest.TestCase):
 
     def test_non_monotone_ticks_refused(self):
         ticks = [(0.0, 0.0), (25.0, 40.0), (75.0, 80.0), (50.0, 120.0)]
-        with self.assertRaisesRegex(RuntimeError, "not monotone"):
+        # the shared fitter phrases this as "not strictly monotone"
+        with self.assertRaisesRegex(RuntimeError, "monotone"):
             bv._fit_axis(ticks, "X")
 
     def test_bad_pairing_residual_refused(self):
@@ -234,6 +242,53 @@ class SpecParseUnit(unittest.TestCase):
     def test_rejects_implausible_and_absent(self):
         self.assertIsNone(bv._spec_min_vbrdss(self._FakeDoc([self._FakePage("V(BR)DSS 5")])))
         self.assertIsNone(bv._spec_min_vbrdss(self._FakeDoc([self._FakePage("no such row here")])))
+
+
+class CurveCountGuardUnit(unittest.TestCase):
+    """_extract_single_trace must refuse unless EXACTLY one full-span curve is
+    found — never silently pick one. Exercised directly here: the capacitance
+    end-to-end fixture (test_multi_curve_panel_refused) now fails closed one step
+    earlier, at axis calibration, so it no longer reaches this guard. The vector
+    pipeline feeding the guard is patched so only the candidate COUNT varies."""
+
+    class _Xf:  # identity crop<->pt transform
+        def to_pt(self, x, y):
+            return (x, y)
+
+        def to_px(self, x, y):
+            return (x, y)
+
+    class _Rect:
+        def __init__(self, x0, y0, x1, y1):
+            self.x0, self.y0, self.x1, self.y1 = x0, y0, x1, y1
+            self.width = x1 - x0
+
+    class _Page:
+        def get_drawings(self):
+            return []
+
+    def _run(self, n_components):
+        plot = bv.PlotBox(0, 0, 100, 100)
+        # each component spans the full plot width so it passes the span filter
+        comps = [[(0.0, 50.0), (100.0, 50.0)] for _ in range(n_components)]
+        fitz = type("F", (), {"Rect": self._Rect})
+        with patch.object(bv, "_vector_curve_edges", return_value=[]), \
+             patch.object(bv, "_chain_vector_components", return_value=comps), \
+             patch.object(bv, "_mostly_inside_plot", return_value=True), \
+             patch.object(bv, "_resample_vector_trace_pixels", return_value=[(0, 0)] * 60), \
+             patch.object(bv, "_path_length", return_value=1.0):
+            return bv._extract_single_trace(self._Page(), self._Xf(), plot, fitz)
+
+    def test_two_full_span_curves_refused(self):
+        with self.assertRaisesRegex(RuntimeError, r"expected exactly 1.*found 2"):
+            self._run(2)
+
+    def test_zero_full_span_curves_refused(self):
+        with self.assertRaisesRegex(RuntimeError, r"expected exactly 1.*found 0"):
+            self._run(0)
+
+    def test_single_full_span_curve_accepted(self):
+        self.assertEqual(len(self._run(1)), 60)
 
 
 if __name__ == "__main__":
