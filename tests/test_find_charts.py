@@ -604,5 +604,92 @@ class TransferBodyCaptionIntegrationTests(unittest.TestCase):
         self.assertEqual(gate[0].bbox_pt, (345.472, 566.032, 554.128, 658.768))
 
 
+class CaptionBboxExpansionGuardTests(unittest.TestCase):
+    def test_single_stray_numeral_does_not_suppress_expansion(self) -> None:
+        # A lone condition numeral (the "25" split off "Tj = 25 degC") inside
+        # the bbox near an edge must not read as "tick labels already present";
+        # both gutters here hold their real tick labels OUTSIDE the bbox.
+        words = [
+            find_charts.Word("25", 108.0, 280.0, 116.0, 288.0),  # stray, in-bbox
+            # real left tick labels, outside the bbox
+            find_charts.Word("100", 80.0, 120.0, 96.0, 128.0),
+            find_charts.Word("10", 82.0, 180.0, 96.0, 188.0),
+            # real bottom tick labels, outside the bbox
+            find_charts.Word("1", 150.0, 305.0, 156.0, 313.0),
+            find_charts.Word("10", 200.0, 305.0, 212.0, 313.0),
+        ]
+        page = find_charts.PageText(page_num=1, width_pt=500.0, height_pt=400.0, words=words)
+        out = find_charts._expand_caption_bbox_to_axis_labels(page, (100.0, 100.0, 300.0, 300.0))
+        self.assertLess(out[0], 100.0, "left gutter was not taken in")
+        self.assertGreater(out[3], 300.0, "bottom gutter was not taken in")
+
+    def test_real_tick_runs_inside_bbox_keep_crop_unchanged(self) -> None:
+        # Panels that already include their gutters (>=2 tick-like numerals
+        # per edge) must keep byte-identical crops.
+        words = [
+            find_charts.Word("100", 104.0, 120.0, 120.0, 128.0),
+            find_charts.Word("10", 106.0, 180.0, 120.0, 188.0),
+            find_charts.Word("1", 150.0, 280.0, 156.0, 288.0),
+            find_charts.Word("10", 200.0, 280.0, 212.0, 288.0),
+            # decoy numerals outside the bbox that must NOT be swallowed
+            find_charts.Word("50", 70.0, 150.0, 90.0, 158.0),
+            find_charts.Word("5", 170.0, 305.0, 176.0, 313.0),
+        ]
+        page = find_charts.PageText(page_num=1, width_pt=500.0, height_pt=400.0, words=words)
+        bbox = (100.0, 100.0, 300.0, 300.0)
+        self.assertEqual(find_charts._expand_caption_bbox_to_axis_labels(page, bbox), bbox)
+
+
+class SpecTableGuardFamilyTests(unittest.TestCase):
+    @staticmethod
+    def _page_with_tokens(tokens: list[str]) -> "find_charts.PageText":
+        words = [
+            find_charts.Word(text, 10.0 + 40.0 * i, 10.0, 40.0 + 40.0 * i, 18.0)
+            for i, text in enumerate(tokens)
+        ]
+        return find_charts.PageText(page_num=1, width_pt=700.0, height_pt=400.0, words=words)
+
+    def test_own_family_does_not_count_toward_table_signal(self) -> None:
+        # A legitimate gate-charge panel always contains "charge" (that's how
+        # the candidate was found); with condition callouts naming resistance,
+        # threshold and recovery it must still NOT read as a spec table.
+        page = self._page_with_tokens(
+            ["Gate", "charge", "resistance", "RDS(on)", "threshold", "Vth", "recovery", "reverse"]
+        )
+        bbox = (0.0, 0.0, 700.0, 50.0)
+        self.assertTrue(find_charts._bbox_looks_like_spec_table(page, bbox))
+        self.assertFalse(
+            find_charts._bbox_looks_like_spec_table(page, bbox, own_families=frozenset({"charge"}))
+        )
+
+    def test_real_table_row_column_still_rejected(self) -> None:
+        # A row-name column listing >=4 families beyond the candidate's own
+        # keeps tripping the guard.
+        page = self._page_with_tokens(
+            ["leakage", "threshold", "capacitance", "charge", "resistance", "recovery"]
+        )
+        bbox = (0.0, 0.0, 700.0, 50.0)
+        self.assertTrue(
+            find_charts._bbox_looks_like_spec_table(page, bbox, own_families=frozenset({"charge"}))
+        )
+
+
+TK100E10N1 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/toshiba/TK100E10N1.pdf")
+
+
+@unittest.skipUnless(TK100E10N1.exists(), "local TK100E10N1 datasheet not available")
+class ToshibaRasterImagePanelTests(unittest.TestCase):
+    def test_capacitance_caption_binds_to_embedded_image_rect(self) -> None:
+        # Toshiba renders the whole figure (grid, traces AND tick labels) as
+        # one embedded raster image; the panel must be the full image rect,
+        # not the grid-rule bbox that clips the tick labels off.
+        with TemporaryDirectory(prefix="tk100e10n1-finder-") as tmp:
+            panels = find_charts.process_pdf(TK100E10N1, Path(tmp), dpi=180)
+        caps = [panel for panel in panels if panel.kind == "capacitances"]
+        self.assertEqual([(panel.page, panel.diagram) for panel in caps], [(6, 88)])
+        for got, want in zip(caps[0].bbox_pt, (308.421, 62.692, 537.308, 248.264)):
+            self.assertAlmostEqual(got, want, places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

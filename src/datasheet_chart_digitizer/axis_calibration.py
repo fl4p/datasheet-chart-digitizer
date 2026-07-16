@@ -62,6 +62,30 @@ def _x_ticks_look_log(values: list[float]) -> bool:
     return bool(ratios) and all(abs(r - 10.0) < 0.5 for r in ratios)
 
 
+def _log_fit_beats_linear(xt: list[tuple[float, float]]) -> bool:
+    """Dual-fit fallback for log X axes with sub-decade ticks (1-2-5-10-20...).
+
+    `_x_ticks_look_log` only recognizes pure decade labels; the common 1-2-5
+    convention fails its ratio test, the linear fit then has a huge residual,
+    and the calibration is rejected. Fit both models on the (value, position)
+    pairs and call the axis log only when the log fit is near-exact AND the
+    linear fit is clearly worse -- a genuinely linear axis never satisfies
+    both. Gated to all-positive ticks spanning >=1.5 decades, which no real
+    linear voltage axis in this corpus does (they start at 0).
+    """
+    values = [v for v, _ in xt]
+    if len(values) < 3 or min(values) <= 0.0 or max(values) / min(values) < 30.0:
+        return False
+    px = np.array([p for _, p in xt], dtype=float)
+    lin_v = np.array(values, dtype=float)
+    log_v = np.log10(lin_v)
+    lin_fit = np.polyfit(px, lin_v, 1)
+    log_fit = np.polyfit(px, log_v, 1)
+    lin_rel = float(np.sqrt(np.mean((np.polyval(lin_fit, px) - lin_v) ** 2))) / max(1e-12, float(np.ptp(lin_v)))
+    log_rel = float(np.sqrt(np.mean((np.polyval(log_fit, px) - log_v) ** 2))) / max(1e-12, float(np.ptp(log_v)))
+    return log_rel < 0.02 and log_rel < 0.5 * lin_rel
+
+
 def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=None):
     """Fit calibration from tick-label text positions on a PyMuPDF page.
 
@@ -100,7 +124,7 @@ def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=Non
     if len(yd) < 2:
         raise RuntimeError("need >=2 Y decade labels for a position fit")
     xt.sort(); yd.sort(key=lambda z: z[1])
-    x_log = _x_ticks_look_log([v for v, _ in xt])
+    x_log = _x_ticks_look_log([v for v, _ in xt]) or _log_fit_beats_linear(xt)
     x_fit_vals = [math.log10(v) if x_log else v for v, _ in xt]
     mx, bx = np.polyfit([px for _, px in xt], x_fit_vals, 1)
     my, by = np.polyfit([py for _, py in yd], [e for e, _ in yd], 1)
