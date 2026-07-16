@@ -31,8 +31,9 @@ except ImportError:  # pragma: no cover - direct script compatibility
 
 
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
-FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:\.\d+)?)[\.:]?\s*(.*)$", re.IGNORECASE)
-COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:\.\d+)?)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
+# Figure numbers: Toshiba "Fig. 8.8", TI "Figure 4-5." (section-hyphenated).
+FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:[.\-]\d+)?)[\.:]?\s*(.*)$", re.IGNORECASE)
+COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:[.\-]\d+)?)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
 CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
 
 
@@ -410,7 +411,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
         if lower in {"figure", "fig"} and idx + 1 < len(line):
-            if re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx + 1].text):
+            if re.match(r"^\d+(?:[.\-]\d+)?[\.:]?$", line[idx + 1].text):
                 starts.append(idx)
             continue
 
@@ -455,13 +456,13 @@ def _caption_starts(line: list[Word]) -> list[int]:
 def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
     match = FIGURE_RE.match(text)
     if match:
-        return int(match.group(1).replace(".", "")), match.group(2).strip()
+        return int(re.sub(r"[.\-]", "", match.group(1))), match.group(2).strip()
     match = COMPACT_FIGURE_RE.match(text)
     if match:
         title = match.group(2).strip()
         if title.startswith("-"):
             title = title[1:].strip()
-        return int(match.group(1).replace(".", "")), title
+        return int(re.sub(r"[.\-]", "", match.group(1))), title
     parts = text.split(maxsplit=1)
     if len(parts) == 2 and parts[0].isdigit():
         return int(parts[0]), parts[1].strip()
@@ -524,6 +525,7 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 "breakdown_voltage",
                 "body_diode",
                 "transfer",
+                "capacitances",
             }:
                 continue
             title = title_for_classification
@@ -1130,6 +1132,89 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
     return (x0, y0, x1, y1)
 
 
+_AXIS_NUM_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
+
+
+def _expand_caption_bbox_to_axis_labels(
+    page: PageText, bbox: tuple[float, float, float, float]
+) -> tuple[float, float, float, float]:
+    """Grow a caption-bound grid bbox to take in its numeric axis-label gutters.
+
+    Grid regions inferred from h-rules stop at the plot frame (or earlier, when
+    an in-plot legend box interrupts the rule chunking), so the tick labels
+    left of and below the plot fall outside the crop and position-based axis
+    calibration finds nothing. Extend to nearby numeric words only, bounded so
+    a neighboring chart is never swallowed.
+    """
+    x0, y0, x1, y1 = bbox
+    cy_lo, cy_hi = y0 - 4.0, y1 + 4.0
+
+    def _numeric(w: Word) -> bool:
+        return bool(_AXIS_NUM_RE.fullmatch(w.text.strip()))
+
+    # Only expand a side whose labels are actually MISSING from the bbox --
+    # panels that already include their label gutters (Infineon caption pages)
+    # must keep byte-identical crops, or pinned CropTransform strata shift.
+    has_left_labels = any(
+        _numeric(w) and w.x0 <= x0 + 40.0 and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
+        for w in page.words
+        if w.x0 >= x0 and w.x1 <= x1
+    )
+    has_bottom_labels = any(
+        _numeric(w) and w.y1 >= y1 - 30.0 and x0 <= (w.x0 + w.x1) / 2 <= x1
+        for w in page.words
+        if w.y0 >= y0 and w.y1 <= y1
+    )
+    new_x0, new_y1 = x0, y1
+    if not has_left_labels:
+        left = [
+            w for w in page.words
+            if w.x1 <= x0 and x0 - w.x1 < 46.0
+            and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
+            and _numeric(w)
+        ]
+        if left:
+            new_x0 = min(w.x0 for w in left) - 2.0
+    if not has_bottom_labels:
+        bottom = [
+            w for w in page.words
+            if w.y0 >= y1 - 2.0 and w.y0 - y1 < 40.0
+            and x0 - 4.0 <= (w.x0 + w.x1) / 2 <= x1 + 4.0
+            and _numeric(w)
+        ]
+        if bottom:
+            new_y1 = max(w.y1 for w in bottom) + 2.0
+    return (max(0.0, new_x0), y0, x1, min(page.height_pt, new_y1))
+
+
+_SPEC_TABLE_MARKERS = {
+    "min", "typ", "max", "typical", "unit", "units", "parameter", "symbol",
+    "conditions", "value",
+}
+# Parameter families as they appear in spec-table row names. A chart panel's
+# axis text concerns one or two of these; a spec table lists most of them.
+_SPEC_TABLE_FAMILIES = {
+    "leakage", "threshold", "capacitance", "charge", "resistance",
+    "transconductance", "recovery",
+}
+
+
+def _bbox_looks_like_spec_table(page: PageText, bbox: tuple[float, float, float, float]) -> bool:
+    """True when a candidate panel region reads like a ruled spec table.
+
+    Two independent signals, either suffices:
+    - column headers (PARAMETER / MIN / TYP / MAX / UNIT ...) that never appear
+      together inside a real chart panel's axis text;
+    - >=4 distinct parameter families (a bbox clipped to the row-name column of
+      a table carries no headers, but no single chart mixes leakage, threshold,
+      capacitance, charge and resistance).
+    """
+    tokens = {_token_norm(w.text) for w in words_in_bbox(page.words, bbox)}
+    if len(_SPEC_TABLE_MARKERS & tokens) >= 3:
+        return True
+    return len(_SPEC_TABLE_FAMILIES & tokens) >= 4
+
+
 def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) -> list[Word]:
     x0, y0, x1, y1 = bbox
     selected = []
@@ -1172,7 +1257,14 @@ def _append_panel(
             or w.text in {"Ciss", "Coss", "Crss"}
         }
     )
-    kind = classify_chart(title.title, text)
+    kind_from_title = classify_chart(title.title, "")
+    if title.number < 900 and kind_from_title != "chart":
+        # An explicit numbered caption/diagram title is stronger evidence than
+        # the panel text, which can bleed in from an adjacent chart when a
+        # caption binds across columns (TI two-column figure pages).
+        kind = kind_from_title
+    else:
+        kind = classify_chart(title.title, text)
     rel_crop = Path(pdf.stem) / f"p{page.page_num:02d}_diagram_{title.number:02d}.png"
     crop_box = crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
     panels.append(
@@ -1343,6 +1435,10 @@ def process_page_texts(
                     bbox = axis_label_bbox
                 if bbox is None:
                     continue
+                if classify_chart(title.title, "") == "capacitances":
+                    # Scoped to capacitance captions so gate-charge crops (and
+                    # the Vpl parity corpus built on them) stay byte-identical.
+                    bbox = _expand_caption_bbox_to_axis_labels(page, bbox)
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
@@ -1352,6 +1448,12 @@ def process_page_texts(
                 if bbox is None:
                     bbox = choose_axis_label_synthetic_bbox(page, axis_label_bbox)
                 if bbox is None:
+                    continue
+                if _bbox_looks_like_spec_table(page, bbox):
+                    # A ruled spec table both satisfies the >=4-h-rule grid test
+                    # and contains "QG ... Gate charge ... (nC)" rows, so the
+                    # axis-label heuristic would synthesize a phantom chart
+                    # panel over it (seen on TI CSD19531KCS pages 1 and 3).
                     continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue

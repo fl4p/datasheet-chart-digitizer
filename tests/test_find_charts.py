@@ -135,9 +135,13 @@ class CaptionTitleTests(unittest.TestCase):
 
         titles = find_charts.find_caption_titles(page)
 
-        self.assertEqual(len(titles), 1)
+        # Capacitance captions are admitted (Toshiba/TI C(V) support); the
+        # split still has to keep the two captions separate.
+        self.assertEqual(len(titles), 2)
         self.assertEqual(titles[0].number, 7)
         self.assertEqual(titles[0].title, "Gate-Charge Characteristics")
+        self.assertEqual(titles[1].number, 8)
+        self.assertEqual(titles[1].title, "Capacitance Characteristics")
 
     def test_splits_infineon_numbered_captions(self) -> None:
         page = find_charts.PageText(
@@ -176,9 +180,11 @@ class CaptionTitleTests(unittest.TestCase):
 
         titles = find_charts.find_caption_titles(page)
 
-        self.assertEqual(len(titles), 1)
-        self.assertEqual(titles[0].number, 6)
-        self.assertEqual(titles[0].title, "Gate Charge")
+        self.assertEqual(len(titles), 2)
+        self.assertEqual(titles[0].number, 5)
+        self.assertEqual(titles[0].title, "Capacitance Characteristics")
+        self.assertEqual(titles[1].number, 6)
+        self.assertEqual(titles[1].title, "Gate Charge")
 
     def test_accepts_decimal_dynamic_input_output_caption(self) -> None:
         page = find_charts.PageText(
@@ -202,9 +208,11 @@ class CaptionTitleTests(unittest.TestCase):
 
         titles = find_charts.find_caption_titles(page)
 
-        self.assertEqual(len(titles), 1)
-        self.assertEqual(titles[0].number, 814)
-        self.assertEqual(titles[0].title, "Dynamic Input/Output Characteristics")
+        self.assertEqual(len(titles), 2)
+        self.assertEqual(titles[0].number, 813)
+        self.assertEqual(titles[0].title, "Capacitance - V DS")
+        self.assertEqual(titles[1].number, 814)
+        self.assertEqual(titles[1].title, "Dynamic Input/Output Characteristics")
 
     def test_accepts_wrapped_gate_charge_caption(self) -> None:
         page = find_charts.PageText(
@@ -249,9 +257,11 @@ class CaptionTitleTests(unittest.TestCase):
 
         titles = find_charts.find_caption_titles(page)
 
-        self.assertEqual(len(titles), 1)
+        self.assertEqual(len(titles), 2)
         self.assertEqual(titles[0].number, 901)
         self.assertEqual(titles[0].title, "Typ. gate charge")
+        self.assertEqual(titles[1].number, 902)
+        self.assertEqual(titles[1].title, "Typ. capacitances")
 
     def test_splits_paired_typ_gate_charge_and_breakdown_headers(self) -> None:
         page = find_charts.PageText(
@@ -557,6 +567,10 @@ class CorruptGlyphFinderEndToEnd(unittest.TestCase):
             [
                 (11, "transfer", "pymupdf_fallback"),
                 (11, "gate_charge", "pymupdf_fallback"),
+                # Capacitance captions are admitted since the Toshiba/TI C(V)
+                # finder extension; page 12 carries a real Typ. capacitances
+                # chart that the old caption-kind whitelist dropped.
+                (12, "capacitances", "pymupdf_fallback"),
             ],
         )
         panel = next(panel for panel in panels if panel.kind == "gate_charge")
