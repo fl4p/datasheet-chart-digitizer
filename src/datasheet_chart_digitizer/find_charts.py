@@ -511,11 +511,15 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 continuation = _caption_continuation(lines, line_idx, segment)
                 if continuation:
                     title_for_classification = f"{title_for_classification} {continuation}".strip()
-            # Caption-style pages (older Infineon layouts caption charts as
-            # "15 Drain-source breakdown voltage" instead of "Diagram 15:").
-            # The caption pipeline was originally gate-charge only; breakdown
-            # captions are let through so those parts get a BV(Tj) panel too.
-            if classify_chart(title_for_classification, "") not in {"gate_charge", "breakdown_voltage"}:
+            # Caption-style pages cover a narrow set of chart families that do
+            # not use the Infineon ``Diagram N`` convention.  Do not admit all
+            # numbered figures: that would turn ordinary datasheet prose into
+            # panel candidates.
+            if classify_chart(title_for_classification, "") not in {
+                "gate_charge",
+                "breakdown_voltage",
+                "body_diode",
+            }:
                 continue
             title = title_for_classification
             titles.append(
@@ -867,10 +871,18 @@ def choose_caption_panel_bbox(
     if plot_width_candidates:
         candidates = plot_width_candidates
 
-    if _caption_prefers_plot_above(title) and _has_gate_charge_axis_label_above_caption(page, title):
+    caption_kind = classify_chart(title.title, "")
+    prefers_body_plot_above = _caption_prefers_plot_above(title) and caption_kind == "body_diode"
+    if prefers_body_plot_above or (
+        _caption_prefers_plot_above(title) and _has_gate_charge_axis_label_above_caption(page, title)
+    ):
         above = [item for item in candidates if item[2][3] <= ty0]
         if above:
             candidates = above
+        elif prefers_body_plot_above:
+            # A numbered body-diode caption describes the plot above it.  A
+            # plausible grid below is a neighboring chart, not a fallback.
+            return None
     elif has_formula_below:
         below = [item for item in candidates if item[2][1] >= ty1]
         if below:
@@ -1008,6 +1020,21 @@ def choose_caption_axis_label_bbox(
     if y1 - y0 < 90:
         return None
     return (x0, y0, x1, y1)
+
+
+def choose_caption_axis_label_bbox_for_kind(
+    page: PageText,
+    title: DiagramTitle,
+) -> tuple[float, float, float, float] | None:
+    """Preserve legacy caption fallback except for body-diode captions.
+
+    The fallback searches specifically for a Qg axis and can therefore bind a
+    body-diode caption to a neighboring gate-charge chart.  Other chart kinds
+    retain the prior behavior byte-for-byte.
+    """
+    if classify_chart(title.title, "") == "body_diode":
+        return None
+    return choose_caption_axis_label_bbox(page, title)
 
 
 def choose_axis_label_grid_bbox(
@@ -1153,6 +1180,14 @@ def _append_panel(
 
 
 def classify_chart(title: str, text: str) -> str:
+    normalized_title = title.lower().replace("‑", "-").replace("–", "-")
+    normalized_title = re.sub(r"[-_/]+", " ", normalized_title)
+    normalized_title = re.sub(r"\s+", " ", normalized_title)
+    if _is_body_diode_chart_text(normalized_title):
+        # A strong caption must not be reclassified by text leaking from an
+        # adjacent panel into a conservative synthetic crop.
+        return "body_diode"
+
     haystack = f"{title} {text}".lower().replace("‑", "-").replace("–", "-")
     haystack = re.sub(r"[-_/]+", " ", haystack)
     haystack = re.sub(r"\s+", " ", haystack)
@@ -1166,7 +1201,7 @@ def classify_chart(title: str, text: str) -> str:
         return "safe_operating_area"
     if "thermal impedance" in haystack or "zth" in haystack:
         return "thermal_impedance"
-    if "forward characteristics" in haystack or "diode" in haystack:
+    if _is_body_diode_chart_text(haystack):
         return "body_diode"
     if "breakdown voltage" in haystack:
         return "breakdown_voltage"
@@ -1177,6 +1212,18 @@ def classify_chart(title: str, text: str) -> str:
     if "on resistance" in haystack or "rds" in haystack:
         return "rds_on"
     return "chart"
+
+
+def _is_body_diode_chart_text(text: str) -> bool:
+    if "recovery" in text or "test circuit" in text:
+        return False
+    has_diode_context = "diode" in text or "source drain" in text or "drain source" in text
+    return has_diode_context and (
+        "forward characteristics" in text
+        or "diode forward" in text
+        or "forward voltage" in text
+        or "body diode characteristics" in text
+    )
 
 
 def formula_from_text(lines: list[list[Word]], bbox: tuple[float, float, float, float]) -> str:
@@ -1268,7 +1315,7 @@ def process_page_texts(
 
             for title in caption_titles:
                 bbox = choose_caption_panel_bbox(page, title, grid_regions)
-                axis_label_bbox = choose_caption_axis_label_bbox(page, title)
+                axis_label_bbox = choose_caption_axis_label_bbox_for_kind(page, title)
                 if bbox is None:
                     bbox = axis_label_bbox
                 if bbox is None and page.text_source != "pymupdf_fallback":
