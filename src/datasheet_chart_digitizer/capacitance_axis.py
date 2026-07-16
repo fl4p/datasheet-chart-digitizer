@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from pathlib import Path
 
@@ -66,6 +67,11 @@ def infer_position_axis_calibration(
         x_row_band=(plot_rect.y1 + 2.0, plot_rect.y1 + 24.0),
         y_label_x_band=(plot_rect.x0 - 42.0, plot_rect.x0 - 1.0),
         plot_y_band=(plot_rect.y0 - 8.0, plot_rect.y1 + 8.0),
+        # Two-charts-per-row pages (TI) put both tick rows in the same y band;
+        # keep only labels under THIS plot. The margin must still admit our own
+        # origin '0' label (a few pt left of the frame) while excluding the
+        # neighbor chart's rightmost tick (tens of pt away).
+        x_col_band=(plot_rect.x0 - 24.0, plot_rect.x1 + 12.0),
     )
 
     # Convert page-coordinate fits to crop-pixel-coordinate fits, because trace
@@ -84,6 +90,7 @@ def infer_position_axis_calibration(
         source="position_text",
         x_ticks_v=x_ticks,
         y_decades=tuple(sorted(set(y_decades))),
+        x_log=bool(getattr(pos_cal, "x_log", False)),
         x_resid_v=float(pos_cal.x_resid),
         y_resid_dec=float(pos_cal.y_resid),
         x_scale=x_scale,
@@ -96,6 +103,13 @@ def infer_position_axis_calibration(
 
 
 def reject_bad_position_calibration(calibration: AxisCalibration) -> str | None:
+    if calibration.x_log:
+        # Log-X fits carry their residual in decades, like the Y axis.
+        if calibration.x_resid_v is not None and calibration.x_resid_v > 0.05:
+            return f"position x residual {calibration.x_resid_v:.4g} decades exceeds 0.05"
+        if calibration.y_resid_dec is not None and calibration.y_resid_dec > 0.05:
+            return f"position y residual {calibration.y_resid_dec:.4g} decades exceeds 0.05"
+        return None
     x_span = abs(calibration.x_max_v - calibration.x_min_v)
     max_x_resid = max(0.5, 0.02 * x_span)
     if calibration.x_resid_v is not None and calibration.x_resid_v > max_x_resid:
@@ -320,15 +334,24 @@ def trace_data_points(
 
 def calibration_v_of_x(calibration: AxisCalibration, plot: PlotBox, x: float) -> float:
     if calibration.x_scale is not None and calibration.x_offset is not None:
-        return float(calibration.x_scale * x + calibration.x_offset)
+        fitted = float(calibration.x_scale * x + calibration.x_offset)
+        return float(10.0 ** fitted) if calibration.x_log else fitted
     x_norm = _clip01((x - plot.x0) / max(1, plot.width - 1))
+    if calibration.x_log:
+        lo, hi = math.log10(calibration.x_min_v), math.log10(calibration.x_max_v)
+        return float(10.0 ** (lo + x_norm * (hi - lo)))
     return float(calibration.x_min_v + x_norm * (calibration.x_max_v - calibration.x_min_v))
 
 
 def calibration_x_of_v(calibration: AxisCalibration, plot: PlotBox, vds: float) -> float:
     if calibration.x_scale is not None and calibration.x_offset is not None and abs(calibration.x_scale) > 1e-12:
-        return float((vds - calibration.x_offset) / calibration.x_scale)
-    x_norm = (vds - calibration.x_min_v) / max(1e-12, calibration.x_max_v - calibration.x_min_v)
+        value = math.log10(vds) if calibration.x_log and vds > 0.0 else vds
+        return float((value - calibration.x_offset) / calibration.x_scale)
+    if calibration.x_log:
+        lo, hi = math.log10(calibration.x_min_v), math.log10(calibration.x_max_v)
+        x_norm = (math.log10(max(vds, 1e-12)) - lo) / max(1e-12, hi - lo)
+    else:
+        x_norm = (vds - calibration.x_min_v) / max(1e-12, calibration.x_max_v - calibration.x_min_v)
     return float(plot.x0 + _clip01(x_norm) * max(1, plot.width - 1))
 
 
@@ -370,6 +393,7 @@ def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
         "y_max_decade": calibration.y_max_decade,
         "x_ticks_v": list(calibration.x_ticks_v),
         "y_decades": list(calibration.y_decades),
+        "x_log": calibration.x_log,
         "x_resid_v": calibration.x_resid_v,
         "y_resid_dec": calibration.y_resid_dec,
         "x_scale": calibration.x_scale,

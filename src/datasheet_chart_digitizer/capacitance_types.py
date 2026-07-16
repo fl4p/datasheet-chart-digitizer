@@ -52,6 +52,9 @@ class AxisCalibration:
     y_decades: tuple[float, ...]
     x_resid_v: float | None = None
     y_resid_dec: float | None = None
+    # When x_log is set the X axis is logarithmic: x_scale/x_offset map crop
+    # pixels to log10(VDS) and x_resid_v is an RMS residual in DECADES.
+    x_log: bool = False
     x_scale: float | None = None
     x_offset: float | None = None
     y_scale: float | None = None
