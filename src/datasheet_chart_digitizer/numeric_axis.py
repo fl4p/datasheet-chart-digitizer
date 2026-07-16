@@ -5,10 +5,13 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal
 
 import numpy as np
 
 from .capacitance_types import PlotBox
+
+AxisModel = Literal["auto", "linear", "log10"]
 
 _NUMBER_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 _EXPLICIT_POWER_RE = re.compile(r"^10\^([+-]?\d+)$")
@@ -73,14 +76,27 @@ def fit_numeric_axis(
     return axis
 
 
-def fit_axis_ticks(ticks: Sequence[AxisTick], name: str = "axis") -> NumericAxis:
+def fit_axis_ticks(
+    ticks: Sequence[AxisTick], name: str = "axis", *, model: AxisModel = "auto"
+) -> NumericAxis:
     """Fit a linear/log axis from already-parsed numeric ticks.
 
     The supported PUBLIC entry point for consumers that have their own tick
     labels (text/context parsing lives in ``fit_numeric_axis``, which calls this).
     Owns the shared calibration contract: min-count / underdetermined refusal,
     strictly-monotone requirement, linear-vs-log selection, candidate residuals,
-    and strict residual rejection — no consumer should re-implement it."""
+    and strict residual rejection — no consumer should re-implement it.
+
+    ``model`` selects the calibration model. ``"auto"`` (default) fits both linear
+    and log10 and refuses when they are indistinguishable (the linear/log
+    ambiguity gate). ``"linear"`` / ``"log10"`` force that single model: a consumer
+    that KNOWS its axis type must force it, because a genuinely linear axis over a
+    narrow positive range is near-indistinguishable from log and ``"auto"`` would
+    false-refuse it. Forcing fits only the one candidate, so the ambiguity gate
+    cannot fire, but the min-count, monotonicity and residual-rejection gates
+    always apply; forcing ``"log10"`` on a nonpositive tick value fails closed."""
+    if model not in ("auto", "linear", "log10"):
+        raise ValueError(f"{name}: unknown model {model!r} (want auto/linear/log10)")
     parsed = list(ticks)
     if len(parsed) < 2:
         raise RuntimeError(f"{name}: need >=2 numeric tick labels, found {len(parsed)}")
@@ -94,19 +110,24 @@ def fit_axis_ticks(ticks: Sequence[AxisTick], name: str = "axis") -> NumericAxis
     ):
         raise RuntimeError(f"{name}: tick positions/values are not strictly monotone")
 
+    wanted = ("linear", "log10") if model == "auto" else (model,)
     candidates: list[tuple[float, str, float, float]] = []
-    for model in ("linear", "log10"):
-        if model == "log10" and np.any(values <= 0):
+    for candidate_model in wanted:
+        if candidate_model == "log10" and np.any(values <= 0):
+            if model == "log10":  # forced log on nonpositive values: fail closed
+                raise RuntimeError(f"{name}: forced log10 axis needs positive tick values")
             continue
-        coordinates = values if model == "linear" else np.log10(values)
+        coordinates = values if candidate_model == "linear" else np.log10(values)
         m, b = np.polyfit(pixels, coordinates, 1)
         if abs(m) < 1e-12:
             continue
         predicted_pixels = (coordinates - b) / m
         residual = float(np.sqrt(np.mean((predicted_pixels - pixels) ** 2)))
-        candidates.append((residual, model, float(m), float(b)))
+        candidates.append((residual, candidate_model, float(m), float(b)))
     if not candidates:
-        raise RuntimeError(f"{name}: no valid linear/log calibration")
+        # preserve the legacy auto error string; forced modes name their model
+        kind = "linear/log" if model == "auto" else model
+        raise RuntimeError(f"{name}: no valid {kind} calibration")
     candidates.sort()
     span_px = float(pixels[-1] - pixels[0])
     if candidates[0][0] > max(1.5, 0.03 * span_px):
@@ -116,12 +137,12 @@ def fit_axis_ticks(ticks: Sequence[AxisTick], name: str = "axis") -> NumericAxis
             f"{name}: linear/log calibration is ambiguous "
             f"({candidates[0][0]:.2f}px vs {candidates[1][0]:.2f}px)"
         )
-    residual, model, m, b = candidates[0]
+    residual, selected_model, m, b = candidates[0]
     diagnostics = tuple(
         (candidate_model, candidate_residual)
         for candidate_residual, candidate_model, _, _ in candidates
     )
-    return NumericAxis(model, m, b, tuple(parsed), residual, diagnostics)
+    return NumericAxis(selected_model, m, b, tuple(parsed), residual, diagnostics)
 
 
 def tick_aligned_plot(x_axis: NumericAxis, y_axis: NumericAxis, hint: PlotBox) -> PlotBox:
