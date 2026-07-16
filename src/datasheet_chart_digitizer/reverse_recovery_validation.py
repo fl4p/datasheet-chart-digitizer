@@ -164,28 +164,57 @@ def integrity_warnings(panel: "Panel") -> None:
                     f"{qty}(125C) not above {qty}(25C) — check label assignment")
 
 
-def verify_axis_sides(panel: "Panel", words, quantity_unit: dict[str, str]) -> None:
-    """The Qrr/trr->left, Irm/S->right mapping is an AO-layout assumption;
-    verify it against the rotated y-axis unit labels when they are present."""
-    units = {"left": set(), "right": set()}
+def axis_unit_sides(plot, words) -> dict[str, set[str]]:
+    """Rotated y-axis unit labels ('(nC)'/'(A)'/'(ns)') grouped by side.
+
+    Shared by extraction (reverse_recovery._assign_axis_sides, which uses them to
+    BIND each quantity to a side) and by verify_axis_sides (which uses them to
+    CONFIRM or refuse that binding). One reader, one geometry."""
+    sides: dict[str, set[str]] = {"left": set(), "right": set()}
     for w in words:
         t = w[4].strip()
         if t not in ("(nC)", "(A)", "(ns)"):
             continue
         cy = (w[1] + w[3]) / 2
-        if not panel.plot.y0 - 6 < cy < panel.plot.y1 + 6:
+        if not plot.y0 - 6 < cy < plot.y1 + 6:
             continue
-        if -60 < w[2] - panel.plot.x0 < -6:
-            units["left"].add(t.strip("()"))
-        elif 6 < w[0] - panel.plot.x1 < 60:
-            units["right"].add(t.strip("()"))
+        if -60 < w[2] - plot.x0 < -6:
+            sides["left"].add(t.strip("()"))
+        elif 6 < w[0] - plot.x1 < 60:
+            sides["right"].add(t.strip("()"))
+    return sides
+
+
+def verify_axis_sides(panel: "Panel", words, quantity_unit: dict[str, str]) -> None:
+    """Confirm each curve's quantity->y-axis binding, or refuse it.
+
+    On a dual-axis chart the left/right choice selects which calibration scales a
+    curve, so a wrong side yields plausible-but-WRONG values. Two ways it can be
+    wrong, both flagged so scale_verdict refuses 'verified':
+
+      (a) CONTRADICTION — the curve's side prints a unit that is not the expected
+          one (positive evidence the binding is wrong): 'values suspect'.
+      (b) ABSENCE — the binding was never confirmed by a printed unit label and
+          rests only on the assumed AO layout ('axis_basis == "assumed"'):
+          'axis side unverified'. Absence of evidence must not read as success,
+          so an unconfirmed dual-axis chart is refused rather than trusted.
+
+    Single-axis panels have no side ambiguity and are not checked here."""
+    if panel.y_left is None or panel.y_right is None:
+        return
+    sides = axis_unit_sides(panel.plot, words)
     for c in panel.curves:
         expect = quantity_unit.get(c.quantity)
-        side_units = units.get(c.axis) or set()
+        side_units = sides.get(c.axis) or set()
         if expect and side_units and expect not in side_units:
             panel.warnings.append(
                 f"{c.quantity} read off the {c.axis} axis, but that axis is "
                 f"labeled {sorted(side_units)} not ({expect}) — values suspect")
+        elif c.axis_basis == "assumed":
+            panel.warnings.append(
+                f"{c.quantity} axis side unverified: no printed unit label "
+                f"confirms it reads the {c.axis} axis on this dual-axis chart "
+                f"— refusing to trust the assumed AO layout")
 
 
 def scale_verdict(checks: list[dict], warnings: list[str],
@@ -197,8 +226,13 @@ def scale_verdict(checks: list[dict], warnings: list[str],
     identities) — a panel that only extracted a subset must not read as fully
     trusted even when the subset anchors cleanly. No applicable check is stated
     explicitly ('unverified'), never passed off as success."""
+    # a wrong or unconfirmed y-axis side corrupts the values, so it outranks
+    # structural completeness — an unconfirmed dual-axis mapping must never read
+    # 'verified' even when all four curves were extracted (guard: absence of
+    # confirming evidence is a refusal, not a pass).
+    BLOCKING = ("violates physics", "values suspect", "axis side unverified")
     if any(abs(k["err"]) > SCALE_TOL for k in checks) or any(
-            "violates physics" in w or "values suspect" in w for w in warnings):
+            any(b in w for b in BLOCKING) for w in warnings):
         return "FAIL"
     if curves is not None:
         ids = [(c.get("quantity"), c.get("temp_c")) for c in curves]

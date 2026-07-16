@@ -17,6 +17,13 @@ Differences from the capacitance pipeline that justify a plugin:
   * curve identity comes from in-plot text labels ("Qrr"/"Irm"/"trr"/"S",
     "25(o)C"/"125(o)C") by nearest-curve assignment.
 
+The AO Qrr/trr-left, Irm/S-right dual-axis layout is an ASSUMPTION. Rather than
+trust it, each curve's y-axis side is DERIVED from the printed rotated unit
+labels ("(nC)"/"(A)"/"(ns)"); a chart carrying the same labels on the opposite
+axes is self-corrected, and a dual-axis chart whose sides cannot be confirmed
+from labels is REFUSED (scale="FAIL") instead of scaled through a guessed axis
+(see _assign_axis_sides / reverse_recovery_validation.verify_axis_sides).
+
 Usage:
     python -m datasheet_chart_digitizer.reverse_recovery PDF [PDF...] --out DIR
 
@@ -37,7 +44,7 @@ from pathlib import Path
 
 from .capacitance_vector import _sample_cubic
 from .reverse_recovery_validation import (
-    SCALE_TOL, integrity_warnings, scale_verdict, spec_anchors,
+    SCALE_TOL, axis_unit_sides, integrity_warnings, scale_verdict, spec_anchors,
     verify_axis_sides, verify_scale,
 )
 from .find_charts import group_words_into_lines, line_bbox, line_text
@@ -71,6 +78,10 @@ class Curve:
     axis: str
     points_pt: list[tuple[float, float]]  # page space
     values: list[tuple[float, float]] = field(default_factory=list)  # data space
+    # how c.axis was decided: 'unit-label' (printed (nC)/(A)/(ns) on that side —
+    # authoritative), 'elimination' (unitless S took the side its labeled sibling
+    # vacated), or 'assumed' (fell back to the AO QUANTITY_AXIS layout, unconfirmed)
+    axis_basis: str = "assumed"
 
 
 @dataclass
@@ -522,6 +533,7 @@ def digitize_pdf(pdf: Path, out_dir: Path, mpn: str | None = None) -> list[dict]
                           x_quantity="IF", curves=curves,
                           conditions=_panel_conditions(words, plot))
             panel.x_quantity = _x_quantity(plot, words, pan["title"], panel.warnings)
+            _assign_axis_sides(panel, words)
             _apply_calibration(panel)
             verify_axis_sides(panel, words, QUANTITY_UNIT)
             integrity_warnings(panel)
@@ -593,6 +605,52 @@ def _as_words(words):
             s.x0, s.y0, s.x1, s.y1, s.text = t[0], t[1], t[2], t[3], t[4]
 
     return [W(t) for t in words]
+
+
+def _assign_axis_sides(panel: Panel, words) -> None:
+    """Decide which y-axis each curve reads on FROM the printed rotated unit
+    labels, overriding the assumed AO ``QUANTITY_AXIS`` layout.
+
+    ``_classify`` seeds ``c.axis`` from the AO convention (Qrr/trr left,
+    Irm/S right). That convention is an ASSUMPTION: a datasheet carrying the same
+    Qrr/Irm/trr/S labels on the OPPOSITE dual axes would be scaled through the
+    wrong calibration and emit plausible-but-wrong numbers. Here each unit-bearing
+    quantity is bound to whichever side actually prints its unit — ``(nC)``→Qrr,
+    ``(A)``→Irm, ``(ns)``→trr — which self-corrects a flipped layout. The unitless
+    ``S`` takes the side its labeled sibling vacated (elimination). A unit-bearing
+    curve whose unit label is absent on a two-axis chart is left on the assumption
+    with ``axis_basis='assumed'``; the verdict then refuses to call it verified
+    (see ``verify_axis_sides``). Single-axis panels have no side ambiguity and are
+    left untouched."""
+    if panel.y_left is None or panel.y_right is None:
+        return  # not a dual-axis chart: no left/right ambiguity to resolve
+    sides = axis_unit_sides(panel.plot, words)
+    # a unit maps to a side only if printed on EXACTLY one side (printed on both,
+    # or on neither, gives no usable evidence)
+    seen: dict[str, str] = {}
+    ambiguous: set[str] = set()
+    for side in ("left", "right"):
+        for u in sides[side]:
+            if u in seen and seen[u] != side:
+                ambiguous.add(u)
+            seen.setdefault(u, side)
+    unit_side: dict[str, str] = {u: s for u, s in seen.items() if u not in ambiguous}
+    claimed = {"left": False, "right": False}
+    for c in panel.curves:
+        u = QUANTITY_UNIT.get(c.quantity) or ""
+        if u and u in unit_side:
+            c.axis = unit_side[u]
+            c.axis_basis = "unit-label"
+            claimed[c.axis] = True
+    # unitless S reads the side its labeled sibling vacated — but only when
+    # exactly one side is unit-confirmed, so the other is unambiguous. A
+    # unit-bearing quantity with no confirming label stays 'assumed' (refused).
+    if claimed["left"] != claimed["right"]:
+        free = "right" if claimed["left"] else "left"
+        for c in panel.curves:
+            if c.axis_basis == "assumed" and not (QUANTITY_UNIT.get(c.quantity) or ""):
+                c.axis = free
+                c.axis_basis = "elimination"
 
 
 def _apply_calibration(panel: Panel) -> None:
@@ -677,11 +735,13 @@ def _emit(panel: Panel, doc, pno: int, pdf: Path, mpn: str, out_dir: Path) -> di
                 wr.writerow([panel.x_quantity, f"{c.quantity}_{QUANTITY_UNIT[c.quantity]}"])
                 wr.writerows([[f"{a:.6g}", f"{b:.6g}"] for a, b in c.values])
             curves_meta.append(dict(quantity=c.quantity, temp_c=_j(c.temp_c), axis=c.axis,
+                                    axis_basis=c.axis_basis,
                                     n_points=len(c.values), csv=str(csv_path)))
         else:
             reason = ("quantity unidentified" if c.quantity == "?"
                       else "no y-axis calibration")
             curves_meta.append(dict(quantity=c.quantity, temp_c=_j(c.temp_c), axis=c.axis,
+                                    axis_basis=c.axis_basis,
                                     n_points=0, error=reason))
     img.save(png)
     tags = [(c["quantity"], c["temp_c"]) for c in curves_meta]

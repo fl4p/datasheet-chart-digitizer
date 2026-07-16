@@ -141,6 +141,95 @@ class VerdictUnit(unittest.TestCase):
         self.assertIsNone(rrv.interp_curve([(1.0, 1.0), (2.0, 2.0)], 3.0))
 
 
+class AxisSideResolution(unittest.TestCase):
+    """The dual-axis quantity->side mapping must be DERIVED from printed unit
+    labels and REFUSED when unconfirmable — not silently taken from the assumed
+    AO QUANTITY_AXIS layout (which would scale a flipped/unknown chart through the
+    wrong calibration and emit plausible-but-wrong values)."""
+
+    class _Rect:
+        def __init__(self):
+            self.x0, self.y0, self.x1, self.y1 = 100.0, 50.0, 300.0, 250.0
+
+    class _Ax:
+        def value(self, p):  # noqa: D401 - identity stand-in; scaling not under test
+            return p
+
+    @staticmethod
+    def _word(text, x0, x1, y0=140.0, y1=160.0):
+        return (x0, y0, x1, y1, text, 0, 0, 0)
+
+    def _panel(self, quantities=("Qrr", "Irm"), dual=True):
+        plot = self._Rect()
+        curves = [rr.Curve(quantity=q, temp_c=t, axis=rr.QUANTITY_AXIS[q],
+                           points_pt=[(1.0, 1.0)])
+                  for q in quantities for t in (25.0, 125.0)]
+        return rr.Panel(number=1, title="t", plot=plot, x_axis=self._Ax(),
+                        y_left=self._Ax(), y_right=self._Ax() if dual else None,
+                        x_quantity="IF", curves=curves)
+
+    def _verdict(self, panel):
+        cmeta = [dict(quantity=c.quantity, temp_c=c.temp_c, n_points=1)
+                 for c in panel.curves]
+        return rrv.scale_verdict([dict(err=0.05)], panel.warnings, curves=cmeta)
+
+    # left band: label right-edge just left of plot.x0 (100); right band: label
+    # left-edge just right of plot.x1 (300)
+    def _left(self, text):
+        return self._word(text, 60.0, 90.0)
+
+    def _right(self, text):
+        return self._word(text, 310.0, 340.0)
+
+    def test_flipped_labels_self_correct(self):
+        p = self._panel()
+        # (A) on the LEFT, (nC) on the RIGHT — opposite of the AO layout
+        rr._assign_axis_sides(p, [self._left("(A)"), self._right("(nC)")])
+        got = {c.quantity: (c.axis, c.axis_basis) for c in p.curves}
+        self.assertEqual(got["Qrr"], ("right", "unit-label"))
+        self.assertEqual(got["Irm"], ("left", "unit-label"))
+        rrv.verify_axis_sides(p, [self._left("(A)"), self._right("(nC)")],
+                              rr.QUANTITY_UNIT)
+        self.assertEqual(self._verdict(p), "verified")  # confirmed, just flipped
+
+    def test_absent_labels_refuse(self):
+        """The core hole: a dual-axis chart with NO unit labels must NOT be
+        trusted on the assumed layout — it fails loudly."""
+        p = self._panel()
+        rr._assign_axis_sides(p, [])
+        self.assertTrue(all(c.axis_basis == "assumed" for c in p.curves))
+        rrv.verify_axis_sides(p, [], rr.QUANTITY_UNIT)
+        self.assertTrue(any("axis side unverified" in w for w in p.warnings))
+        self.assertEqual(self._verdict(p), "FAIL")
+
+    def test_partial_labels_refuse_unconfirmed_quantity(self):
+        # only (A) present (left): Irm binds by label; Qrr has no (nC) -> refused
+        p = self._panel()
+        rr._assign_axis_sides(p, [self._left("(A)")])
+        bases = {c.quantity: c.axis_basis for c in p.curves}
+        self.assertEqual(bases["Irm"], "unit-label")
+        self.assertEqual(bases["Qrr"], "assumed")
+        rrv.verify_axis_sides(p, [self._left("(A)")], rr.QUANTITY_UNIT)
+        self.assertEqual(self._verdict(p), "FAIL")
+
+    def test_unitless_S_resolves_by_elimination(self):
+        # trr labeled (ns) left -> S takes the vacated right side, confirmed enough
+        p = self._panel(quantities=("trr", "S"))
+        rr._assign_axis_sides(p, [self._left("(ns)")])
+        bases = {c.quantity: (c.axis, c.axis_basis) for c in p.curves}
+        self.assertEqual(bases["trr"], ("left", "unit-label"))
+        self.assertEqual(bases["S"], ("right", "elimination"))
+        rrv.verify_axis_sides(p, [self._left("(ns)")], rr.QUANTITY_UNIT)
+        self.assertFalse(any("axis side unverified" in w for w in p.warnings))
+
+    def test_single_axis_panel_not_refused(self):
+        # no left/right ambiguity when only one y-axis exists
+        p = self._panel(dual=False)
+        rr._assign_axis_sides(p, [])
+        rrv.verify_axis_sides(p, [], rr.QUANTITY_UNIT)
+        self.assertFalse(any("axis side unverified" in w for w in p.warnings))
+
+
 class BatchHygiene(unittest.TestCase):
     def test_unique_mpns_disambiguates_colliding_stems(self):
         a = Path("/x/ao/PART1.pdf")
