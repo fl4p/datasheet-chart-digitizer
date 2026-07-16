@@ -612,7 +612,9 @@ class VectorExtractionTests(unittest.TestCase):
         self.assertTrue(mc._is_curve_stroke_color((0.03, 0.40, 0.36)))
         self.assertTrue(mc._is_curve_stroke_color((0.0, 0.0, 0.0)))
         self.assertFalse(mc._is_curve_stroke_color((0.55, 0.55, 0.55)))
-        self.assertFalse(mc._is_curve_stroke_color((0.8, 0.1, 0.1)))
+        # Bright saturated primaries ARE curves since TI C(V) support (TI draws
+        # Ciss/Coss/Crss in pure red/green/blue); gray grid stays rejected.
+        self.assertTrue(mc._is_curve_stroke_color((0.8, 0.1, 0.1)))
 
     def test_internal_long_horizontal_segment_is_not_treated_as_grid(self) -> None:
         class Rect:

@@ -16,10 +16,22 @@ def find_plot_box(gray: np.ndarray) -> PlotBox:
     contours, _ = cv2.findContours(v_lines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     v_boxes: list[tuple[int, int, int, int]] = []
+    near_edge: list[tuple[int, int, int, int]] = []
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
-        if w <= 8 and h >= height * 0.45 and width * 0.08 <= x <= width * 0.96:
+        if w > 8 or h < height * 0.45 or x > width * 0.96:
+            continue
+        if x >= width * 0.08:
             v_boxes.append((x, y, w, h))
+        elif x >= width * 0.04:
+            # Label-gutter crops (TI) put the true left frame inside the old
+            # 8% dead margin. Hold these back and admit them below only when
+            # they are full-height frames, so crop-border junk stays excluded.
+            near_edge.append((x, y, w, h))
+
+    if v_boxes and near_edge:
+        tallest = max(h for _, _, _, h in v_boxes)
+        v_boxes.extend(box for box in near_edge if box[3] >= 0.9 * tallest)
 
     if len(v_boxes) < 6:
         raise RuntimeError(f"could not find plot grid verticals; found {len(v_boxes)}")

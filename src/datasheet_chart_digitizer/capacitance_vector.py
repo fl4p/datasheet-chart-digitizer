@@ -30,29 +30,53 @@ def extract_vector_trace_components(
 
     doc = fitz.open(pdf_path)
     page = doc[int(chart["page"]) - 1]
-    edges = _vector_curve_edges(page.get_drawings(), plot_rect)
-    components = _chain_vector_components(edges)
-    candidates: list[tuple[float, list[tuple[int, int]]]] = []
-    min_x_span = plot_rect.width * 0.35
-    for component in components:
-        if len(component) < 8:
-            continue
-        xs = [p[0] for p in component]
-        if max(xs) - min(xs) < min_x_span:
-            continue
-        if not _mostly_inside_plot(component, plot_rect):
-            continue
-        raw_points = [
-            tuple(int(round(value)) for value in transform.to_px(x, y))
-            for x, y in component
-        ]
-        points = _smooth_points(_resample_vector_trace_pixels(raw_points, plot), window=9)
-        if len(points) < 8:
-            continue
-        px_span = max(x for x, _ in points) - min(x for x, _ in points)
-        if px_span < plot.width * 0.35:
-            continue
-        candidates.append((_path_length(component), points))
+    drawings = page.get_drawings()
+
+    def _build_candidates(
+        components: list[list[tuple[float, float]]],
+    ) -> list[tuple[float, list[tuple[int, int]]]]:
+        built: list[tuple[float, list[tuple[int, int]]]] = []
+        min_x_span = plot_rect.width * 0.35
+        for component in components:
+            if len(component) < 8:
+                continue
+            xs = [p[0] for p in component]
+            if max(xs) - min(xs) < min_x_span:
+                continue
+            if not _mostly_inside_plot(component, plot_rect):
+                continue
+            raw_points = [
+                tuple(int(round(value)) for value in transform.to_px(x, y))
+                for x, y in component
+            ]
+            points = _smooth_points(_resample_vector_trace_pixels(raw_points, plot), window=9)
+            if len(points) < 8:
+                continue
+            px_span = max(x for x, _ in points) - min(x for x, _ in points)
+            if px_span < plot.width * 0.35:
+                continue
+            built.append((_path_length(component), points))
+        return built
+
+    # First chain per stroke color: when a vendor colors each trace (TI red/
+    # green/blue), color IS the trace identity, and color-blind endpoint
+    # chaining merges curves where they converge or cross at low VDS. If that
+    # yields fewer than three full candidates (a single curve drawn in mixed
+    # shades would fragment), fall back to the original color-blind chaining.
+    by_color: dict[tuple[float, ...], list[dict[str, object]]] = {}
+    for drawing in drawings:
+        color = drawing.get("color")
+        key = tuple(round(float(c), 2) for c in color[:3]) if isinstance(color, (tuple, list)) else ()
+        by_color.setdefault(key, []).append(drawing)
+    per_color_components: list[list[tuple[float, float]]] = []
+    for group in by_color.values():
+        edges = _vector_curve_edges(group, plot_rect)
+        if edges:
+            per_color_components.extend(_chain_vector_components(edges))
+    candidates = _build_candidates(per_color_components)
+    if len(candidates) < 3:
+        edges = _vector_curve_edges(drawings, plot_rect)
+        candidates = _build_candidates(_chain_vector_components(edges))
 
     if len(candidates) < 3:
         raise RuntimeError(f"found only {len(candidates)} vector curve candidates")
@@ -132,6 +156,12 @@ def _is_curve_stroke_color(color: object) -> bool:
         return False
     rgb = [float(c) for c in color[:3]]
     if sum(rgb) < 0.15:
+        return True
+    # Strongly saturated strokes are curves regardless of brightness: TI draws
+    # Ciss/Coss/Crss in pure red/green/blue, which the darkness cap below would
+    # reject. Gridlines are always near-gray (max-min ~ 0), so saturation alone
+    # separates them.
+    if max(rgb) - min(rgb) > 0.5:
         return True
     # Some datasheets draw capacitance curves in a dark teal with solid/dashed
     # style classes. Gray gridlines have very low saturation; accept saturated
