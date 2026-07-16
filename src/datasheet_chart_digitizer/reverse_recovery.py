@@ -47,7 +47,8 @@ from .reverse_recovery_validation import (
     SCALE_TOL, axis_unit_sides, integrity_warnings, scale_verdict, spec_anchors,
     verify_axis_sides, verify_scale,
 )
-from .find_charts import group_words_into_lines, line_bbox, line_text
+from .find_charts import group_words_into_lines, line_bbox
+from .numeric_axis import AxisTick, fit_axis_ticks
 
 RR_CAPTION_RE = re.compile(r"(?i)^figure\s*(\d+)\s*[:.]?\s*(diode\s+reverse\s+recovery.*)$")
 TEMP_RE = re.compile(r"(?i)^(\d+)\s*[ºo°]?C$")
@@ -100,24 +101,36 @@ class Panel:
 
 
 def _fit_linear(ticks: list[tuple[float, float]]) -> Axis | None:
-    """Least-squares value = m*px + b over (px, value) tick pairs; loud residual."""
+    """Linear pixel->value calibration via the ONE shared numeric_axis fitter.
+
+    Delegates the least-squares fit to ``numeric_axis.fit_axis_ticks`` instead of
+    re-deriving the normal equations here (part of the axis-fitter consolidation),
+    then keeps RR's own acceptance policy on top: a stricter ``>=3`` min-count,
+    linear-only (RR dual axes are never logarithmic — refuse a log/ambiguous fit
+    rather than scale a curve off the wrong model), and the value-space residual
+    gate (max abs error <= 3% of the value span). fit_axis_ticks additionally
+    refuses non-monotone / untrusted-residual ticks, so this is strictly more
+    fail-closed than the old hand-rolled fit, never less."""
+    # AO doubled text layers emit the same (pixel, value) tick twice; the old
+    # hand fit absorbed the redundant point, but the shared core rejects the
+    # resulting zero-gap as non-monotone. Drop exact duplicates first.
+    ticks = list(dict.fromkeys(ticks))
     if len(ticks) < 3:
-        return None
-    n = len(ticks)
-    sx = sum(t[0] for t in ticks)
-    sy = sum(t[1] for t in ticks)
-    sxx = sum(t[0] * t[0] for t in ticks)
-    sxy = sum(t[0] * t[1] for t in ticks)
-    denom = n * sxx - sx * sx
-    if abs(denom) < 1e-9:
-        return None
-    m = (n * sxy - sx * sy) / denom
-    b = (sy - m * sx) / n
-    resid = max(abs(m * px + b - v) for px, v in ticks)
+        return None  # stricter than the shared core's min-2
+    try:
+        fit = fit_axis_ticks(
+            [AxisTick(text=f"{v:g}", value=v, pixel=px) for px, v in ticks],
+            "rr-axis",
+        )
+    except RuntimeError:
+        return None  # non-monotone / untrusted-residual / ambiguous: refuse
+    if fit.model != "linear":
+        return None  # RR axes are linear; never scale off a log fit
+    resid = max(abs(fit.value(px) - v) for px, v in ticks)
     span = max(v for _, v in ticks) - min(v for _, v in ticks)
     if span <= 0 or resid > 0.03 * span:
         return None  # non-linear or mis-picked ticks: refuse rather than mis-calibrate
-    return Axis(m=m, b=b, n_ticks=n, residual=resid, ticks=sorted(ticks))
+    return Axis(m=fit.m, b=fit.b, n_ticks=len(ticks), residual=resid, ticks=sorted(ticks))
 
 
 def _num(text: str) -> float | None:
