@@ -11,7 +11,9 @@ import numpy as np
 from datasheet_chart_digitizer.capacitance_types import PlotBox
 from datasheet_chart_digitizer.diode_forward_voltage import (
     PanelCalibration,
+    _anchor_linear_axis_to_plot_frame,
     _draw_overlay,
+    _expanded_grid_search_box,
     _snap_axis_to_grid,
     calibrate_panel,
     digitize_pdf,
@@ -38,10 +40,11 @@ class NumericAxisTests(unittest.TestCase):
             "datasheet_chart_digitizer.diode_forward_voltage.cv2.imread",
             return_value=np.full((100, 100, 3), 255, dtype=np.uint8),
         ), patch("datasheet_chart_digitizer.diode_forward_voltage.cv2.drawMarker") as marker:
-            _draw_overlay(Path("crop.png"), calibration, [], panel)
+            overlay = _draw_overlay(Path("crop.png"), calibration, [], panel)
 
         centers = [call.args[1] for call in marker.call_args_list]
         self.assertEqual(centers, [(10, 90), (90, 90), (10, 10), (10, 90)])
+        self.assertEqual(overlay.shape, (133, 100, 3))
 
     def test_structured_exponents_decode_but_raw_run_refuses(self):
         explicit = fit_numeric_axis(
@@ -86,6 +89,33 @@ class NumericAxisTests(unittest.TestCase):
         plot = tick_aligned_plot(x_axis, y_axis, PlotBox(189, 88, 670, 510))
         self.assertEqual(plot, PlotBox(189, 88, 670, 424))
 
+    def test_detector_hint_cannot_crop_a_consumed_outer_tick(self):
+        x_axis = fit_numeric_axis([("0", 10), ("1", 90)], "X")
+        y_axis = fit_numeric_axis([("100", 10), ("10", 50), ("1", 90)], "Y")
+        plot = tick_aligned_plot(x_axis, y_axis, PlotBox(12, 12, 88, 82))
+        self.assertEqual(plot, PlotBox(10, 10, 90, 90))
+
+    def test_grid_search_expands_to_outer_ticks_before_projection(self):
+        x_axis = fit_numeric_axis([("0", 20), ("1", 80)], "X")
+        y_axis = fit_numeric_axis([("100", 15), ("10", 50), ("1", 92)], "Y")
+        expanded = _expanded_grid_search_box(
+            PlotBox(22, 20, 78, 70), x_axis, y_axis, (100, 100)
+        )
+        self.assertEqual(expanded, PlotBox(8, 3, 92, 99))
+
+    def test_unsnapped_linear_labels_anchor_to_verified_plot_frame(self):
+        axis = fit_numeric_axis(
+            [("0.3", 28), ("0.4", 102), ("0.5", 176), ("1.0", 534)],
+            "offset labels",
+        )
+        anchored = _anchor_linear_axis_to_plot_frame(axis, PlotBox(27, 20, 540, 388), "x")
+        self.assertEqual(tuple(round(tick.pixel) for tick in anchored.ticks), (27, 100, 174, 540))
+        self.assertGreater(anchored.residual_px, 1.0)
+        self.assertIs(
+            _anchor_linear_axis_to_plot_frame(axis, PlotBox(0, 20, 540, 388), "x"),
+            axis,
+        )
+
     def test_grid_snap_uses_value_anchored_major_not_nearer_minor(self):
         axis = fit_numeric_axis(
             [("1000", 0), ("100", 36), ("10", 60), ("1", 90)],
@@ -97,6 +127,14 @@ class NumericAxisTests(unittest.TestCase):
         self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (0, 30, 60, 90))
         with self.assertRaisesRegex(RuntimeError, "ambiguous full-span"):
             _snap_axis_to_grid(axis, (0.0, 27.0, 35.0, 60.0, 90.0), "log majors", True)
+
+    def test_log_endpoint_can_use_unique_line_just_outside_tight_interior_tolerance(self):
+        axis = fit_numeric_axis(
+            [("100", 20), ("10", 60), ("1", 96)],
+            "log endpoint",
+        )
+        snapped = _snap_axis_to_grid(axis, (20.0, 60.0, 102.0), "log endpoint", True)
+        self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (20.0, 60.0, 102.0))
 
 
 class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
@@ -209,6 +247,48 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
                         self.assertGreaterEqual(sum(100 <= value for value in currents), 40)
                     else:
                         self.assertGreaterEqual(sum(0 <= value < 5 for value in currents), 50)
+
+    def test_onsemi_outer_decades_and_plot_bottom_bind_to_physical_lines(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        cases = (
+            (
+                "onsemi/NTMFS0D6N03CT1G.pdf",
+                PlotBox(28, 20, 540, 380),
+                (28, 112, 198, 284, 369, 454, 540),
+                (20, 140, 260, 380),
+            ),
+            (
+                "onsemi/NTMFS5C406NLT1G.pdf",
+                PlotBox(27, 26, 540, 388),
+                (27, 100, 174, 247, 320, 393, 467, 540),
+                (27, 208, 388),
+            ),
+            (
+                "onsemi/NTMFS5C410NT1G.pdf",
+                PlotBox(27, 27, 540, 386),
+                (27, 100, 173, 246, 320, 393, 466, 540),
+                (27, 206, 386),
+            ),
+            (
+                "onsemi/NTMFS5C410NT3G.pdf",
+                PlotBox(27, 27, 540, 386),
+                (27, 100, 173, 246, 320, 393, 466, 540),
+                (27, 206, 386),
+            ),
+        )
+        for relative, plot, x_pixels, y_pixels in cases:
+            with self.subTest(pdf=relative), tempfile.TemporaryDirectory() as tmp:
+                pdf = self.datasheets / relative
+                if not pdf.exists():
+                    self.skipTest(f"missing local corpus PDF: {pdf}")
+                out = Path(tmp)
+                panel = next(panel for panel in process_pdf(pdf, out, 180) if panel.kind == "body_diode")
+                calibration = calibrate_panel(panel, out / panel.crop_png)
+                self.assertEqual(calibration.plot, plot)
+                self.assertEqual(tuple(round(tick.pixel) for tick in calibration.x_axis.ticks), x_pixels)
+                self.assertEqual(tuple(round(tick.pixel) for tick in calibration.y_axis.ticks), y_pixels)
+                self.assertGreaterEqual(calibration.plot.y1, max(y_pixels))
 
     def test_failed_extraction_does_not_write_an_ok_manifest(self):
         if self.datasheets is None:

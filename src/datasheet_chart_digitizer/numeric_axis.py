@@ -95,14 +95,21 @@ def tick_aligned_plot(x_axis: NumericAxis, y_axis: NumericAxis, hint: PlotBox) -
     if len(xs) < 2 or len(ys) < 2:
         raise RuntimeError("plot: both axes need >=2 ticks")
     return PlotBox(
-        x0=int(round(_nearby_edge(xs[0], hint.x0, xs))),
-        y0=int(round(_nearby_edge(ys[0], hint.y0, ys))),
-        x1=int(round(_nearby_edge(xs[-1], hint.x1, xs))),
-        y1=int(round(_nearby_edge(ys[-1], hint.y1, ys))),
+        x0=int(round(_nearby_edge(xs[0], hint.x0, xs, "min"))),
+        y0=int(round(_nearby_edge(ys[0], hint.y0, ys, "min"))),
+        x1=int(round(_nearby_edge(xs[-1], hint.x1, xs, "max"))),
+        y1=int(round(_nearby_edge(ys[-1], hint.y1, ys, "max"))),
     )
 
 
-def _nearby_edge(tick_edge: float, hint_edge: float, positions: list[float]) -> float:
+def _nearby_edge(
+    tick_edge: float,
+    hint_edge: float,
+    positions: list[float],
+    side: str,
+) -> float:
+    if (side == "min" and hint_edge > tick_edge) or (side == "max" and hint_edge < tick_edge):
+        return tick_edge
     steps = np.diff(np.asarray(positions, dtype=float))
     tolerance = max(4.0, 0.18 * float(np.median(steps)))
     return float(hint_edge) if abs(hint_edge - tick_edge) <= tolerance else tick_edge

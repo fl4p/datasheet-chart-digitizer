@@ -29,9 +29,13 @@ from .capacitance_vector import (
 from .crop_transform import CropTransform
 from .find_charts import ChartPanel, process_pdf
 from .gate_charge_trace import _detect_regular_grid_box, _projection_line_centers
-from .numeric_axis import NumericAxis, fit_numeric_axis, tick_aligned_plot
+from .numeric_axis import AxisTick, NumericAxis, fit_numeric_axis, tick_aligned_plot
 
 _NUMERIC_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
+_GRID_SEARCH_MARGIN_PX = 12
+_AUTHORITATIVE_LOG_GRID_TOLERANCE_PX = 5.0
+_AUTHORITATIVE_ENDPOINT_GRID_TOLERANCE_PX = 10.0
+_LINEAR_FRAME_ANCHOR_TOLERANCE_PX = 10.0
 
 
 @dataclass(frozen=True)
@@ -103,16 +107,82 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
         page = doc[panel.page - 1]
         labels = _page_labels(page, transform)
     hint, hint_source, periodic_x, periodic_y = _plot_hint(image)
-    major_x, major_y = _full_span_grid_lines(image, hint)
     raw_x, raw_y = _select_axis(labels, hint, "x"), _select_axis(labels, hint, "y")
+    grid_search = _expanded_grid_search_box(hint, raw_x, raw_y, image.shape)
+    major_x, major_y = _full_span_grid_lines(image, grid_search, hint)
     x_axis = _snap_axis_to_grid(raw_x, major_x, "X axis", authoritative=True)
     y_axis = _snap_axis_to_grid(raw_y, major_y, "Y axis", authoritative=True)
     x_axis = _snap_axis_to_grid(raw_x, periodic_x, "X axis") if x_axis is raw_x else x_axis
     y_axis = _snap_axis_to_grid(raw_y, periodic_y, "Y axis") if y_axis is raw_y else y_axis
     plot = tick_aligned_plot(x_axis, y_axis, hint)
+    if x_axis is raw_x:
+        x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
+    if y_axis is raw_y:
+        y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
+    plot = tick_aligned_plot(x_axis, y_axis, plot)
     if plot.y0 <= 8:
         raise RuntimeError("plot: tick-aligned frame overlaps the panel title band")
     return PanelCalibration(plot, x_axis, y_axis, hint, hint_source)
+
+
+def _anchor_linear_axis_to_plot_frame(
+    axis: NumericAxis,
+    plot: PlotBox,
+    orientation: str,
+) -> NumericAxis:
+    """Use verified frame endpoints when label centroids are the only binding.
+
+    Axis-label text is not guaranteed to be centered on its physical tick.  A
+    trustworthy linear fit may therefore retain visibly displaced marker
+    pixels even though its value mapping is sound.  When both fitted outer
+    values already predict the detected frame within a tight tolerance, anchor
+    them exactly and retain the centroid scatter as the reported residual.
+    """
+    if axis.model != "linear":
+        return axis
+    ordered = sorted(axis.ticks, key=lambda tick: tick.pixel)
+    if len(ordered) < 2:
+        return axis
+    edge0, edge1 = (plot.x0, plot.x1) if orientation == "x" else (plot.y0, plot.y1)
+    predicted0 = (ordered[0].value - axis.b) / axis.m
+    predicted1 = (ordered[-1].value - axis.b) / axis.m
+    if max(abs(predicted0 - edge0), abs(predicted1 - edge1)) > _LINEAR_FRAME_ANCHOR_TOLERANCE_PX:
+        return axis
+    m = (ordered[-1].value - ordered[0].value) / (edge1 - edge0)
+    if abs(m) < 1e-12:
+        return axis
+    b = ordered[0].value - m * edge0
+    anchored = tuple(
+        AxisTick(tick.text, tick.value, (tick.value - b) / m)
+        for tick in ordered
+    )
+    residual = float(
+        np.sqrt(np.mean([(bound.pixel - raw.pixel) ** 2 for raw, bound in zip(ordered, anchored)]))
+    )
+    return NumericAxis(axis.model, float(m), float(b), anchored, residual, axis.candidate_residuals_px)
+
+
+def _expanded_grid_search_box(
+    hint: PlotBox,
+    x_axis: NumericAxis,
+    y_axis: NumericAxis,
+    image_shape: tuple[int, ...],
+) -> PlotBox:
+    """Extend a detector hint to every consumed outer tick before line scans.
+
+    A detector line inside the true frame must not hide the physical endpoint
+    line from the authoritative grid scan.  The bounded margin accommodates
+    text-centroid offsets while keeping neighboring panels out of the search.
+    """
+    height, width = image_shape[:2]
+    xs = [tick.pixel for tick in x_axis.ticks]
+    ys = [tick.pixel for tick in y_axis.ticks]
+    return PlotBox(
+        max(0, int(math.floor(min(hint.x0, min(xs) - _GRID_SEARCH_MARGIN_PX)))),
+        max(0, int(math.floor(min(hint.y0, min(ys) - _GRID_SEARCH_MARGIN_PX)))),
+        min(width - 1, int(math.ceil(max(hint.x1, max(xs) + _GRID_SEARCH_MARGIN_PX)))),
+        min(height - 1, int(math.ceil(max(hint.y1, max(ys) + _GRID_SEARCH_MARGIN_PX)))),
+    )
 
 
 def _plot_hint(gray, /) -> tuple[PlotBox, str, tuple[int, ...], tuple[int, ...]]:
@@ -130,18 +200,29 @@ def _plot_hint(gray, /) -> tuple[PlotBox, str, tuple[int, ...], tuple[int, ...]]
         return PlotBox(*box), "regular_grid", x_lines, y_lines
 
 
-def _full_span_grid_lines(gray, hint: PlotBox) -> tuple[tuple[float, ...], tuple[float, ...]]:
+def _full_span_grid_lines(
+    gray,
+    hint: PlotBox,
+    preferred_edges: PlotBox | None = None,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
     dark = gray[hint.y0 : hint.y1 + 1, hint.x0 : hint.x1 + 1] < 210
     x_counts = np.zeros(gray.shape[1], dtype=int)
     y_counts = np.zeros(gray.shape[0], dtype=int)
     x_counts[hint.x0 : hint.x1 + 1] = dark.sum(axis=0)
     y_counts[hint.y0 : hint.y1 + 1] = dark.sum(axis=1)
     x_minimum, y_minimum = 0.55 * dark.shape[0], 0.55 * dark.shape[1]
+    edge_box = preferred_edges or hint
     xs = _prefer_strong_plot_edges(
-        _projection_line_centers(x_counts, x_minimum), x_counts, (hint.x0, hint.x1), x_minimum
+        _projection_line_centers(x_counts, x_minimum),
+        x_counts,
+        (edge_box.x0, edge_box.x1),
+        x_minimum,
     )
     ys = _prefer_strong_plot_edges(
-        _projection_line_centers(y_counts, y_minimum), y_counts, (hint.y0, hint.y1), y_minimum
+        _projection_line_centers(y_counts, y_minimum),
+        y_counts,
+        (edge_box.y0, edge_box.y1),
+        y_minimum,
     )
     return tuple(map(float, xs)), tuple(map(float, ys))
 
@@ -169,7 +250,7 @@ def _snap_axis_to_grid(
     if authoritative:
         # Log minors can sit only a few pixels from a decade; linear ticks do
         # not have that ambiguity and may have wider endpoint-label centroids.
-        tolerance = 5.0 if axis.model == "log10" else 10.0
+        tolerance = _AUTHORITATIVE_LOG_GRID_TOLERANCE_PX if axis.model == "log10" else 10.0
     else:
         tolerance = max(5.0, 0.30 * min(b - a for a, b in zip(lines, lines[1:])))
     ordered_ticks = sorted(axis.ticks, key=lambda tick: tick.pixel)
@@ -179,9 +260,20 @@ def _snap_axis_to_grid(
 
     snapped = []
     used = set()
-    for tick in ordered_ticks:
+    for tick_index, tick in enumerate(ordered_ticks):
         predicted = (coordinate(tick) - axis.b) / axis.m
         nearby = [line for line in lines if abs(line - predicted) <= tolerance]
+        if (
+            not nearby
+            and authoritative
+            and axis.model == "log10"
+            and tick_index in (0, len(ordered_ticks) - 1)
+        ):
+            nearby = [
+                line
+                for line in lines
+                if abs(line - predicted) <= _AUTHORITATIVE_ENDPOINT_GRID_TOLERANCE_PX
+            ]
         if not nearby:
             return axis
         if len(nearby) != 1:
@@ -491,9 +583,22 @@ def _draw_overlay(
     image = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
     assert image is not None
     plot = calibration.plot
-    cv2.rectangle(image, (0, 0), (image.shape[1] - 1, 32), (220, 255, 255), -1)
-    cv2.putText(image, f"SELECTED p{panel.page} FIGURE/DIAGRAM {panel.diagram}: {panel.title}", (5, 12), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 0, 0), 1)
-    cv2.putText(image, "AXES: IF/IS (A) versus VSD (V)", (5, 27), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1)
+    header_y = 0
+    if plot.y0 <= 32:
+        source_height = image.shape[0]
+        canvas = np.full((source_height + 33, image.shape[1], 3), 255, dtype=np.uint8)
+        canvas[:source_height] = image
+        image = canvas
+        header_y = source_height
+    cv2.rectangle(
+        image,
+        (0, header_y),
+        (image.shape[1] - 1, header_y + 32),
+        (220, 255, 255),
+        -1,
+    )
+    cv2.putText(image, f"SELECTED p{panel.page} FIGURE/DIAGRAM {panel.diagram}: {panel.title}", (5, header_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 0, 0), 1)
+    cv2.putText(image, "AXES: IF/IS (A) versus VSD (V)", (5, header_y + 27), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1)
     cv2.rectangle(image, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 0), 2)
     colors = ((0, 0, 255), (255, 80, 0), (0, 170, 255), (180, 0, 180), (0, 150, 0), (255, 0, 100))
     for index, curve in enumerate(curves):
