@@ -402,6 +402,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
                     "capacitance",
                     "avalanche",
                     "breakdown",
+                    "transfer",
                     "waveforms",
                     "dynamic",
                 )
@@ -417,7 +418,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
             if idx > 0 and re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx - 1].text.strip()):
                 continue
             tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
-            if any(phrase in tail for phrase in ("gate", "capacitance", "breakdown")):
+            if any(phrase in tail for phrase in ("gate", "capacitance", "breakdown", "transfer")):
                 starts.append(idx)
             continue
 
@@ -443,7 +444,10 @@ def _caption_starts(line: list[Word]) -> list[int]:
         if not token.isdigit() or idx + 1 >= len(line):
             continue
         tail = " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
-        if any(phrase in tail for phrase in ("typ", "gate", "avalanche", "breakdown", "waveforms")):
+        if any(
+            phrase in tail
+            for phrase in ("typ", "gate", "avalanche", "breakdown", "transfer", "waveforms")
+        ):
             starts.append(idx)
     return starts
 
@@ -519,6 +523,7 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 "gate_charge",
                 "breakdown_voltage",
                 "body_diode",
+                "transfer",
             }:
                 continue
             title = title_for_classification
@@ -811,6 +816,14 @@ def _caption_prefers_plot_above(title: DiagramTitle) -> bool:
     return bool(FIGURE_RE.match(text) or COMPACT_FIGURE_RE.match(text) or re.match(r"^\d+[\.:]?\s+", text))
 
 
+def _caption_requires_plot_above(title: DiagramTitle) -> bool:
+    """Return whether a numbered caption unambiguously owns the plot above."""
+    return _caption_prefers_plot_above(title) and classify_chart(title.title, "") in {
+        "body_diode",
+        "transfer",
+    }
+
+
 def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitle) -> bool:
     tx0, ty0, tx1, _ = title.bbox_pt
     for line in group_words_into_lines(page.words):
@@ -871,17 +884,17 @@ def choose_caption_panel_bbox(
     if plot_width_candidates:
         candidates = plot_width_candidates
 
-    caption_kind = classify_chart(title.title, "")
-    prefers_body_plot_above = _caption_prefers_plot_above(title) and caption_kind == "body_diode"
-    if prefers_body_plot_above or (
+    requires_plot_above = _caption_requires_plot_above(title)
+    if requires_plot_above or (
         _caption_prefers_plot_above(title) and _has_gate_charge_axis_label_above_caption(page, title)
     ):
         above = [item for item in candidates if item[2][3] <= ty0]
         if above:
             candidates = above
-        elif prefers_body_plot_above:
-            # A numbered body-diode caption describes the plot above it.  A
-            # plausible grid below is a neighboring chart, not a fallback.
+        elif requires_plot_above:
+            # A numbered body-diode or transfer caption describes the plot
+            # above it.  A plausible grid below is a neighboring chart, not a
+            # fallback.
             return None
     elif has_formula_below:
         below = [item for item in candidates if item[2][1] >= ty1]
@@ -1101,7 +1114,9 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
     half_width = min(max(170.0, title_width * 0.80), page.width_pt * 0.40)
     x0 = max(0.0, tcx - half_width)
     x1 = min(page.width_pt, tcx + half_width)
-    if _caption_prefers_plot_above(title) and ty0 > page.height_pt * 0.40:
+    if _caption_requires_plot_above(title) or (
+        _caption_prefers_plot_above(title) and ty0 > page.height_pt * 0.40
+    ):
         y0 = max(0.0, ty0 - 215.0)
         y1 = max(0.0, ty0 - 4.0)
     elif ty0 < page.height_pt * 0.35:

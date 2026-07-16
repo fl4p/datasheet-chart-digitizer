@@ -1,3 +1,4 @@
+import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -96,6 +97,25 @@ class TextFallbackTests(unittest.TestCase):
 
 
 class CaptionTitleTests(unittest.TestCase):
+    def test_accepts_numbered_transfer_caption(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Figure", 100, 200, 135, 210),
+                find_charts.Word("3:", 140, 200, 152, 210),
+                find_charts.Word("Transfer", 157, 200, 207, 210),
+                find_charts.Word("Characteristics", 212, 200, 300, 210),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].number, 3)
+        self.assertEqual(titles[0].title, "Transfer Characteristics")
+
     def test_splits_multiple_figure_captions(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -362,6 +382,23 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertLess(bbox[1], title.bbox_pt[1])
         self.assertLess(bbox[3], title.bbox_pt[1])
 
+    def test_numbered_transfer_caption_rejects_plot_below(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="Transfer Characteristics",
+            bbox_pt=(370.0, 268.0, 520.0, 279.0),
+            line_text="Figure 2. Transfer Characteristics",
+        )
+        above = (280.0, 53.0, 590.0, 264.0)
+        below = (280.0, 283.0, 590.0, 498.0)
+
+        bbox = find_charts.choose_caption_panel_bbox(page, title, [above, below])
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(0.5 * (bbox[1] + bbox[3]), title.bbox_pt[1])
+
     def test_formula_below_caption_prefers_lower_plot_with_larger_gap(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -489,26 +526,68 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertLessEqual(bbox[1], 146.0)
         self.assertGreaterEqual(bbox[3], 340.0)
 
+    def test_transfer_synthetic_bbox_ignores_page_position_heuristic(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=612, height_pt=792, words=[])
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="Transfer Characteristics",
+            bbox_pt=(376.44, 268.06, 519.36, 278.93),
+            line_text="Figure 2. Transfer Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertEqual(
+            tuple(round(value, 3) for value in bbox or ()),
+            (277.9, 53.06, 612, 264.06),
+        )
+
 
 IPI65R190CFD = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/infineon/IPI65R190CFD.pdf")
 
 
 @unittest.skipUnless(IPI65R190CFD.exists(), "local IPI65R190CFD datasheet not available")
 class CorruptGlyphFinderEndToEnd(unittest.TestCase):
-    def test_recovers_only_the_gate_charge_chart(self) -> None:
+    def test_recovers_transfer_and_gate_charge_charts(self) -> None:
         with TemporaryDirectory(prefix="ipi65r190cfd-finder-test-") as tmp:
             panels = find_charts.process_pdf(IPI65R190CFD, Path(tmp), dpi=180)
 
         self.assertEqual(
             [(panel.page, panel.kind, panel.text_source) for panel in panels],
-            [(11, "gate_charge", "pymupdf_fallback")],
+            [
+                (11, "transfer", "pymupdf_fallback"),
+                (11, "gate_charge", "pymupdf_fallback"),
+            ],
         )
-        panel = panels[0]
+        panel = next(panel for panel in panels if panel.kind == "gate_charge")
         self.assertIn("Typ. gate charge", panel.title)
         self.assertLessEqual(panel.bbox_pt[0], 346.433)
         self.assertLessEqual(panel.bbox_pt[1], 150.131)
         self.assertGreaterEqual(panel.bbox_pt[2], 560.393)
         self.assertGreaterEqual(panel.bbox_pt[3], 393.8)
+
+
+class TransferBodyCaptionIntegrationTests(unittest.TestCase):
+    def test_fda_transfer_and_body_captions_bind_their_own_plots(self) -> None:
+        root = os.environ.get("DSDIG_DATASHEET_ROOT")
+        if root is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = Path(root) / "datasheets/onsemi/FDA032N08.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+
+        with TemporaryDirectory(prefix="fda032-caption-integration-") as tmp:
+            panels = find_charts.process_pdf(pdf, Path(tmp), dpi=180)
+
+        transfer = [panel for panel in panels if panel.kind == "transfer"]
+        body = [panel for panel in panels if panel.kind == "body_diode"]
+        gate = [panel for panel in panels if panel.kind == "gate_charge" and panel.page == 3]
+        self.assertEqual([(panel.page, panel.diagram) for panel in transfer], [(3, 2)])
+        self.assertEqual([(panel.page, panel.diagram) for panel in body], [(3, 4)])
+        self.assertEqual([(panel.page, panel.diagram) for panel in gate], [(3, 6)])
+        self.assertEqual(transfer[0].bbox_pt, (277.902, 53.06, 612.0, 264.06))
+        self.assertEqual(body[0].bbox_pt, (281.211, 267.302, 612.0, 478.302))
+        self.assertEqual(gate[0].bbox_pt, (345.472, 566.032, 554.128, 658.768))
 
 
 if __name__ == "__main__":
