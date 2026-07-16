@@ -14,6 +14,9 @@ from datasheet_chart_digitizer.diode_forward_voltage import (
     _anchor_linear_axis_to_plot_frame,
     _draw_overlay,
     _expanded_grid_search_box,
+    _join_vector_paths,
+    _normalize_numeric_text,
+    _physical_plot_hint,
     _snap_axis_to_grid,
     calibrate_panel,
     digitize_pdf,
@@ -95,13 +98,66 @@ class NumericAxisTests(unittest.TestCase):
         plot = tick_aligned_plot(x_axis, y_axis, PlotBox(12, 12, 88, 82))
         self.assertEqual(plot, PlotBox(10, 10, 90, 90))
 
+    def test_detector_hint_can_include_a_partial_outer_log_interval(self):
+        x_axis = fit_numeric_axis([("0", 10), ("1", 90)], "X")
+        y_axis = fit_numeric_axis([("100", 40), ("10", 140), ("1", 240)], "Y")
+        self.assertEqual(
+            tick_aligned_plot(x_axis, y_axis, PlotBox(10, 10, 90, 240)),
+            PlotBox(10, 10, 90, 240),
+        )
+        self.assertEqual(
+            tick_aligned_plot(x_axis, y_axis, PlotBox(10, 0, 90, 240)),
+            PlotBox(10, 40, 90, 240),
+        )
+
+    def test_pdf_scientific_tick_text_normalizes_for_the_shared_axis_fitter(self):
+        self.assertEqual(_normalize_numeric_text("1E-3"), "0.001")
+        self.assertEqual(_normalize_numeric_text("2.5e-2"), "0.025")
+        self.assertEqual(_normalize_numeric_text("ordinary"), "ordinary")
+
+    def test_split_vector_strokes_join_at_either_endpoint(self):
+        paths = [
+            [(10.0, 50.0), (10.0, 90.0)],
+            [(20.0, 10.0), (10.0, 50.0)],
+            [(80.0, 90.0), (70.0, 50.0)],
+            [(70.0, 50.0), (60.0, 10.0)],
+        ]
+        groups = _join_vector_paths(paths, 100.0)
+        self.assertEqual(len(groups), 2)
+        self.assertEqual((min(y for _, y in groups[0]), max(y for _, y in groups[0])), (10, 90))
+        self.assertEqual((min(y for _, y in groups[1]), max(y for _, y in groups[1])), (10, 90))
+
+    def test_detector_extension_requires_a_full_span_physical_line(self):
+        x_axis = fit_numeric_axis([("0", 10), ("1", 90)], "X")
+        y_axis = fit_numeric_axis([("100", 20), ("10", 50), ("1", 80)], "Y")
+        hint = _physical_plot_hint(
+            PlotBox(10, 5, 90, 95),
+            x_axis,
+            y_axis,
+            (10.0, 90.0),
+            (5.0, 20.0, 50.0, 80.0),
+        )
+        self.assertEqual(hint, PlotBox(10, 5, 90, 80))
+
+        # A partial logarithmic interval above the first labelled decade can
+        # be real plot area even when no horizontal top frame is printed.  The
+        # unsupported lower extension remains rejected as label margin.
+        frameless_top = _physical_plot_hint(
+            PlotBox(10, 8, 90, 95),
+            x_axis,
+            y_axis,
+            (10.0, 90.0),
+            (20.0, 50.0, 80.0),
+        )
+        self.assertEqual(frameless_top, PlotBox(10, 8, 90, 80))
+
     def test_grid_search_expands_to_outer_ticks_before_projection(self):
         x_axis = fit_numeric_axis([("0", 20), ("1", 80)], "X")
         y_axis = fit_numeric_axis([("100", 15), ("10", 50), ("1", 92)], "Y")
         expanded = _expanded_grid_search_box(
             PlotBox(22, 20, 78, 70), x_axis, y_axis, (100, 100)
         )
-        self.assertEqual(expanded, PlotBox(8, 3, 92, 99))
+        self.assertEqual(expanded, PlotBox(4, 0, 96, 99))
 
     def test_unsnapped_linear_labels_anchor_to_verified_plot_frame(self):
         axis = fit_numeric_axis(
@@ -125,8 +181,21 @@ class NumericAxisTests(unittest.TestCase):
             axis, tuple(float(value) for value in range(0, 91, 10)), "log majors", True
         )
         self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (0, 30, 60, 90))
-        with self.assertRaisesRegex(RuntimeError, "ambiguous full-span"):
+        with self.assertRaisesRegex(RuntimeError, "full-span grid residual exceeds"):
             _snap_axis_to_grid(axis, (0.0, 27.0, 35.0, 60.0, 90.0), "log majors", True)
+
+    def test_dense_log_minor_does_not_replace_clearly_nearer_major(self):
+        axis = fit_numeric_axis(
+            [("100", 47), ("10", 112), ("1", 177), ("0.1", 242)],
+            "dense log majors",
+        )
+        snapped = _snap_axis_to_grid(
+            axis,
+            (46.0, 49.0, 52.0, 111.0, 114.0, 117.0, 176.0, 179.0, 182.0, 241.0),
+            "dense log majors",
+            True,
+        )
+        self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (46, 111, 176, 241))
 
     def test_log_endpoint_can_use_unique_line_just_outside_tight_interior_tolerance(self):
         axis = fit_numeric_axis(
@@ -276,6 +345,48 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
                 (27, 100, 173, 246, 320, 393, 466, 540),
                 (27, 206, 386),
             ),
+            (
+                "onsemi/FDP3651U.pdf",
+                PlotBox(23, 21, 449, 333),
+                (23, 94, 165, 236, 307, 378, 449),
+                (21, 74, 125, 177, 229, 281, 333),
+            ),
+            (
+                "onsemi/FDP8D5N10C.pdf",
+                PlotBox(26, 26, 479, 371),
+                (26, 101, 176, 252, 328, 403, 479),
+                (26, 46, 111, 176, 241, 306, 371),
+            ),
+            (
+                "onsemi/FDPF51N25.pdf",
+                PlotBox(26, 26, 508, 362),
+                (26, 86, 146, 207, 267, 327, 387, 448, 508),
+                (69, 216, 362),
+            ),
+            (
+                "onsemi/FDPF8D5N10C.pdf",
+                PlotBox(26, 26, 479, 371),
+                (26, 101, 176, 252, 328, 403, 479),
+                (26, 46, 111, 176, 241, 306, 371),
+            ),
+            (
+                "onsemi/FDS4435BZ.pdf",
+                PlotBox(23, 19, 437, 322),
+                (23, 92, 161, 230, 299, 368, 437),
+                (19, 69, 120, 170, 221, 272, 322),
+            ),
+            (
+                "onsemi/FDS8447.pdf",
+                PlotBox(24, 19, 449, 330),
+                (24, 95, 166, 236, 307, 378, 449),
+                (19, 81, 143, 205, 268, 330),
+            ),
+            (
+                "onsemi/NVMFS6H852NT1G.pdf",
+                PlotBox(26, 26, 540, 384),
+                (26, 100, 173, 246, 320, 393, 466, 540),
+                (26, 205, 384),
+            ),
         )
         for relative, plot, x_pixels, y_pixels in cases:
             with self.subTest(pdf=relative), tempfile.TemporaryDirectory() as tmp:
@@ -288,7 +399,26 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
                 self.assertEqual(calibration.plot, plot)
                 self.assertEqual(tuple(round(tick.pixel) for tick in calibration.x_axis.ticks), x_pixels)
                 self.assertEqual(tuple(round(tick.pixel) for tick in calibration.y_axis.ticks), y_pixels)
+                self.assertLessEqual(calibration.plot.y0, min(y_pixels))
                 self.assertGreaterEqual(calibration.plot.y1, max(y_pixels))
+
+    def test_split_strokes_and_partial_outer_interval_preserve_full_source_traces(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        cases = (
+            ("onsemi/FDP3651U.pdf", 3, 250, 70),
+            ("onsemi/FDPF51N25.pdf", 2, 300, 35),
+        )
+        for relative, curve_count, minimum_points, maximum_top_y in cases:
+            with self.subTest(pdf=relative), tempfile.TemporaryDirectory() as tmp:
+                pdf = self.datasheets / relative
+                if not pdf.exists():
+                    self.skipTest(f"missing local corpus PDF: {pdf}")
+                result = digitize_pdf(pdf, Path(tmp))[0]
+                self.assertEqual(len(result["curves"]), curve_count)
+                for curve in result["curves"]:
+                    self.assertGreaterEqual(len(curve["points_px"]), minimum_points)
+                    self.assertLessEqual(min(point[1] for point in curve["points_px"]), maximum_top_y)
 
     def test_failed_extraction_does_not_write_an_ok_manifest(self):
         if self.datasheets is None:

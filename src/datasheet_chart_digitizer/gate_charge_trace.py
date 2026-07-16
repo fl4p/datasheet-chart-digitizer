@@ -403,12 +403,16 @@ def _detect_regular_grid_box(
     return box, tuple(fy0 + y for y in ys), tuple(fx0 + x for x in xs)
 
 
-def _projection_line_centers(counts: np.ndarray, minimum: float) -> list[int]:
+def _projection_line_centers(
+    counts: np.ndarray,
+    minimum: float,
+    maximum_index_gap: int = 3,
+) -> list[int]:
     indexes = np.flatnonzero(counts >= minimum)
     groups: list[list[int]] = []
     for index in indexes:
         value = int(index)
-        if groups and value - groups[-1][-1] <= 3:
+        if groups and value - groups[-1][-1] <= maximum_index_gap:
             groups[-1].append(value)
         else:
             groups.append([value])

@@ -32,9 +32,12 @@ from .gate_charge_trace import _detect_regular_grid_box, _projection_line_center
 from .numeric_axis import AxisTick, NumericAxis, fit_numeric_axis, tick_aligned_plot
 
 _NUMERIC_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
-_GRID_SEARCH_MARGIN_PX = 12
+_SCIENTIFIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)[Ee][+-]?\d+$")
+_GRID_SEARCH_MARGIN_PX = 16
+_AXIS_LABEL_OUTER_MARGIN_FRACTION = 0.18
 _AUTHORITATIVE_LOG_GRID_TOLERANCE_PX = 5.0
 _AUTHORITATIVE_ENDPOINT_GRID_TOLERANCE_PX = 10.0
+_AUTHORITATIVE_GRID_AMBIGUITY_MARGIN_PX = 0.75
 _LINEAR_FRAME_ANCHOR_TOLERANCE_PX = 10.0
 
 
@@ -114,15 +117,46 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     y_axis = _snap_axis_to_grid(raw_y, major_y, "Y axis", authoritative=True)
     x_axis = _snap_axis_to_grid(raw_x, periodic_x, "X axis") if x_axis is raw_x else x_axis
     y_axis = _snap_axis_to_grid(raw_y, periodic_y, "Y axis") if y_axis is raw_y else y_axis
-    plot = tick_aligned_plot(x_axis, y_axis, hint)
+    physical_hint = _physical_plot_hint(hint, x_axis, y_axis, major_x, major_y)
     if x_axis is raw_x:
-        x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
+        x_axis = _anchor_linear_axis_to_plot_frame(x_axis, physical_hint, "x")
     if y_axis is raw_y:
-        y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
-    plot = tick_aligned_plot(x_axis, y_axis, plot)
+        y_axis = _anchor_linear_axis_to_plot_frame(y_axis, physical_hint, "y")
+    plot = tick_aligned_plot(x_axis, y_axis, physical_hint)
     if plot.y0 <= 8:
         raise RuntimeError("plot: tick-aligned frame overlaps the panel title band")
     return PanelCalibration(plot, x_axis, y_axis, hint, hint_source)
+
+
+def _physical_plot_hint(
+    hint: PlotBox,
+    x_axis: NumericAxis,
+    y_axis: NumericAxis,
+    x_lines: tuple[float, ...],
+    y_lines: tuple[float, ...],
+) -> PlotBox:
+    """Keep detector extensions only when the source geometry supports them.
+
+    A logarithmic chart may end above its highest labelled decade without a
+    horizontal frame line; that partial top interval is real source area and
+    is bounded later by :func:`tick_aligned_plot`.  The lower edge is not
+    symmetric: captions and axis labels below the plot often fool the grid-box
+    detector, so an extension there still requires a full-span physical line.
+    """
+
+    def supported(edge: int, lines: tuple[float, ...], fallback: float) -> int:
+        nearby = [line for line in lines if abs(line - edge) <= 2.0]
+        return int(round(min(nearby, key=lambda line: abs(line - edge)))) if nearby else int(round(fallback))
+
+    xs = sorted(tick.pixel for tick in x_axis.ticks)
+    ys = sorted(tick.pixel for tick in y_axis.ticks)
+    y0 = hint.y0 if y_axis.model == "log10" else supported(hint.y0, y_lines, ys[0])
+    return PlotBox(
+        supported(hint.x0, x_lines, xs[0]),
+        y0,
+        supported(hint.x1, x_lines, xs[-1]),
+        supported(hint.y1, y_lines, ys[-1]),
+    )
 
 
 def _anchor_linear_axis_to_plot_frame(
@@ -213,13 +247,13 @@ def _full_span_grid_lines(
     x_minimum, y_minimum = 0.55 * dark.shape[0], 0.55 * dark.shape[1]
     edge_box = preferred_edges or hint
     xs = _prefer_strong_plot_edges(
-        _projection_line_centers(x_counts, x_minimum),
+        _projection_line_centers(x_counts, x_minimum, maximum_index_gap=1),
         x_counts,
         (edge_box.x0, edge_box.x1),
         x_minimum,
     )
     ys = _prefer_strong_plot_edges(
-        _projection_line_centers(y_counts, y_minimum),
+        _projection_line_centers(y_counts, y_minimum, maximum_index_gap=1),
         y_counts,
         (edge_box.y0, edge_box.y1),
         y_minimum,
@@ -278,8 +312,12 @@ def _snap_axis_to_grid(
             return axis
         if len(nearby) != 1:
             if authoritative:
-                raise RuntimeError(f"{name}: ambiguous full-span grid binding")
-            return axis
+                ranked = sorted((abs(line - predicted), line) for line in nearby)
+                if ranked[1][0] - ranked[0][0] <= _AUTHORITATIVE_GRID_AMBIGUITY_MARGIN_PX:
+                    raise RuntimeError(f"{name}: ambiguous full-span grid binding")
+                nearby = [ranked[0][1]]
+            else:
+                return axis
         line = nearby[0]
         if line in used:
             if authoritative:
@@ -309,7 +347,8 @@ def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
     for word in page.get_text("words"):
         x0, y0 = transform.to_px(word[0], word[1])
         x1, y1 = transform.to_px(word[2], word[3])
-        labels.append(TextLabel(word[4].strip(), (x0 + x1) / 2, (y0 + y1) / 2, x0, x1))
+        text = _normalize_numeric_text(word[4].strip())
+        labels.append(TextLabel(text, (x0 + x1) / 2, (y0 + y1) / 2, x0, x1))
 
     # PyMuPDF word text flattens 10 + superscript 0 into "100".  Preserve the
     # decisive span metadata as explicit 10^0 before generic axis fitting.
@@ -352,6 +391,13 @@ def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
     return labels
 
 
+def _normalize_numeric_text(text: str) -> str:
+    """Convert PDF scientific tick text to the decimal form the shared fitter accepts."""
+    if not _SCIENTIFIC_RE.fullmatch(text):
+        return text
+    return np.format_float_positional(float(text), trim="-")
+
+
 def _select_axis(labels: list[TextLabel], hint: PlotBox, orientation: str) -> NumericAxis:
     numeric = [
         label
@@ -362,7 +408,9 @@ def _select_axis(labels: list[TextLabel], hint: PlotBox, orientation: str) -> Nu
         nearby = [
             label
             for label in numeric
-            if hint.x0 - 0.12 * hint.width <= label.cx <= hint.x1 + 0.12 * hint.width
+            if hint.x0 - _AXIS_LABEL_OUTER_MARGIN_FRACTION * hint.width
+            <= label.cx
+            <= hint.x1 + _AXIS_LABEL_OUTER_MARGIN_FRACTION * hint.width
             and abs(label.cy - hint.y1) <= max(100.0, 0.25 * hint.height)
         ]
         cluster_attr, position_attr, tolerance, edge_value = "cy", "cx", 5.0, hint.y1
@@ -371,7 +419,9 @@ def _select_axis(labels: list[TextLabel], hint: PlotBox, orientation: str) -> Nu
             label
             for label in numeric
             if hint.x0 - 0.28 * hint.width <= label.x1 <= hint.x0 + 0.08 * hint.width
-            and hint.y0 - 0.12 * hint.height <= label.cy <= hint.y1 + 0.12 * hint.height
+            and hint.y0 - _AXIS_LABEL_OUTER_MARGIN_FRACTION * hint.height
+            <= label.cy
+            <= hint.y1 + _AXIS_LABEL_OUTER_MARGIN_FRACTION * hint.height
         ]
         cluster_attr, position_attr, tolerance, edge_value = "x1", "cy", 9.0, hint.x0
 
@@ -445,24 +495,7 @@ def _extract_vector_curves(
             if components:
                 paths.append(max(components, key=len))
 
-    groups: list[list[tuple[float, float]]] = []
-    for path in paths:
-        if not groups:
-            groups.append(list(path))
-            continue
-        current = groups[-1]
-        options = (
-            (math.dist(current[-1], path[0]), path),
-            (math.dist(current[-1], path[-1]), list(reversed(path))),
-        )
-        distance, oriented = min(options, key=lambda item: item[0])
-        current_y_span = max(y for _, y in current) - min(y for _, y in current)
-        path_y_span = max(y for _, y in path) - min(y for _, y in path)
-        both_full = min(current_y_span, path_y_span) >= 0.60 * rect.height
-        if distance <= 8.0 and not both_full:
-            current.extend(oriented)
-        else:
-            groups.append(list(path))
+    groups = _join_vector_paths(paths, rect.height)
 
     curves = []
     for group in groups:
@@ -476,6 +509,37 @@ def _extract_vector_curves(
         if points:
             curves.append(points)
     return curves
+
+
+def _join_vector_paths(
+    paths: list[list[tuple[float, float]]],
+    plot_height: float,
+) -> list[list[tuple[float, float]]]:
+    """Join split strokes at whichever endpoint pair is actually contiguous."""
+    groups: list[list[tuple[float, float]]] = []
+    for path in paths:
+        if not groups:
+            groups.append(list(path))
+            continue
+        current = groups[-1]
+        options = (
+            (math.dist(current[-1], path[0]), "append", path),
+            (math.dist(current[-1], path[-1]), "append", list(reversed(path))),
+            (math.dist(current[0], path[-1]), "prepend", path),
+            (math.dist(current[0], path[0]), "prepend", list(reversed(path))),
+        )
+        distance, operation, oriented = min(options, key=lambda item: item[0])
+        current_y_span = max(y for _, y in current) - min(y for _, y in current)
+        path_y_span = max(y for _, y in path) - min(y for _, y in path)
+        both_full = min(current_y_span, path_y_span) >= 0.60 * plot_height
+        if distance <= 8.0 and not both_full:
+            if operation == "append":
+                current.extend(oriented)
+            else:
+                groups[-1] = list(oriented) + current
+        else:
+            groups.append(list(path))
+    return groups
 
 
 def _temperatures(text: str) -> list[float]:
