@@ -105,10 +105,11 @@ def _fit_linear(ticks: list[tuple[float, float]]) -> Axis | None:
 
     Delegates the least-squares fit to ``numeric_axis.fit_axis_ticks`` instead of
     re-deriving the normal equations here (part of the axis-fitter consolidation),
-    then keeps RR's own acceptance policy on top: a stricter ``>=3`` min-count,
-    linear-only (RR dual axes are never logarithmic — refuse a log/ambiguous fit
-    rather than scale a curve off the wrong model), and the value-space residual
-    gate (max abs error <= 3% of the value span). fit_axis_ticks additionally
+    then keeps RR's own acceptance policy on top: a stricter ``>=3`` min-count and
+    the value-space residual gate (max abs error <= 3% of the value span). RR dual
+    axes are always linear, so the fit is FORCED linear (``model="linear"``): a
+    valid narrow-positive axis is near-indistinguishable from log and the shared
+    fitter's "auto" ambiguity gate would false-refuse it. fit_axis_ticks still
     refuses non-monotone / untrusted-residual ticks, so this is strictly more
     fail-closed than the old hand-rolled fit, never less."""
     # AO doubled text layers emit the same (pixel, value) tick twice; the old
@@ -121,11 +122,10 @@ def _fit_linear(ticks: list[tuple[float, float]]) -> Axis | None:
         fit = fit_axis_ticks(
             [AxisTick(text=f"{v:g}", value=v, pixel=px) for px, v in ticks],
             "rr-axis",
+            model="linear",
         )
     except RuntimeError:
-        return None  # non-monotone / untrusted-residual / ambiguous: refuse
-    if fit.model != "linear":
-        return None  # RR axes are linear; never scale off a log fit
+        return None  # non-monotone / untrusted-residual: refuse
     resid = max(abs(fit.value(px) - v) for px, v in ticks)
     span = max(v for _, v in ticks) - min(v for _, v in ticks)
     if span <= 0 or resid > 0.03 * span:

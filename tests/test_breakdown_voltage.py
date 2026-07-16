@@ -110,14 +110,13 @@ class KnownBadInputsRefuse(unittest.TestCase):
         return next(c for c in self.charts if c["kind"] == kind)
 
     def test_multi_curve_panel_refused(self):
-        # a capacitance chart must be refused, not silently digitized. Since the
-        # axis fit moved onto the shared numeric_axis core, this now fails closed
-        # even earlier — at the axis-type mismatch (a capacitance chart's log Y is
-        # ambiguous/non-linear) rather than at the downstream curve-count guard.
-        # Accept either refusal reason so the test tracks the fail-closed outcome,
-        # not one specific guard's wording.
+        # a capacitance chart (multiple curves) must be refused, not silently
+        # digitized. The axis fit moved onto the shared numeric_axis core but
+        # breakdown forces model="linear", so the collinear axis still calibrates
+        # and the input reaches the downstream curve-count guard exactly as before
+        # (CurveCountGuardUnit covers that guard directly too).
         cap = self._chart("capacitances")
-        with self.assertRaisesRegex(RuntimeError, "ambiguous|not.*monotone|expected exactly 1"):
+        with self.assertRaisesRegex(RuntimeError, "expected exactly 1"):
             bv.process_chart(cap, self.out / cap["crop_png"], self.out / "bad", Path("bad/cap"))
 
     def test_wrong_spec_anchor_fails_loud(self):
@@ -199,6 +198,15 @@ class AxisFitUnit(unittest.TestCase):
         self.assertAlmostEqual(axis.value(100.0), -75.0, places=6)
         self.assertAlmostEqual(axis.value(500.0), 175.0, places=6)
         self.assertLess(axis.resid, 1e-9)
+
+    def test_narrow_positive_linear_axis_accepted(self):
+        # regression: a valid narrow-positive linear axis (values 100..103) is
+        # near-indistinguishable from log, so the shared fitter's "auto" mode
+        # would false-refuse it as ambiguous. breakdown forces model="linear",
+        # so this exact case must calibrate, not raise. (codex-ee-root's BLOCK.)
+        axis = bv._fit_axis([(100.0, 0.0), (101.0, 100.0), (102.0, 200.0), (103.0, 300.0)], "probe")
+        self.assertAlmostEqual(axis.value(0.0), 100.0, places=6)
+        self.assertAlmostEqual(axis.value(300.0), 103.0, places=6)
 
     def test_too_few_ticks_refused(self):
         with self.assertRaisesRegex(RuntimeError, "need >="):

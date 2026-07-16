@@ -92,11 +92,14 @@ def _fit_axis(ticks: list[tuple[float, float]], what: str) -> LinearAxis:
     Delegates the least-squares fit to ``numeric_axis.fit_axis_ticks`` instead of
     re-deriving np.polyfit + the monotonicity check here (axis-fitter
     consolidation), then keeps breakdown's own policy on top: a stricter
-    ``>=MIN_TICKS_PER_AXIS`` (4) min-count, linear-only (V(BR)/Tj axes are never
-    logarithmic — refuse a log/ambiguous fit rather than scale off the wrong
-    model), and the value-space residual gate (max abs error <=
-    MAX_CAL_RESID_FRAC of the value span). Ticks are (value, pixel) pairs;
-    breakdown raises on any refusal (transfer relies on that)."""
+    ``>=MIN_TICKS_PER_AXIS`` (4) min-count and the value-space residual gate (max
+    abs error <= MAX_CAL_RESID_FRAC of the value span). V(BR)/Tj axes are always
+    linear, so the fit is FORCED linear (``model="linear"``) — this is required,
+    not cosmetic: a valid narrow-positive V axis is near-indistinguishable from
+    log, and the shared fitter's "auto" ambiguity gate would false-refuse it. A
+    genuinely non-linear tick set forced to linear still fails the residual gate.
+    Ticks are (value, pixel) pairs; breakdown raises on any refusal (transfer
+    relies on that)."""
     # dedup exact-duplicate (value, pixel) ticks (doubled text layers) so the
     # shared fitter's strict-monotone gate doesn't reject a zero gap; a
     # same-value/different-pixel or same-pixel/different-value pair is a real
@@ -104,9 +107,7 @@ def _fit_axis(ticks: list[tuple[float, float]], what: str) -> LinearAxis:
     ticks = list(dict.fromkeys(ticks))
     if len(ticks) < MIN_TICKS_PER_AXIS:
         raise RuntimeError(f"{what}: only {len(ticks)} tick labels, need >={MIN_TICKS_PER_AXIS}")
-    fit = fit_axis_ticks([AxisTick(f"{v:g}", v, px) for v, px in ticks], what)
-    if fit.model != "linear":
-        raise RuntimeError(f"{what}: expected a linear axis, got {fit.model!r}")
+    fit = fit_axis_ticks([AxisTick(f"{v:g}", v, px) for v, px in ticks], what, model="linear")
     values = np.array([v for v, _ in ticks], dtype=float)
     pixels = np.array([p for _, p in ticks], dtype=float)
     order = np.argsort(pixels)
