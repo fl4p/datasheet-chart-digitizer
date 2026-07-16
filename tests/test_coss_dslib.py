@@ -162,6 +162,108 @@ class CossDslibExportTests(unittest.TestCase):
         self.assertEqual(payload["status"], "pass")
         self.assertTrue((out / "dslib_coss_manifest.json").exists())
 
+    # ---- optional Ciss export ------------------------------------------------
+
+    def test_valid_chart_also_exports_ciss_pairs(self) -> None:
+        res = export_row(_good_row(), self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "pass", res.ciss_reasons)
+        self.assertEqual(res.ciss_curve[0][0], 0.0)         # explicit Vds=0 hold knot
+        self.assertGreater(res.ciss_curve[-1][0], 79.0)
+        for _v, ciss in res.ciss_curve[1:]:
+            self.assertLess(abs(ciss / 9000.0 - 1.0), 0.05)
+        self.assertTrue(any(k[0] == 40.0 for k in res.ciss_curve))  # anchor V pinned
+        self.assertLess(abs(res.anchor_check["Ciss"]["rel_error"]), 0.02)
+
+    def test_ciss_anchor_mismatch_withholds_ciss_but_not_triple(self) -> None:
+        # A wrong Ciss anchor must fire the Ciss gate — and ONLY the Ciss gate.
+        row = _good_row()
+        row["anchors"]["Ciss"]["value_pf"] = 9000.0 * 1.3
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "rejected")
+        self.assertEqual(res.ciss_curve, [])
+        self.assertTrue(any(r.startswith("ciss_anchor_mismatch") for r in res.ciss_reasons))
+
+    def test_missing_ciss_anchor_rejects_ciss_not_absent(self) -> None:
+        # Trace exists but cannot be validated -> rejected, never silently exported.
+        row = _good_row()
+        del row["anchors"]["Ciss"]
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "rejected")
+        self.assertIn("missing_ciss_anchor", res.ciss_reasons)
+        self.assertEqual(res.ciss_curve, [])
+
+    def test_chart_without_any_ciss_evidence_is_absent(self) -> None:
+        pts = self.base / "points/part/no_ciss.points.csv"
+        pts.parent.mkdir(parents=True, exist_ok=True)
+        with pts.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis",
+                        "vds_V", "cap_pF"])
+            for i in range(400):
+                v = 0.05 + i * (80.0 - 0.05) / 399.0
+                w.writerow(["Coss", i, 0, 0, 0, v, _coss(v)])
+                w.writerow(["Crss", i, 0, 0, 0, v, _crss(v)])
+        row = _good_row("points/part/no_ciss.points.csv")
+        del row["anchors"]["Ciss"]
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "absent")
+        self.assertEqual(res.ciss_curve, [])
+
+    def test_ciss_below_crss_is_rejected(self) -> None:
+        # Cgs = Ciss - Crss must stay positive; a crossing means trace mis-assignment.
+        pts = self.base / "points/part/crossing.points.csv"
+        with pts.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis",
+                        "vds_V", "cap_pF"])
+            for i in range(400):
+                v = 0.05 + i * (80.0 - 0.05) / 399.0
+                w.writerow(["Coss", i, 0, 0, 0, v, _coss(v)])
+                w.writerow(["Crss", i, 0, 0, 0, v, _crss(v)])
+                w.writerow(["Ciss", i, 0, 0, 0, v, _crss(v) * 0.5])  # below Crss
+        row = _good_row("points/part/crossing.points.csv")
+        row["anchors"]["Ciss"] = {"value_pf": _crss(40.0) * 0.5, "vds_v": 40.0}
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "rejected")
+        self.assertIn("ciss_not_above_crss", res.ciss_reasons)
+
+    def test_ciss_disjoint_from_crss_is_rejected_not_trivially_passed(self) -> None:
+        # Ciss captured only in a high-V band with no span shared with Crss: the
+        # crossing gate would otherwise compare boundary-clamped constants and pass.
+        pts = self.base / "points/part/disjoint.points.csv"
+        with pts.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis",
+                        "vds_V", "cap_pF"])
+            for i in range(400):
+                v = 0.05 + i * (80.0 - 0.05) / 399.0
+                w.writerow(["Coss", i, 0, 0, 0, v, _coss(v)])
+                w.writerow(["Crss", i, 0, 0, 0, v, _crss(v)])
+            for i in range(50):
+                v = 90.0 + i * 0.2                      # 90-100 V only: no overlap
+                w.writerow(["Ciss", i, 0, 0, 0, v, 9000.0])
+        row = _good_row("points/part/disjoint.points.csv")
+        row["anchors"]["Ciss"] = {"value_pf": 9000.0, "vds_v": 95.0}
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.ciss_status, "rejected")
+        self.assertIn("ciss_crss_no_overlap", res.ciss_reasons)
+        self.assertEqual(res.ciss_curve, [])
+
+    def test_rejected_chart_marks_ciss_chart_rejected(self) -> None:
+        row = _good_row()
+        row["axis_calibration_trusted"] = False
+        res = export_row(row, self.base)
+        self.assertEqual(res.status, "rejected")
+        self.assertEqual(res.ciss_status, "rejected")
+        self.assertEqual(res.ciss_reasons, ["chart_rejected"])
+        self.assertEqual(res.ciss_curve, [])
+
 
 if __name__ == "__main__":
     unittest.main()
