@@ -4,18 +4,22 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 try:
-    from .axis_calibration import calibrate_axes
+    from .axis_calibration import _x_ticks_look_log, calibrate_axes
 except Exception:  # pragma: no cover - optional standalone use
     try:
-        from axis_calibration import calibrate_axes
+        from axis_calibration import _x_ticks_look_log, calibrate_axes
     except Exception:
         calibrate_axes = None  # type: ignore
+        _x_ticks_look_log = None  # type: ignore
 
 from .capacitance_traces import _interp_y
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
@@ -38,32 +42,35 @@ def infer_text_order_axis_calibration(chart: dict[str, object]) -> AxisCalibrati
         source="chart_text",
         x_ticks_v=tuple(float(v) for v in x_ticks),
         y_decades=tuple(float(v) for v in sorted(set(y_decades))),
+        # chart_text is never trusted, but the normalized v_of_x branch honors
+        # x_log -- keep the untrusted debug output on the right scale too.
+        x_log=bool(_x_ticks_look_log is not None and _x_ticks_look_log([float(v) for v in x_ticks])),
         x_source="text_order_normalized_plot_extent",
         y_source="text_order_normalized_plot_extent",
     )
 
 
-def infer_position_axis_calibration(
-    chart: dict[str, object], image: np.ndarray, plot: PlotBox
-) -> AxisCalibration:
-    if calibrate_axes is None:
-        raise RuntimeError("axis_calibration.calibrate_axes is not available")
+def _plot_rect_pt(chart: dict[str, object], image: np.ndarray, plot: PlotBox):
+    """Detected plot frame in page-pt coordinates (as a fitz.Rect)."""
     fitz = _load_fitz()
     if fitz is None:
         raise RuntimeError("PyMuPDF is not available")
     transform = CropTransform.for_chart(chart, image.shape)
     plot_x0, plot_y0 = transform.to_pt(plot.x0, plot.y0)
     plot_x1, plot_y1 = transform.to_pt(plot.x1, plot.y1)
-    plot_rect = fitz.Rect(
-        plot_x0,
-        plot_y0,
-        plot_x1,
-        plot_y1,
-    )
-    doc = fitz.open(Path(str(chart["pdf"])))
-    page = doc[int(chart["page"]) - 1]
+    return transform, fitz.Rect(plot_x0, plot_y0, plot_x1, plot_y1)
+
+
+def _fit_position_calibration(page_like, transform: CropTransform, plot_rect, source: str) -> AxisCalibration:
+    """Position-fit tick labels from any words source (PDF text or OCR).
+
+    `page_like` only needs `get_text("words")` returning (x0, y0, x1, y1, text)
+    tuples in page-pt coordinates -- a real PyMuPDF page or an OCR adapter.
+    """
+    if calibrate_axes is None:
+        raise RuntimeError("axis_calibration.calibrate_axes is not available")
     pos_cal = calibrate_axes(
-        page,
+        page_like,
         x_row_band=(plot_rect.y1 + 2.0, plot_rect.y1 + 24.0),
         y_label_x_band=(plot_rect.x0 - 42.0, plot_rect.x0 - 1.0),
         plot_y_band=(plot_rect.y0 - 8.0, plot_rect.y1 + 8.0),
@@ -87,7 +94,7 @@ def infer_position_axis_calibration(
         x_max_v=max(x_ticks),
         y_min_decade=min(y_decades),
         y_max_decade=max(y_decades),
-        source="position_text",
+        source=source,
         x_ticks_v=x_ticks,
         y_decades=tuple(sorted(set(y_decades))),
         x_log=bool(getattr(pos_cal, "x_log", False)),
@@ -97,9 +104,120 @@ def infer_position_axis_calibration(
         x_offset=x_offset,
         y_scale=y_scale,
         y_offset=y_offset,
-        x_source="position_text",
-        y_source="position_text",
+        x_source=source,
+        y_source=source,
     )
+
+
+def infer_position_axis_calibration(
+    chart: dict[str, object], image: np.ndarray, plot: PlotBox
+) -> AxisCalibration:
+    fitz = _load_fitz()
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not available")
+    transform, plot_rect = _plot_rect_pt(chart, image, plot)
+    doc = fitz.open(Path(str(chart["pdf"])))
+    page = doc[int(chart["page"]) - 1]
+    return _fit_position_calibration(page, transform, plot_rect, "position_text")
+
+
+class _OcrWordsPage:
+    """Duck-typed stand-in for a PyMuPDF page backed by OCR word boxes."""
+
+    def __init__(self, words: list[tuple[float, float, float, float, str]]):
+        self._words = words
+
+    def get_text(self, kind: str):
+        return list(self._words)
+
+
+def _normalize_ocr_token(text: str) -> str:
+    # Tesseract reads decimal points as commas on some rasters; tick parsing
+    # downstream expects '.' and bare digits.
+    return text.strip().strip("|:;").replace(",", ".")
+
+
+def _ocr_words_in_rect(
+    chart: dict[str, object], clip_rect, dpi: float = 400.0
+) -> list[tuple[float, float, float, float, str]]:
+    """OCR a page region with tesseract; word boxes returned in page pt."""
+    exe = shutil.which("tesseract")
+    if exe is None:
+        raise RuntimeError("tesseract binary not found; cannot OCR raster axis labels")
+    fitz = _load_fitz()
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not available")
+    doc = fitz.open(Path(str(chart["pdf"])))
+    page = doc[int(chart["page"]) - 1]
+    clip = fitz.Rect(clip_rect) & page.rect
+    if clip.is_empty:
+        raise RuntimeError("OCR clip rect is empty")
+    scale = dpi / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        png = Path(tmp) / "ocr-region.png"
+        pix.save(str(png))
+        # --psm 11 (sparse text): tick labels are isolated words, not a block.
+        proc = subprocess.run(
+            [exe, str(png), "stdout", "--psm", "11", "tsv"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    if proc.returncode != 0:
+        raise RuntimeError(f"tesseract failed: {proc.stderr.strip()[:200]}")
+    lines = proc.stdout.splitlines()
+    if not lines:
+        raise RuntimeError("tesseract returned no TSV output")
+    header = lines[0].split("\t")
+    col = {name: i for i, name in enumerate(header)}
+    words: list[tuple[float, float, float, float, str]] = []
+    for row in lines[1:]:
+        cells = row.split("\t")
+        if len(cells) != len(header):
+            continue
+        text = _normalize_ocr_token(cells[col["text"]])
+        try:
+            conf = float(cells[col["conf"]])
+        except (KeyError, ValueError):
+            continue
+        if not text or conf < 30.0:
+            continue
+        x0 = clip.x0 + float(cells[col["left"]]) / scale
+        y0 = clip.y0 + float(cells[col["top"]]) / scale
+        x1 = x0 + float(cells[col["width"]]) / scale
+        y1 = y0 + float(cells[col["height"]]) / scale
+        words.append((x0, y0, x1, y1, text))
+    return words
+
+
+def infer_ocr_position_axis_calibration(
+    chart: dict[str, object], image: np.ndarray, plot: PlotBox
+) -> AxisCalibration:
+    """Position calibration for raster-image charts with no PDF text.
+
+    Some vendors (Toshiba) embed the whole figure -- gridlines, traces AND
+    tick labels -- as one raster image; `page.get_text("words")` is empty over
+    the chart, so `infer_position_axis_calibration` cannot fit. Here the label
+    bands are OCRed (tesseract) into page-pt word boxes and fed through the
+    same position fit; the shared residual gates then decide trust.
+    """
+    fitz = _load_fitz()
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not available")
+    transform, plot_rect = _plot_rect_pt(chart, image, plot)
+    # Cover the label bands used by _fit_position_calibration (left decade
+    # column and the tick row under the frame), with margin.
+    clip = fitz.Rect(
+        plot_rect.x0 - 60.0,
+        plot_rect.y0 - 12.0,
+        plot_rect.x1 + 16.0,
+        plot_rect.y1 + 30.0,
+    )
+    words = _ocr_words_in_rect(chart, clip)
+    if not words:
+        raise RuntimeError("OCR found no words in the axis label bands")
+    return _fit_position_calibration(_OcrWordsPage(words), transform, plot_rect, "position_ocr")
 
 
 def reject_bad_position_calibration(calibration: AxisCalibration) -> str | None:
@@ -121,6 +239,11 @@ def reject_bad_position_calibration(calibration: AxisCalibration) -> str | None:
 
 def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray, plot: PlotBox) -> AxisCalibration:
     text_calibration = infer_text_order_axis_calibration(chart)
+    # This tier maps px->V LINEARLY between the extreme tick values and is
+    # reported as trusted. On a log X axis that mapping is silently, severely
+    # wrong (mid-plot reads ~16x high on a 0.1-100 V axis) -- refuse instead.
+    if _x_ticks_look_log is not None and _x_ticks_look_log(list(text_calibration.x_ticks_v)):
+        raise RuntimeError("log-spaced X ticks: grid-tier linear X mapping would mis-scale; refusing")
     y_fit = _major_horizontal_gridline_fit(image, plot, len(text_calibration.y_decades))
     y_positions = y_fit.centers
     if len(y_positions) != len(text_calibration.y_decades):

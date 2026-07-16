@@ -1135,6 +1135,56 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
 _AXIS_NUM_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 
 
+def _page_image_rects(pdf: Path, page_num: int) -> list[tuple[float, float, float, float]]:
+    """Figure-sized embedded-image rects on a page, in pt.
+
+    Some vendors (Toshiba) render each chart -- gridlines, traces AND tick
+    labels -- as one embedded raster image with no text objects. The image
+    rect is then the authoritative panel bbox: exact, and label-complete.
+    """
+    try:
+        with pymupdf.open(pdf) as doc:
+            infos = doc[page_num - 1].get_image_info()
+    except Exception:
+        return []
+    rects: list[tuple[float, float, float, float]] = []
+    for info in infos:
+        x0, y0, x1, y1 = (float(v) for v in info.get("bbox", (0.0, 0.0, 0.0, 0.0)))
+        if x1 - x0 >= 90.0 and y1 - y0 >= 90.0:
+            rects.append((x0, y0, x1, y1))
+    return rects
+
+
+def _caption_image_panel_bbox(
+    image_rects: list[tuple[float, float, float, float]],
+    title: DiagramTitle,
+    bbox: tuple[float, float, float, float] | None,
+) -> tuple[float, float, float, float] | None:
+    """Bind a caption to the embedded image directly above it, if any."""
+    tx0, ty0, tx1, _ = title.bbox_pt
+    tcx = (tx0 + tx1) / 2
+    best: tuple[float, tuple[float, float, float, float]] | None = None
+    for rect in image_rects:
+        x0, y0, x1, y1 = rect
+        if not (x0 <= tcx <= x1):
+            continue
+        gap = ty0 - y1  # caption sits just below the image bottom
+        if not (-10.0 <= gap <= 70.0):
+            continue
+        if bbox is not None:
+            # A rule-derived bbox must actually be (mostly) inside this image,
+            # else the image belongs to a different figure.
+            ix0, iy0 = max(bbox[0], x0), max(bbox[1], y0)
+            ix1, iy1 = min(bbox[2], x1), min(bbox[3], y1)
+            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
+            area = max(1e-9, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
+            if inter / area < 0.6:
+                continue
+        if best is None or gap < best[0]:
+            best = (gap, rect)
+    return best[1] if best else None
+
+
 def _expand_caption_bbox_to_axis_labels(
     page: PageText, bbox: tuple[float, float, float, float]
 ) -> tuple[float, float, float, float]:
@@ -1155,15 +1205,21 @@ def _expand_caption_bbox_to_axis_labels(
     # Only expand a side whose labels are actually MISSING from the bbox --
     # panels that already include their label gutters (Infineon caption pages)
     # must keep byte-identical crops, or pinned CropTransform strata shift.
-    has_left_labels = any(
-        _numeric(w) and w.x0 <= x0 + 40.0 and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
+    # "Has labels" requires a tick-like RUN (>=2 numerals in the gutter band):
+    # a single stray condition numeral (a "25" split off "Tj = 25 degC") must
+    # not suppress the expansion, or the crop stays clipped and calibration
+    # starves.
+    has_left_labels = 2 <= sum(
+        1
         for w in page.words
         if w.x0 >= x0 and w.x1 <= x1
+        and _numeric(w) and w.x0 <= x0 + 40.0 and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
     )
-    has_bottom_labels = any(
-        _numeric(w) and w.y1 >= y1 - 30.0 and x0 <= (w.x0 + w.x1) / 2 <= x1
+    has_bottom_labels = 2 <= sum(
+        1
         for w in page.words
         if w.y0 >= y0 and w.y1 <= y1
+        and _numeric(w) and w.y1 >= y1 - 30.0 and x0 <= (w.x0 + w.x1) / 2 <= x1
     )
     new_x0, new_y1 = x0, y1
     if not has_left_labels:
@@ -1199,7 +1255,11 @@ _SPEC_TABLE_FAMILIES = {
 }
 
 
-def _bbox_looks_like_spec_table(page: PageText, bbox: tuple[float, float, float, float]) -> bool:
+def _bbox_looks_like_spec_table(
+    page: PageText,
+    bbox: tuple[float, float, float, float],
+    own_families: frozenset[str] = frozenset(),
+) -> bool:
     """True when a candidate panel region reads like a ruled spec table.
 
     Two independent signals, either suffices:
@@ -1208,11 +1268,16 @@ def _bbox_looks_like_spec_table(page: PageText, bbox: tuple[float, float, float,
     - >=4 distinct parameter families (a bbox clipped to the row-name column of
       a table carries no headers, but no single chart mixes leakage, threshold,
       capacitance, charge and resistance).
+
+    `own_families` names the families the CANDIDATE itself was found by (e.g.
+    "charge" for a gate-charge axis-label panel). Those are guaranteed present
+    on a legitimate chart and must not count toward the table signal, else a
+    real chart with a few condition callouts (RDS(on), Vth, ...) trips it.
     """
     tokens = {_token_norm(w.text) for w in words_in_bbox(page.words, bbox)}
     if len(_SPEC_TABLE_MARKERS & tokens) >= 3:
         return True
-    return len(_SPEC_TABLE_FAMILIES & tokens) >= 4
+    return len((_SPEC_TABLE_FAMILIES - own_families) & tokens) >= 4
 
 
 def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) -> list[Word]:
@@ -1420,6 +1485,7 @@ def process_page_texts(
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
 
+            page_image_rects: list[tuple[float, float, float, float]] | None = None
             for title in caption_titles:
                 bbox = choose_caption_panel_bbox(page, title, grid_regions)
                 axis_label_bbox = choose_caption_axis_label_bbox_for_kind(page, title)
@@ -1438,7 +1504,16 @@ def process_page_texts(
                 if classify_chart(title.title, "") == "capacitances":
                     # Scoped to capacitance captions so gate-charge crops (and
                     # the Vpl parity corpus built on them) stay byte-identical.
-                    bbox = _expand_caption_bbox_to_axis_labels(page, bbox)
+                    if page_image_rects is None:
+                        page_image_rects = _page_image_rects(pdf, page.page_num)
+                    image_bbox = _caption_image_panel_bbox(page_image_rects, title, bbox)
+                    if image_bbox is not None:
+                        # Whole-figure raster (Toshiba): the image rect is the
+                        # exact, label-complete panel; rule-derived bboxes clip
+                        # the tick labels off.
+                        bbox = image_bbox
+                    else:
+                        bbox = _expand_caption_bbox_to_axis_labels(page, bbox)
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
@@ -1449,7 +1524,7 @@ def process_page_texts(
                     bbox = choose_axis_label_synthetic_bbox(page, axis_label_bbox)
                 if bbox is None:
                     continue
-                if _bbox_looks_like_spec_table(page, bbox):
+                if _bbox_looks_like_spec_table(page, bbox, own_families=frozenset({"charge"})):
                     # A ruled spec table both satisfies the >=4-h-rule grid test
                     # and contains "QG ... Gate charge ... (nC)" rows, so the
                     # axis-label heuristic would synthesize a phantom chart

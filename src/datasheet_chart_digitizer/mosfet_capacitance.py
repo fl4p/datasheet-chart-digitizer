@@ -53,6 +53,7 @@ from .capacitance_axis import (
     calibration_x_of_v,
     calibration_y_of_log_c,
     infer_gridline_axis_calibration,
+    infer_ocr_position_axis_calibration,
     infer_position_axis_calibration,
     infer_text_order_axis_calibration,
     reject_bad_position_calibration,
@@ -189,8 +190,25 @@ def process_chart(
         except Exception as grid_exc:
             axis_grid_error = str(grid_exc)
             axis_calibration = axis_text_order
+    axis_ocr_error: str | None = None
+    if not axis_calibration_is_trusted(axis_calibration):
+        # Raster-image charts (Toshiba) have no PDF text at all: position,
+        # grid AND text-order calibrations all fail. OCR the tick-label bands
+        # and run the same position fit; the shared residual gate decides.
+        try:
+            ocr_calibration = infer_ocr_position_axis_calibration(chart, image, plot)
+            rejection = reject_bad_position_calibration(ocr_calibration)
+            if rejection is None:
+                axis_calibration = ocr_calibration
+            else:
+                axis_ocr_error = rejection
+        except Exception as ocr_exc:
+            axis_ocr_error = str(ocr_exc)
     if axis_calibration is None:
-        axis_error = f"position: {axis_position_error}; grid: {axis_grid_error}; text_order: {axis_text_order_error}"
+        axis_error = (
+            f"position: {axis_position_error}; grid: {axis_grid_error}; "
+            f"text_order: {axis_text_order_error}; ocr: {axis_ocr_error}"
+        )
     axis_trusted = axis_calibration_is_trusted(axis_calibration)
     if axis_calibration is not None and not axis_trusted:
         axis_warning = (
@@ -310,6 +328,7 @@ def process_chart(
         "axis_position_error": axis_position_error,
         "axis_grid_error": axis_grid_error,
         "axis_text_order_error": axis_text_order_error,
+        "axis_ocr_error": axis_ocr_error,
         "axis_error": axis_error,
         "axis_warning": axis_warning,
         "axis_calibration_trusted": axis_trusted,

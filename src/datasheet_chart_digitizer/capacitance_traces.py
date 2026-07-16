@@ -59,7 +59,23 @@ def extract_trace_components(
     # pixels separates traces from the log grid. Work column-by-column instead
     # of relying on connected components: on some low-voltage parts Ciss and
     # Coss touch at the left edge and become one connected component.
-    mask = _trace_fragment_mask((roi < 90).astype(np.uint8), plot)
+    dark = (roi < 90).astype(np.uint8)
+    # Toshiba raster figures draw the grid in BLACK, same shade as the traces;
+    # the dark mask is then dominated by the grid (>10% of the ROI vs ~2-4% on
+    # gray-grid crops) and the intensity threshold separates nothing. Separate
+    # by stroke thickness instead: gridlines are 1 px, traces >=2 px, so a 2x2
+    # opening erases the grid. The plot frame is thick enough to survive and
+    # would track as flat phantom traces at the top/bottom decades -- blank a
+    # small frame margin. If the opening also destroys the traces, the band
+    # check below fails loudly rather than returning grid lines as data.
+    if float(dark.mean()) > 0.10:
+        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
+        dark[:margin, :] = 0
+        dark[-margin:, :] = 0
+        dark[:, :margin] = 0
+        dark[:, -margin:] = 0
+    mask = _trace_fragment_mask(dark, plot)
     centers_by_x = [_cluster_column_runs(mask[:, x]) for x in range(mask.shape[1])]
 
     band_samples = [[], [], []]

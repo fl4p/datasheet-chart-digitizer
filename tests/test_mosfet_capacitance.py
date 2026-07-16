@@ -1,3 +1,4 @@
+import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -678,6 +679,69 @@ class VectorExtractionTests(unittest.TestCase):
         self.assertTrue(mc._single_valued_by_x(dense))
         xs = [x for x, _ in dense]
         self.assertNotIn(60, xs)
+
+
+TK100E10N1 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/toshiba/TK100E10N1.pdf")
+_HAVE_TESSERACT = shutil.which("tesseract") is not None
+
+
+@unittest.skipUnless(TK100E10N1.exists(), "local TK100E10N1 datasheet not available")
+@unittest.skipUnless(_HAVE_TESSERACT, "tesseract not available for OCR axis calibration")
+class ToshibaRasterEndToEndTests(unittest.TestCase):
+    def test_ocr_calibrated_raster_digitization_matches_nameplate(self) -> None:
+        # Whole-figure raster chart: OCR position calibration (log-X) + black
+        # grid removed by stroke thickness. Pin against the table typ values
+        # @ VDS=50 V: Ciss 8800 / Coss 1500 / Crss 63 pF.
+        from datasheet_chart_digitizer import find_charts
+
+        with TemporaryDirectory(prefix="tk100e10n1-e2e-") as tmp:
+            out = Path(tmp)
+            # CLI-default render DPI. At higher DPI the 1-px black gridlines
+            # render 2 px and survive the 2x2 stroke-thickness opening; the
+            # semantic validation then (correctly) reports "suspect".
+            panels = find_charts.process_pdf(TK100E10N1, out, dpi=180)
+            caps = [panel for panel in panels if panel.kind == "capacitances"]
+            self.assertEqual(len(caps), 1)
+            panel = caps[0]
+            chart = {
+                "pdf": str(TK100E10N1),
+                "part": "TK100E10N1",
+                "page": panel.page,
+                "bbox_pt": list(panel.bbox_pt),
+                "crop_box_pt": list(panel.crop_box_pt),
+                "text": "",
+            }
+            crop_path = out / panel.crop_png
+            result = mc.process_chart(
+                chart, crop_path, out, Path("tk100e10n1"), TK100E10N1.parent
+            )
+
+            calibration = result["axis_calibration"]
+            self.assertIsNotNone(calibration)
+            self.assertEqual(calibration["source"], "position_ocr")
+            self.assertTrue(calibration["x_log"])
+            self.assertTrue(result["axis_calibration_trusted"])
+            self.assertEqual(result["trace_validation_status"], "pass")
+
+            import csv
+
+            with open(out / result["points"]) as fh:
+                rows = list(csv.DictReader(fh))
+        expected = {"Ciss": 8800.0, "Coss": 1500.0, "Crss": 63.0}
+        for name, typ_pf in expected.items():
+            pts = sorted(
+                (float(r["vds_V"]), float(r["cap_pF"]))
+                for r in rows
+                if r["trace"] == name and r.get("vds_V")
+            )
+            self.assertTrue(pts, f"{name} produced no calibrated points")
+            vds, cap = min(pts, key=lambda p: abs(p[0] - 50.0))
+            self.assertLess(abs(vds - 50.0) / 50.0, 0.1, f"{name}: no sample near 50 V")
+            self.assertLess(
+                abs(cap - typ_pf) / typ_pf,
+                0.15,
+                f"{name} @ {vds:.1f} V: {cap:.0f} pF vs table typ {typ_pf:.0f} pF",
+            )
 
 
 if __name__ == "__main__":
