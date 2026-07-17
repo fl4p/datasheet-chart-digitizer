@@ -188,5 +188,6 @@ voltage and normalized `RDS(on)`-temperature extraction already exist as direct
 Python APIs; CLI integration remains future work.
 The existing MOSFET capacitance digitizer is the first production-quality
 plugin and acts as the reference implementation for extraction, calibration,
-overlays, and validation status reporting. The Vpl digitizer is a standalone
-package plugin with a public result API and local human-reference regressions.
+overlays, and validation status reporting. The Vpl digitizer is a
+self-contained package component with a result-oriented Python API and
+regression checks against locally stored, human-reviewed datasheet samples.
