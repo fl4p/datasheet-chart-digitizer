@@ -7,6 +7,7 @@ from unittest import mock
 import cv2
 import numpy as np
 
+from datasheet_chart_digitizer import capacitance_traces as ct
 from datasheet_chart_digitizer import mosfet_capacitance as mc
 
 
@@ -74,6 +75,139 @@ class AxisCalibrationTests(unittest.TestCase):
         self.assertEqual(payload["y_offset"], 5.0)
         self.assertEqual(payload["y_gridline_px"], [30.0, 130.0, 230.0, 330.0, 430.0])
         self.assertEqual(payload["y_grid_candidate_count"], 21)
+
+    def test_trace_overlay_crosshairs_use_exact_consumed_tick_centers(self) -> None:
+        image = np.full((110, 110, 3), 255, dtype=np.uint8)
+        plot = mc.PlotBox(10, 10, 90, 90)
+        calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=10.0,
+            y_min_decade=0.0,
+            y_max_decade=2.0,
+            source="fixture",
+            x_ticks_v=(0.0, 10.0),
+            y_decades=(0.0, 2.0),
+        )
+        centers = []
+        labels = []
+
+        with (
+            mock.patch.object(
+                cv2,
+                "drawMarker",
+                side_effect=lambda _image, center, *_args, **_kwargs: centers.append(
+                    center
+                ),
+            ),
+            mock.patch.object(
+                cv2,
+                "putText",
+                side_effect=lambda _image, text, *_args, **_kwargs: labels.append(text),
+            ),
+        ):
+            mc.draw_trace_overlay(image, plot, [], calibration)
+
+        self.assertEqual(centers, [(10, 90), (90, 90), (10, 90), (10, 10)])
+        self.assertEqual(labels, ["0V", "10V", "1pF", "100pF"])
+
+    def test_sustained_ciss_coss_merge_is_flagged_but_crossing_is_not(self) -> None:
+        plot = mc.PlotBox(0, 0, 199, 199)
+        ciss = [(x, 80) for x in range(200)]
+        prefix_shared_coss = [(x, 81 if x < 80 else 120) for x in range(200)]
+        crossing_coss = [
+            (x, 80 + int(round(0.15 * (x - 100)))) for x in range(200)
+        ]
+
+        sustained = mc.ciss_coss_shared_spans(
+            [
+                mc.Trace("Ciss", 200, (0, 0, 200, 1), ciss),
+                mc.Trace("Coss", 200, (0, 0, 200, 40), prefix_shared_coss),
+            ],
+            plot,
+        )
+        crossing = mc.ciss_coss_shared_spans(
+            [
+                mc.Trace("Ciss", 200, (0, 0, 200, 1), ciss),
+                mc.Trace("Coss", 200, (0, 0, 200, 30), crossing_coss),
+            ],
+            plot,
+        )
+
+        self.assertEqual(len(sustained), 1)
+        self.assertEqual((sustained[0]["x0_px"], sustained[0]["x1_px"]), (0, 79))
+        self.assertEqual(crossing, [])
+
+    def test_shared_merge_detection_is_scale_invariant(self) -> None:
+        def detected(scale: int) -> list[dict[str, object]]:
+            width = 200 * scale
+            shared_end = 80 * scale
+            ciss = [(x, 80 * scale) for x in range(width)]
+            coss = [
+                (x, 81 * scale if x < shared_end else 120 * scale)
+                for x in range(width)
+            ]
+            return mc.ciss_coss_shared_spans(
+                [
+                    mc.Trace("Ciss", width, (0, 0, width, 1), ciss),
+                    mc.Trace("Coss", width, (0, 0, width, 40 * scale), coss),
+                ],
+                mc.PlotBox(0, 0, width - 1, width - 1),
+            )
+
+        one_x = detected(1)
+        two_x = detected(2)
+
+        self.assertEqual(len(one_x), 1)
+        self.assertEqual(len(two_x), 1)
+        self.assertAlmostEqual(
+            float(one_x[0]["span_fraction"]),
+            float(two_x[0]["span_fraction"]),
+            places=2,
+        )
+
+    def test_merged_tail_flatness_guard_repairs_identity_swap(self) -> None:
+        plot = mc.PlotBox(0, 0, 199, 199)
+        wrong_ciss = [
+            (x, 40 + int(round(39 * x / 169))) if x < 170 else (x, 79)
+            for x in range(200)
+        ]
+        wrong_coss = [
+            (x, 72 + int(round(7 * x / 169))) if x < 170 else (x, 79)
+            for x in range(200)
+        ]
+        crss = [(x, 140) for x in range(200)]
+        traces = [
+            mc.Trace("Ciss", 200, (0, 40, 200, 40), wrong_ciss),
+            mc.Trace("Coss", 200, (0, 72, 200, 8), wrong_coss),
+            mc.Trace("Crss", 200, (0, 140, 200, 1), crss),
+        ]
+
+        raw_summary = mc.trace_validation_summary(
+            mc.trace_semantic_diagnostics(traces, plot)
+        )
+        repaired, identity = mc.repair_merged_ciss_coss_identity(traces, plot)
+        repaired_checks = mc.trace_semantic_diagnostics(repaired, plot)["checks"]
+
+        self.assertIn("ciss_not_flatter_than_coss", raw_summary["reasons"])
+        self.assertTrue(identity["changed"])
+        self.assertEqual(
+            identity["reason"], "flatness_guard_repaired_merged_tail_swap"
+        )
+        self.assertTrue(repaired_checks["ciss_flatter_than_coss"])
+        self.assertEqual(len(mc.ciss_coss_shared_spans(repaired, plot)), 1)
+
+    def test_flatness_inversion_without_shared_tail_fails_closed(self) -> None:
+        plot = mc.PlotBox(0, 0, 199, 199)
+        traces = [
+            mc.Trace("Ciss", 200, (0, 40, 200, 80), [(x, 40 + x // 3) for x in range(200)]),
+            mc.Trace("Coss", 200, (0, 130, 200, 1), [(x, 130) for x in range(200)]),
+        ]
+
+        repaired, identity = mc.repair_merged_ciss_coss_identity(traces, plot)
+
+        self.assertEqual(repaired, traces)
+        self.assertFalse(identity["changed"])
+        self.assertEqual(identity["reason"], "no_shared_tail_or_single_crossing")
 
     def test_process_chart_writes_axis_debug_overlay_when_requested(self) -> None:
         image = np.full((80, 100, 3), 255, dtype=np.uint8)
@@ -169,10 +303,46 @@ class AxisCalibrationTests(unittest.TestCase):
                 )
 
             self.assertFalse(result["axis_calibration_trusted"])
+            self.assertEqual("unverified", result["status"])
+            self.assertEqual("axis_calibration_untrusted", result["status_reasons"][0])
+            self.assertFalse(result["physical_output_available"])
+            self.assertEqual(
+                {"qoss_pc": None, "vint_v": None, "coer_pf": None, "cotr_pf": None},
+                result["output_charge_reference"],
+            )
             self.assertIn("untrusted text-order axis fallback", result["axis_warning"])
             self.assertEqual(result["qoss_validation_error"], "untrusted axis calibration")
             rows = (root / "out" / str(result["points"])).read_text().splitlines()
-            self.assertTrue(rows[1].endswith(",,"))
+            self.assertTrue(rows[1].endswith(",,false"))
+
+    def test_active_axis_fit_error_overrides_structurally_trusted_calibration(self) -> None:
+        calibration = mc.AxisCalibration(
+            x_min_v=1.0,
+            x_max_v=100.0,
+            y_min_decade=1.0,
+            y_max_decade=4.0,
+            source="position_ocr",
+            x_ticks_v=(1.0, 10.0, 100.0),
+            y_decades=(1.0, 2.0, 3.0, 4.0),
+            x_log=True,
+            x_scale=0.01,
+            x_offset=-1.0,
+            y_scale=-0.01,
+            y_offset=4.0,
+        )
+        self.assertTrue(
+            mc._axis_result_is_trusted(
+                calibration, position_error=None, grid_error=None, ocr_error=None
+            )
+        )
+        self.assertFalse(
+            mc._axis_result_is_trusted(
+                calibration,
+                position_error="position x residual exceeds threshold",
+                grid_error=None,
+                ocr_error=None,
+            )
+        )
 
     def test_trace_validation_summary_flags_semantic_failures(self) -> None:
         diagnostics = {
@@ -194,6 +364,175 @@ class AxisCalibrationTests(unittest.TestCase):
         self.assertIn("ciss_coss_rank_swap_count", summary["reasons"])
         self.assertIn("crss_not_bottom", summary["reasons"])
         self.assertIn("ciss_not_flatter_than_coss", summary["reasons"])
+
+    def test_material_source_span_accepts_complete_stroke_short_of_plot_frame(self) -> None:
+        diagnostics = {
+            "Ciss": {"points": 275, "x_span_fraction": 0.685, "y_range_px": 17},
+            "Coss": {"points": 275, "x_span_fraction": 0.685, "y_range_px": 46},
+            "Crss": {"points": 275, "x_span_fraction": 0.685, "y_range_px": 60},
+            "checks": {
+                "common_samples": 275,
+                "ciss_coss_rank_swap_count": 1,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics)
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
+    def test_full_span_flat_trace_refuses_without_claiming_grid_capture(self) -> None:
+        diagnostics = {
+            "Ciss": {"points": 200, "x_span_fraction": 1.0, "y_range_px": 0},
+            "Coss": {"points": 200, "x_span_fraction": 1.0, "y_range_px": 80},
+            "Crss": {"points": 200, "x_span_fraction": 1.0, "y_range_px": 120},
+            "checks": {
+                "common_samples": 200,
+                "ciss_coss_rank_swap_count": 0,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics)
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertEqual(["Ciss_flat_full_span_unverified"], summary["reasons"])
+
+    def test_column_runs_keep_reseparated_crossing_curves_distinct(self) -> None:
+        column = np.zeros(80, dtype=np.uint8)
+        column[20:23] = 1
+        column[30:33] = 1
+
+        centers = mc._cluster_column_runs(column)
+
+        self.assertEqual([21.0, 31.0], centers)
+
+    def test_column_runs_merge_nearby_antialias_fragments_of_one_stroke(self) -> None:
+        column = np.zeros(80, dtype=np.uint8)
+        column[20:22] = 1
+        column[25:27] = 1
+
+        centers = mc._cluster_column_runs(column)
+
+        self.assertEqual([23.0], centers)
+
+    def test_reseparated_crossing_reconnects_both_upper_traces(self) -> None:
+        plot = mc.PlotBox(0, 0, 119, 199)
+        centers_by_x: list[list[float]] = []
+        assigned = {"Ciss": [], "Coss": [], "Crss": []}
+        for x in range(120):
+            steep = 30.0 + 0.35 * x
+            flat = 50.0 + 0.02 * x
+            if 50 <= x <= 70:
+                merged = (steep + flat) / 2.0
+                centers_by_x.append([merged, 150.0])
+                assigned["Ciss"].append((x, round(merged)))
+                assigned["Coss"].append((x, round(merged)))
+            else:
+                upper, lower = sorted((steep, flat))
+                centers_by_x.append([upper, lower, 150.0])
+                assigned["Ciss"].append((x, round(upper)))
+                # Model the greedy failure: both names stay on the upper
+                # source branch after the line-width-obscured crossing.
+                assigned["Coss"].append(
+                    (x, round(lower if x < 50 else upper))
+                )
+            assigned["Crss"].append((x, 150))
+
+        repaired = mc._repair_reseparated_upper_crossing(
+            centers_by_x, assigned, plot
+        )
+        traces = [
+            mc.Trace(name, 120, (0, 0, 120, 150), repaired[name])
+            for name in ("Ciss", "Coss", "Crss")
+        ]
+        repaired_ciss = dict(repaired["Ciss"])
+        repaired_coss = dict(repaired["Coss"])
+        coincident_crossing_columns = [
+            x for x in range(50, 71) if repaired_ciss[x] == repaired_coss[x]
+        ]
+
+        self.assertGreater(repaired["Ciss"][-1][1], repaired["Coss"][-1][1])
+        self.assertLessEqual(len(coincident_crossing_columns), 3)
+        self.assertEqual(
+            sorted(repaired_ciss[x] for x in range(50, 71)),
+            [repaired_ciss[x] for x in range(50, 71)],
+        )
+        self.assertEqual(1, mc.trace_semantic_diagnostics(traces, plot)["checks"]["ciss_coss_rank_swap_count"])
+        self.assertEqual([], mc.ciss_coss_shared_spans(traces, plot))
+
+    def test_unbounded_upper_merge_is_not_fabricated_into_a_crossing(self) -> None:
+        plot = mc.PlotBox(0, 0, 119, 199)
+        centers_by_x = [
+            [30.0 + x * 0.2, 50.0, 150.0] if x < 50 else [45.0, 150.0]
+            for x in range(120)
+        ]
+        assigned = {
+            "Ciss": [(x, round(centers[0])) for x, centers in enumerate(centers_by_x)],
+            "Coss": [
+                (x, round(centers[1] if len(centers) >= 3 else centers[0]))
+                for x, centers in enumerate(centers_by_x)
+            ],
+            "Crss": [(x, 150) for x in range(120)],
+        }
+
+        repaired = mc._repair_reseparated_upper_crossing(
+            centers_by_x, assigned, plot
+        )
+
+        self.assertEqual(assigned, repaired)
+
+    def test_crossing_approach_does_not_snap_to_neighbor_curve(self) -> None:
+        plot = mc.PlotBox(0, 0, 119, 199)
+        centers_by_x: list[list[float]] = []
+        assigned = {"Ciss": [], "Coss": [], "Crss": []}
+        for x in range(120):
+            source_coss = 30.0 + 0.35 * x
+            source_ciss = 50.0 + 0.02 * x
+            if 50 <= x <= 70:
+                merged = (source_coss + source_ciss) / 2.0
+                centers_by_x.append([merged, 150.0])
+                assigned["Ciss"].append((x, round(merged)))
+                assigned["Coss"].append((x, round(merged)))
+            else:
+                upper, lower = sorted((source_coss, source_ciss))
+                centers_by_x.append([upper, lower, 150.0])
+                assigned["Ciss"].append((x, round(source_ciss)))
+                assigned["Coss"].append(
+                    (
+                        x,
+                        round(
+                            source_coss + 0.25 * (x - 40)
+                            if 41 <= x < 50
+                            else source_coss
+                        ),
+                    )
+                )
+            assigned["Crss"].append((x, 150))
+
+        repaired = mc._repair_reseparated_upper_crossing(
+            centers_by_x, assigned, plot
+        )
+        repaired_coss = dict(repaired["Coss"])
+
+        for x in range(41, 50):
+            source_coss = 30.0 + 0.35 * x
+            source_ciss = 50.0 + 0.02 * x
+            self.assertLessEqual(
+                abs(repaired_coss[x] - source_coss),
+                ct.UPPER_CROSSING_MAX_SOURCE_SEATING_DISTANCE_PX,
+            )
+            self.assertLess(
+                abs(repaired_coss[x] - source_coss),
+                abs(repaired_coss[x] - source_ciss),
+            )
+        self.assertEqual(
+            sorted(repaired_coss[x] for x in range(35, 55)),
+            [repaired_coss[x] for x in range(35, 55)],
+        )
 
 
 class AnchorAssignmentTests(unittest.TestCase):
