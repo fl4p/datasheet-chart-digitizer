@@ -86,14 +86,6 @@ to PDF-point coordinates and recorded with `text_source=tesseract_fallback`.
 Missing, failed, or timed-out Tesseract runs leave the native result unchanged;
 they do not replace the normal finder path.
 
-If `.pdf.nop.csv` anchor tables are not next to the PDFs, pass their directory:
-
-```bash
-dsdig digitize-capacitance work/charts/charts.json \
-  --datasheet-root /path/to/anchor-csv-dir \
-  --out work/charts
-```
-
 Key capacitance-pipeline outputs:
 
 - `charts.json`: chart panel index.
