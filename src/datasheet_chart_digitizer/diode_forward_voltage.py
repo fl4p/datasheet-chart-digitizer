@@ -393,6 +393,7 @@ def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
 
 def _normalize_numeric_text(text: str) -> str:
     """Convert PDF scientific tick text to the decimal form the shared fitter accepts."""
+    text = text.replace("−", "-")
     if not _SCIENTIFIC_RE.fullmatch(text):
         return text
     return np.format_float_positional(float(text), trim="-")
@@ -402,7 +403,8 @@ def _select_axis(labels: list[TextLabel], hint: PlotBox, orientation: str) -> Nu
     numeric = [
         label
         for label in labels
-        if _NUMERIC_RE.fullmatch(label.text) or re.fullmatch(r"10\^[+-]?\d+", label.text)
+        if _NUMERIC_RE.fullmatch(_normalize_numeric_text(label.text))
+        or re.fullmatch(r"10\^[+-]?\d+", _normalize_numeric_text(label.text))
     ]
     if orientation == "x":
         nearby = [

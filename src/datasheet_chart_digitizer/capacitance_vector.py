@@ -145,6 +145,52 @@ def _vector_curve_edges(drawings: list[dict[str, object]], plot_rect) -> list[Ve
     return edges
 
 
+def _filled_path_centerline(
+    drawing: dict[str, object], plot_rect, *, bin_width: float = 0.8
+) -> list[tuple[float, float]]:
+    """Recover the centerline of a filled polygon used as a thick curve.
+
+    Some vector datasheets encode a curve as a sequence of overlapping filled
+    wedges instead of a stroked path.  Grouping the polygon vertices by x and
+    taking their median preserves the drawn center without tracing either edge.
+    Filled rectangles and plot frames are rejected by the required x/y span.
+    """
+
+    if drawing.get("type") != "f" or bin_width <= 0:
+        return []
+    buckets: dict[int, list[tuple[float, float]]] = {}
+    expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
+    for item in drawing.get("items", []):
+        if item[0] == "l":
+            vertices = (item[1], item[2])
+        elif item[0] == "c":
+            vertices = (item[1], item[2], item[3], item[4])
+        else:
+            continue
+        for vertex in vertices:
+            point = (float(vertex.x), float(vertex.y))
+            if not expanded.contains(point):
+                continue
+            key = int(round(point[0] / bin_width))
+            buckets.setdefault(key, []).append(point)
+    centerline = []
+    for values in buckets.values():
+        centerline.append(
+            (
+                float(np.median([point[0] for point in values])),
+                float(np.median([point[1] for point in values])),
+            )
+        )
+    centerline.sort()
+    if len(centerline) < 8:
+        return []
+    x_span = centerline[-1][0] - centerline[0][0]
+    ys = [point[1] for point in centerline]
+    if x_span < 0.35 * plot_rect.width or max(ys) - min(ys) < 0.1 * plot_rect.height:
+        return []
+    return centerline
+
+
 def _is_dark_stroke(color: object) -> bool:
     if not isinstance(color, tuple) or len(color) < 3:
         return False

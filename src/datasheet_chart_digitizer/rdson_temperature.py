@@ -22,6 +22,7 @@ from PIL import Image
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
     _chain_vector_components,
+    _filled_path_centerline,
     _resample_vector_trace_pixels,
     _vector_curve_edges,
 )
@@ -71,11 +72,14 @@ DIAG_VGS_ORDER = "legend_vgs_identity_inconsistent_with_low_temperature_rds"
 DIAG_CURVE_BINDING = "legend_curve_binding_ambiguous"
 
 _RDS_TITLE_RE = re.compile(
-    r"normalized\s+on[- ]state\s+resistance\s+vs\.?\s+temperature", re.I
+    r"normalized\s+(?:drain(?:-|\s+to\s+)source\s+)?"
+    r"on(?:[- ]state)?\s+resistance(?:\s+factor)?\s+"
+    r"(?:vs\.?|as\s+a\s+function\s+of)\s+(?:junction\s+)?temperature",
+    re.I,
 )
 _VGS_RE = re.compile(r"V\s*GS\s*=\s*(\d+(?:\.\d+)?)\s*V", re.I)
-_CASE_TEMPERATURE_AXIS_RE = re.compile(
-    r"case\s+temperature\s+\((?:°|q)\s*c\)", re.I
+_TEMPERATURE_AXIS_RE = re.compile(
+    r"(?:case|junction)\s+temperature\s*\((?:°|q)\s*c\)", re.I
 )
 
 
@@ -125,7 +129,7 @@ def digitize_pdf(pdf: Path, out_dir: Path, dpi: int = 180) -> list[dict[str, obj
                     traces = _extract_vector_traces(
                         panel, crop_path, calibration.plot
                     )
-                    legend = _legend_entries(panel)
+                    legend = _legend_entries(panel, traces)
                     curves = _bind_and_calibrate_curves(
                         traces, legend, calibration
                     )
@@ -150,7 +154,7 @@ def digitize_pdf(pdf: Path, out_dir: Path, dpi: int = 180) -> list[dict[str, obj
                         "status": status,
                         "diagnostics": reasons
                         or [
-                            "vgs_identity_bound_by_local_legend_stroke_geometry",
+                            "vgs_identity_bound_by_local_label_and_trace_geometry",
                             "normalized_rds_validated_at_25C",
                             "no_absolute_rds_or_temperature_interpolation",
                         ],
@@ -187,11 +191,12 @@ def _thresholds() -> dict[str, float]:
 def _rdson_temperature_titles(page: PageText) -> list[DiagramTitle]:
     """Split merged side-by-side Figure captions and keep RDS(T) only."""
     titles: list[DiagramTitle] = []
-    for line in group_words_into_lines(page.words):
+    lines = group_words_into_lines(page.words)
+    for line_index, line in enumerate(lines):
         starts = [
             index
             for index, word in enumerate(line)
-            if word.text.lower().rstrip(".:") == "figure"
+            if word.text.lower().rstrip(".:") in {"figure", "fig"}
             and index + 1 < len(line)
         ]
         if not starts:
@@ -199,15 +204,44 @@ def _rdson_temperature_titles(page: PageText) -> list[DiagramTitle]:
         starts.append(len(line))
         for start, end in zip(starts, starts[1:]):
             segment = line[start:end]
+            segment_bbox = line_bbox(segment)
             text = line_text(segment)
-            match = re.match(r"(?i)^Figure\s+(\d+)[\.:]?\s+(.+)$", text)
+            match = re.match(r"(?i)^(?:Figure|Fig\.?)\s+(\d+)[\.:]?\s+(.+)$", text)
+            if match is None or _RDS_TITLE_RE.search(match.group(2)) is None:
+                continuation = []
+                for following in lines[line_index + 1 : line_index + 3]:
+                    following_bbox = line_bbox(following)
+                    if following_bbox[1] - segment_bbox[3] > 18.0:
+                        break
+                    local = [
+                        word
+                        for word in following
+                        if segment_bbox[0] - 8.0
+                        <= 0.5 * (word.x0 + word.x1)
+                        <= segment_bbox[2] + 8.0
+                    ]
+                    if local:
+                        continuation.extend(local)
+                        local_bbox = line_bbox(local)
+                        segment_bbox = (
+                            min(segment_bbox[0], local_bbox[0]),
+                            segment_bbox[1],
+                            max(segment_bbox[2], local_bbox[2]),
+                            local_bbox[3],
+                        )
+                text = " ".join(
+                    filter(None, (line_text(segment), line_text(continuation)))
+                )
+                match = re.match(
+                    r"(?i)^(?:Figure|Fig\.?)\s+(\d+)[\.:]?\s+(.+)$", text
+                )
             if match is None or _RDS_TITLE_RE.search(match.group(2)) is None:
                 continue
             titles.append(
                 DiagramTitle(
                     number=int(match.group(1)),
                     title=match.group(2).strip(),
-                    bbox_pt=line_bbox(segment),
+                    bbox_pt=segment_bbox,
                     line_text=text,
                 )
             )
@@ -245,9 +279,18 @@ def _build_panel(
         + 0.2 * abs(0.5 * (item[0] + item[2]) - tcx),
     )
     height = region[3] - region[1]
+    expanded_top = max(0.0, region[1] - PANEL_TOP_EXPANSION_FRACTION * height)
+    above_text = " ".join(
+        word.text
+        for word in words_in_bbox(
+            page.words,
+            (region[0] - 8.0, expanded_top, region[2] + 8.0, region[1]),
+        )
+    )
+    top = expanded_top if _VGS_RE.search(above_text) else max(0.0, region[1] - 8.0)
     bbox = (
         max(0.0, region[0] - 8.0),
-        max(0.0, region[1] - PANEL_TOP_EXPANSION_FRACTION * height),
+        top,
         min(page.width_pt, region[2] + 8.0),
         min(title.bbox_pt[1] - 2.0, region[3] + 8.0),
     )
@@ -309,7 +352,7 @@ def _style_key(color: object) -> tuple[float, float, float] | None:
     if not isinstance(color, tuple) or len(color) < 3:
         return None
     rgb = tuple(round(float(value), 4) for value in color[:3])
-    if sum(rgb) < 0.15 or max(rgb) - min(rgb) > 0.45:
+    if sum(rgb) < 0.15 or max(rgb) < 0.4 or max(rgb) - min(rgb) > 0.45:
         return rgb
     return None
 
@@ -329,14 +372,20 @@ def _extract_vector_traces(
     best: dict[tuple[float, float, float], tuple[float, VectorTrace]] = {}
     with pymupdf.open(panel.pdf) as document:
         for drawing in document[panel.page - 1].get_drawings():
-            style = _style_key(drawing.get("color"))
+            style = _style_key(drawing.get("color") or drawing.get("fill"))
             if style is None:
                 continue
-            normalized = dict(drawing)
-            normalized["color"] = (0.0, 0.0, 0.0)
-            for component in _chain_vector_components(
-                _vector_curve_edges([normalized], rect)
-            ):
+            if drawing.get("type") == "f":
+                components = [_filled_path_centerline(drawing, rect)]
+            else:
+                normalized = dict(drawing)
+                normalized["color"] = (0.0, 0.0, 0.0)
+                components = _chain_vector_components(
+                    _vector_curve_edges([normalized], rect)
+                )
+            for component in components:
+                if not component:
+                    continue
                 xs, ys = zip(*component)
                 x_fraction = (max(xs) - min(xs)) / rect.width
                 y_fraction = (max(ys) - min(ys)) / rect.height
@@ -362,12 +411,15 @@ def _extract_vector_traces(
     return traces
 
 
-def _legend_entries(panel: ChartPanel) -> list[LegendEntry]:
+def _legend_entries(
+    panel: ChartPanel, traces: list[VectorTrace]
+) -> list[LegendEntry]:
     """Bind each local VGS legend row to its adjacent stroke style."""
     page_text = run_text_bbox(Path(panel.pdf))[panel.page - 1]
     lines = group_words_into_lines(words_in_bbox(page_text.words, panel.bbox_pt))
     rows: list[tuple[float, float, float]] = []
     for line in lines:
+        before = len(rows)
         for index in range(len(line) - 4):
             words = line[index : index + 5]
             text = " ".join(word.text for word in words)
@@ -378,8 +430,19 @@ def _legend_entries(panel: ChartPanel) -> list[LegendEntry]:
             rows.append(
                 (float(match.group(1)), bbox[0], 0.5 * (bbox[1] + bbox[3]))
             )
+        if len(rows) == before:
+            text = line_text(line)
+            for match in _VGS_RE.finditer(text):
+                bbox = line_bbox(line)
+                rows.append(
+                    (float(match.group(1)), bbox[0], 0.5 * (bbox[1] + bbox[3]))
+                )
+    rows = list(dict.fromkeys(rows))
     if not rows:
         raise CurveBindingError("legend: no local VGS labels")
+    if len(rows) == 1 and len(traces) == 1:
+        gate_voltage, _label_x0, row_y = rows[0]
+        return [LegendEntry(gate_voltage, traces[0].style_key, row_y)]
 
     entries: list[LegendEntry] = []
     with pymupdf.open(panel.pdf) as document:
@@ -387,7 +450,7 @@ def _legend_entries(panel: ChartPanel) -> list[LegendEntry]:
         for gate_voltage, label_x0, row_y in rows:
             matches = []
             for drawing in drawings:
-                style = _style_key(drawing.get("color"))
+                style = _style_key(drawing.get("color") or drawing.get("fill"))
                 if style is None:
                     continue
                 for item in drawing.get("items", []):
@@ -462,7 +525,7 @@ def _validation_reasons(
         calibration.x_axis.model == "linear"
         and min(x_ticks) < 0 < max(x_ticks)
         and _RDS_TITLE_RE.search(panel.title)
-        and _CASE_TEMPERATURE_AXIS_RE.search(panel.text.replace("º", "°"))
+        and _TEMPERATURE_AXIS_RE.search(panel.text.replace("º", "°"))
     ):
         reasons.append(DIAG_AXIS_IDENTITY)
     if max(calibration.x_axis.residual_px, calibration.y_axis.residual_px) > MAX_AXIS_RESIDUAL_PX:

@@ -24,6 +24,7 @@ from datasheet_chart_digitizer.rdson_temperature import (
     CurveBindingError,
     PanelCalibration,
     VectorTrace,
+    _RDS_TITLE_RE,
     _bind_and_calibrate_curves,
     _draw_overlay,
     _rdson_temperature_titles,
@@ -94,6 +95,22 @@ def _curve(
 
 
 class RdsonTemperatureUnitTests(unittest.TestCase):
+    def test_title_match_accepts_common_normalized_rdson_temperature_phrasings(self) -> None:
+        accepted = [
+            "Normalized On-State Resistance vs Temperature",
+            "Normalized Drain to Source On-State Resistance vs Junction Temperature",
+            (
+                "Normalized drain-source on-state resistance factor "
+                "as a function of junction temperature"
+            ),
+        ]
+        for title in accepted:
+            with self.subTest(title=title):
+                self.assertIsNotNone(_RDS_TITLE_RE.search(title))
+        self.assertIsNone(
+            _RDS_TITLE_RE.search("Drain-source on-state resistance vs current")
+        )
+
     def test_merged_captions_keep_only_normalized_rdson_temperature(self):
         texts = (
             "Figure 7. Normalized On-State Resistance vs Drain Current "
@@ -213,6 +230,28 @@ class RdsonTemperatureUnitTests(unittest.TestCase):
 
 
 class RdsonTemperatureRealCorpusTests(unittest.TestCase):
+    def test_onsemi_filled_vector_curve_and_unicode_negative_ticks_are_numeric(self):
+        pdf = Path(
+            os.environ.get(
+                "DSDIG_DATASHEET_ROOT",
+                "/Users/fab/dev/pv/pwr-mosfet-lib/datasheets",
+            )
+        ) / "onsemi/FDP3682.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus fixture: {pdf}")
+        with tempfile.TemporaryDirectory() as tmp:
+            results = digitize_pdf(pdf, Path(tmp))
+        self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual((result["panel"]["page"], result["panel"]["diagram"]), (4, 10))
+        self.assertEqual([curve["gate_voltage_v"] for curve in result["curves"]], [10.0])
+        self.assertEqual(
+            [tick["value"] for tick in result["x_axis"]["ticks"]],
+            [-80.0, -40.0, 0.0, 40.0, 80.0, 120.0, 160.0, 200.0],
+        )
+        self.assertAlmostEqual(result["curves"][0]["normalized_rds_on_at_25c"], 1.0, delta=0.06)
+
     def test_three_ti_layouts_are_numeric_local_and_legend_bound(self):
         corpus = Path(
             os.environ.get(
