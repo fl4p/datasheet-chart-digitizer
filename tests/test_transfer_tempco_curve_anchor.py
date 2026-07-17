@@ -58,3 +58,32 @@ def test_collapsed_points_are_excluded(tmp_path):
     assert stats["excluded_collapsed_hot"] > 0
     hot = curves[1]
     assert max(v for v, _i in hot.points) <= 8.0 - 0.8 + 1e-9
+
+
+def test_span_relative_conflict_fires_on_logic_level_scale(tmp_path):
+    """RJK0853 known-bad: a steep logic-level curve with the pivot offset right.
+
+    Absolute cold RMS stays ~0.1 V (under the 0.35 V absolute bound), but on a
+    part whose overdrive span is <1 V that is a screaming figure-vs-figure
+    conflict; the span-relative guard must refuse it.
+    """
+    import json
+
+    from datasheet_chart_digitizer.transfer_tempco_curve_anchor import evaluate_part
+
+    rows = ["curve_id,temperature_c,Vgs_V,Id_A,collapsed"]
+    # Steep curve: 44 A over ~0.5 V of gate swing (like the Renesas part).
+    for i in np.linspace(0.5, 44, 60):
+        rows.append(f"curve_1,25,{2.3 + 0.5*(i/44)**0.5:.5f},{i:.4f},0")
+        rows.append(f"curve_2,75,{2.2 + 0.5*(i/44)**0.5:.5f},{i:.4f},0")
+    csv_path = tmp_path / "points.csv"
+    csv_path.write_text("\n".join(rows) + "\n")
+    anchor = {
+        "manufacturer": "T", "part": "SYNTH-LOGIC", "id_gc_a": 40.0,
+        "vpl_v": 3.05, "vpl_id_a": 40.0, "vgs_drive_v": 4.5,
+        "vds_cond_v": 25.0, "vpl_source": "synthetic", "status": "test",
+    }
+    manifest_entry = {"points_csv": csv_path.name, "overlay": "n/a"}
+    result = evaluate_part(anchor, manifest_entry, tmp_path)
+    assert any("span-relative" in g or "anchor-curve-conflict" in g
+               for g in result["guard_reasons"]), json.dumps(result["guard_reasons"])

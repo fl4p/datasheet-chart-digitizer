@@ -42,6 +42,12 @@ P_FIXED = 2.0
 # Drive strings that transfer to the Si 0/10V plateau semantics unchanged.
 SI_DRIVE_MIN_V = 8.0
 LOGIC_DRIVE_MIN_V = 4.0
+# The absolute cold-conflict bounds (0.35/0.75 V) are calibrated for 10V-drive
+# parts. A logic-level device compresses its whole active range into <1 V, so
+# the anchor-vs-curve conflict must ALSO be judged relative to the fitted
+# overdrive span or it silently stops guarding (RJK0853: 121 mV RMS "passed"
+# while being ~16% of the span — the pivot sat 0.25 V right of the curve).
+MAX_COLD_CONFLICT_SPAN_FRACTION = 0.10
 
 
 def load_flagged_curves(path: Path) -> tuple[list[TransferCurve], dict[str, int]]:
@@ -157,11 +163,28 @@ def evaluate_part(
             fit = fit_saturation_tempco(curves, model_anchor)
             fit["collapse_exclusions"] = collapse_stats
             fit["vth_identification"] = vth_fit
+            overdrive_span = max(
+                v for v, _i in curves[0].points
+            ) - vth_fit["vth_eff_v"]
+            span_fraction = (
+                fit["cold_anchor_check_rms_v"] / overdrive_span
+                if overdrive_span > 0
+                else math.inf
+            )
+            fit["cold_conflict_span_fraction"] = span_fraction
             if fit["cold_anchor_conflict"]:
                 guards.append(
                     "anchor-curve-conflict: p=2 law cannot meet both the exact "
                     "(Vpl,Id) pivot and the verified 25 C curve within "
                     f"RMS {MAX_COLD_CONFLICT_RMS_V:g} V / max {MAX_COLD_CONFLICT_ABS_V:g} V"
+                )
+            elif span_fraction > MAX_COLD_CONFLICT_SPAN_FRACTION:
+                guards.append(
+                    "anchor-curve-conflict(span-relative): cold RMS is "
+                    f"{span_fraction:.0%} of the fitted overdrive span "
+                    f"(> {MAX_COLD_CONFLICT_SPAN_FRACTION:.0%}) — the gate-charge "
+                    "pivot and the transfer curve disagree beyond digitization "
+                    "uncertainty at this part's voltage scale"
                 )
             guards.extend(_ztc_guards(fit, curves))
         except Exception as exc:  # noqa: BLE001 - guard bucket, not silent pass
