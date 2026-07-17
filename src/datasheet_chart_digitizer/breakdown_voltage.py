@@ -292,6 +292,7 @@ def _draw_overlay(image: np.ndarray, plot: PlotBox, points: list[tuple[int, int]
         color=(255, 0, 0),
         marker_size=10,
         font_scale=0.35,
+        x_labels_below=True,  # keep labels in the bottom margin, clear of data points
     )
     return overlay
 

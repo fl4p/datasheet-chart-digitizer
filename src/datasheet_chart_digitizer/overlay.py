@@ -59,6 +59,7 @@ def draw_axis_ticks(
     unit_y: str = "",
     line_aa: bool = False,
     halo: bool = False,
+    x_labels_below: bool = False,
 ) -> np.ndarray:
     """Crosshair marker + ``{value:g}{unit}`` label at each calibration tick.
 
@@ -69,10 +70,15 @@ def draw_axis_ticks(
     (callers that assert marker order rely on this).
 
     ``line_aa`` anti-aliases the crosshair markers; ``halo`` draws a white outline
-    behind each label so it stays legible over dark traces (diode overlays). Color,
-    marker size, font scale and unit suffixes cover the per-plugin variation."""
+    behind each label so it stays legible over dark traces (diode overlays).
+    ``x_labels_below`` places the X labels just BELOW the frame (in the crop's
+    bottom margin) instead of just inside the bottom axis — use it when the plot
+    area is dense near the bottom axis and inside labels would occlude data points
+    (breakdown_voltage). Color, marker size, font scale and unit suffixes cover the
+    per-plugin variation."""
     x0, y0, x1, y1 = int(plot.x0), int(plot.y0), int(plot.x1), int(plot.y1)
     marker_args = (marker_size, thickness) + ((cv2.LINE_AA,) if line_aa else ())
+    x_label_y = y1 + 24 if x_labels_below else y1 - 5
 
     def _label(text: str, org: tuple[int, int]) -> None:
         if halo:
@@ -85,7 +91,7 @@ def draw_axis_ticks(
         cv2.drawMarker(image, (x, y1), color, cv2.MARKER_CROSS, *marker_args)
         text = f"{value:g}{unit_x}"
         width = cv2.getTextSize(text, _FONT, font_scale, thickness)[0][0]
-        _label(text, (min(max(x0 + 2, x - width // 2), x1 - width), y1 - 5))
+        _label(text, (min(max(x0 + 2, x - width // 2), x1 - width), x_label_y))
     for pixel, value in y_ticks:
         y = int(round(pixel))
         cv2.drawMarker(image, (x0, y), color, cv2.MARKER_CROSS, *marker_args)
