@@ -60,6 +60,9 @@ class Sample:
     allowed_source_gap_fraction: float = 0.05
     minimum_span_fraction: float = 0.65
     anchor_repairs: tuple[tuple[int, tuple[tuple[int, int], ...]], ...] = ()
+    # Raise only for parts whose PRINTED curves genuinely merge (verified in
+    # the source ink): the sustained-collapse flag marks those rows no-T-info.
+    allowed_collapse_fraction: float = 0.1
 
 
 SAMPLES = [
@@ -78,6 +81,29 @@ SAMPLES = [
         identity_crossing_y=500,
         upper_extensions=((0, 544, 240, 260),),
         allowed_source_gap_fraction=0.1,
+        # The printed curves merge into ONE stroke over rows ~458-497 (source
+        # ink shows a single run there): anchor both branches to the merged
+        # centerline instead of letting the group tracker fake +/-edge
+        # separation; the collapse flag marks those rows no-T-info.
+        anchor_repairs=(
+            (
+                0,
+                (
+                    (326, 450), (323, 455), (321, 460), (318, 465),
+                    (314, 470), (310, 475), (306, 480), (302, 485),
+                    (298, 490), (294, 495), (288, 500),
+                ),
+            ),
+            (
+                1,
+                (
+                    (334, 450), (330, 455), (325, 460), (318, 465),
+                    (314, 470), (310, 475), (306, 480), (302, 485),
+                    (298, 490), (294, 495), (292, 500),
+                ),
+            ),
+        ),
+        allowed_collapse_fraction=0.15,
     ),
     Sample("05_diotec_DIT095N08", "DIT095N08", "Diotec", (340, 228, 656, 613), (3, 7, 0, 100, "linear"), 2),
     Sample("06_epc_space_EPC7018GSH", "EPC7018GSH", "EPC Space", (121, 179, 672, 597), (2, 5, 0, 350, "linear"), 3, colors_rgb=((0, 115, 185), (235, 35, 35), (65, 160, 120))),
@@ -96,6 +122,12 @@ SAMPLES = [
         secondary_use_ocr_masks=False,
         split_y=520,
         grouped_seeded=True,
+        # Above row ~252 the two printed curves merge into one stroke to the
+        # top border (single ink run; the crossing is inside the merged band).
+        # Both anchor sets continue on that shared centerline — previously
+        # they converged to one endpoint at (564,255) and raw tracking above
+        # it made the branches tangle ("magnetic"). Shared rows get the
+        # collapse flag: identity through the merged crossing is unresolvable.
         anchor_repairs=(
             (
                 0,
@@ -104,6 +136,9 @@ SAMPLES = [
                     (524, 356), (529, 342), (534, 329), (538, 316),
                     (543, 303), (548, 289), (552, 276), (555, 270),
                     (557, 265), (564, 255),
+                    (566, 248), (568, 240), (570, 232), (572, 228),
+                    (574, 220), (575, 216), (576, 212), (578, 204),
+                    (580, 200),
                 ),
             ),
             (
@@ -113,16 +148,32 @@ SAMPLES = [
                     (536, 356), (540, 342), (544, 329), (548, 316),
                     (553, 303), (557, 289), (562, 276), (564, 270),
                     (565, 265), (564, 255),
+                    (566, 248), (568, 240), (570, 232), (572, 228),
+                    (574, 220), (575, 216), (576, 212), (578, 204),
+                    (580, 200),
                 ),
             ),
         ),
+        allowed_collapse_fraction=0.2,
     ),
     Sample("09_hxy_IMT65R020M2HXUMA1-HXY", "IMT65R020M2HXUMA1-HXY", "HXY", (276, 215, 815, 613), (0, 15, 0, 200, "linear"), 2),
     Sample("10_hxy_IPD65R380E6ATMA1-HXY", "IPD65R380E6ATMA1-HXY", "HXY", (218, 256, 709, 637), (0, 16, 0, 20, "linear"), 2),
     Sample("11_hxy_IPT65R033G7XTMA1-HXY", "IPT65R033G7XTMA1-HXY", "HXY", (123, 177, 673, 581), (0, 15, 0, 140, "linear"), 2),
-    # The hot curve passes under the erased "TJ" callout (rows ~424-455): the
-    # bridged span is interpolation over a text occlusion, not missing curve.
-    Sample("12_littelfuse_MTI145WX100GD-SMD", "MTI145WX100GD-SMD", "Littelfuse", (118, 174, 567, 520), (2, 6, 0, 300, "linear"), 2, allowed_source_gap_fraction=0.12),
+    # Partial-height gridline stubs at x~398 (4.49 V) and x~454 (4.99 V)
+    # survive the generic vertical-line removal; an unseeded candidate riding
+    # the x=398 stub outscores the true curvy 25C knee (long, straight, zero
+    # violations) and then snaps onto the upper curve. Seed both curves on
+    # their ink and erase the stubs (chart furniture, not curve evidence).
+    Sample(
+        "12_littelfuse_MTI145WX100GD-SMD",
+        "MTI145WX100GD-SMD",
+        "Littelfuse",
+        (118, 174, 567, 520),
+        (2, 6, 0, 300, "linear"),
+        2,
+        ((346, 437), (378, 440)),
+        erases=((394, 430, 403, 519), (450, 430, 459, 519)),
+    ),
     Sample("13_mcc_MCACL170N08Y-TP", "MCACL170N08Y-TP", "MCC", (120, 178, 626, 553), (0, 6, 0, 250, "linear"), 2, ((531, 403), (539, 403)), grouped_seeded=True, identity_crossing_y=328, allowed_source_gap_fraction=0.1),
     Sample("14_nce_NCEP1520BK", "NCEP1520BK", "NCE", (147, 201, 653, 566), (0, 3, 0, 20, "linear"), 2),
     Sample("15_nce_NCEP15T14", "NCEP15T14", "NCE", (126, 172, 622, 563), (0, 8, 0, 200, "linear"), 2, ((419, 490), (428, 490)), grouped_seeded=True, identity_crossing_y=446),
@@ -543,7 +594,12 @@ def _repair_trace_span_from_anchors(
 
 
 CALIBRATION_INK = (0, 90, 200)
-COLLAPSE_GRAY = (105, 105, 105)
+# Merged-stroke segments must read as EXTRACTED-shared, not as leftover source
+# ink: a solid gray line over the black source stroke is camouflage. Bright
+# violet dashes exist nowhere in the source charts or the curve palette.
+COLLAPSE_INK = (150, 0, 235)
+COLLAPSE_DASH_ON = 6
+COLLAPSE_DASH_OFF = 5
 
 
 def _label(draw: ImageDraw.ImageDraw, xy, text: str, anchor: str, size: int = 15) -> None:
@@ -616,12 +672,14 @@ def _overlay(
         draw.line(trace.pixels, fill=(255, 255, 255), width=5, joint="curve")
     for index, trace in enumerate(traces):
         for collapsed, run in _trace_segments(trace.pixels, collapsed_rows[index]):
-            draw.line(
-                run,
-                fill=COLLAPSE_GRAY if collapsed else COLORS[index],
-                width=3,
-                joint="curve",
-            )
+            if not collapsed:
+                draw.line(run, fill=COLORS[index], width=3, joint="curve")
+                continue
+            period = COLLAPSE_DASH_ON + COLLAPSE_DASH_OFF
+            for start in range(0, len(run) - 1, period):
+                dash = run[start : start + COLLAPSE_DASH_ON + 1]
+                if len(dash) >= 2:
+                    draw.line(dash, fill=COLLAPSE_INK, width=4, joint="curve")
     _draw_calibration_marks(draw, plot, axis)
     pad = 8
     legend_h = 36 + 25 * len(traces) + (25 if any_collapse else 0)
@@ -640,7 +698,8 @@ def _overlay(
         )
     if any_collapse:
         y = plot.y0 + 42 + 25 * len(traces)
-        draw.line((plot.x0 + 18, y + 7, plot.x0 + 51, y + 7), fill=COLLAPSE_GRAY, width=4)
+        for x in range(plot.x0 + 18, plot.x0 + 52, 11):
+            draw.line((x, y + 7, min(x + 6, plot.x0 + 51), y + 7), fill=COLLAPSE_INK, width=4)
         draw.text(
             (plot.x0 + 60, y),
             "merged strokes — no per-T info",
@@ -845,7 +904,7 @@ def main() -> None:
                     )
             collapse = maximum_pairwise_collapse_fraction(traces)
             vector_identity = sample.part in VECTOR_PARTS
-            if collapse > 0.1 and not vector_identity:
+            if collapse > sample.allowed_collapse_fraction and not vector_identity:
                 raise RuntimeError(
                     f"digitized branches collapse over {collapse:.1%} of common rows"
                 )
