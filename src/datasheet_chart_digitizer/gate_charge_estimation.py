@@ -5,6 +5,11 @@ import re
 import numpy as np
 import pymupdf
 
+
+_NATIVE_Y_TICK_MAX = 30.0
+_OCR_Y_TICK_RAW_MAX = 50.0
+
+
 def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> float | None:
     ticks = getattr(chart, "y_ticks", None) or []
     if len(ticks) < 2:
@@ -49,6 +54,7 @@ def _local_y_ticks_for_plot(
         words = page.get_text("words")
     except Exception:
         return candidates
+    repair_ocr_decimal = getattr(page, "text_source", "") == "tesseract_fallback"
     for word in words:
         wx0, wy0, wx1, wy1 = [float(v) for v in word[:4]]
         text = str(word[4])
@@ -63,14 +69,22 @@ def _local_y_ticks_for_plot(
         value = _parse_numeric_label(text)
         if value is None:
             continue
-        if value < -20 or value > 30:
+        # ``45`` is the one sequence-proven OCR decimal-loss case (4.5 V).
+        # Keeping this bound below 100 prevents a nearby VDS=100 V condition
+        # label from joining and fragmenting the true VGS tick column.
+        upper_bound = (
+            _OCR_Y_TICK_RAW_MAX if repair_ocr_decimal else _NATIVE_Y_TICK_MAX
+        )
+        if value < -20 or value > upper_bound:
             continue
         candidates["left" if left_band else "right"].append((value, cy, cx))
 
     axes = [
         axis
         for side in candidates.values()
-        for axis in _cluster_y_tick_columns(side)
+        for axis in _cluster_y_tick_columns(
+            side, repair_missing_decimal=repair_ocr_decimal
+        )
     ]
     axes = [axis for axis in axes if len(axis) >= 2]
     if not axes:
@@ -80,6 +94,8 @@ def _local_y_ticks_for_plot(
 
 def _cluster_y_tick_columns(
     candidates: list[tuple[float, float, float]],
+    *,
+    repair_missing_decimal: bool = False,
 ) -> list[list[tuple[float, float]]]:
     """Split numeric labels into distinct columns and stacked axis runs."""
 
@@ -105,7 +121,8 @@ def _cluster_y_tick_columns(
                 continue
             axes.extend(
                 _normalize_y_tick_candidate_runs(
-                    [(value, y) for value, y, _x in rows[start:stop]]
+                    [(value, y) for value, y, _x in rows[start:stop]],
+                    repair_missing_decimal=repair_missing_decimal,
                 )
             )
             start = stop
@@ -138,15 +155,21 @@ def _best_y_axis_for_panel(
         words = page.get_text("words")
     except Exception:
         return None
+    repair_ocr_decimal = getattr(page, "text_source", "") == "tesseract_fallback"
     for word in words:
         wx0, wy0, wx1, wy1 = [float(value) for value in word[:4]]
         value = _parse_numeric_label(str(word[4]))
-        if value is None or value < -20 or value > 30:
+        upper_bound = (
+            _OCR_Y_TICK_RAW_MAX if repair_ocr_decimal else _NATIVE_Y_TICK_MAX
+        )
+        if value is None or value < -20 or value > upper_bound:
             continue
         candidates.append((value, 0.5 * (wy0 + wy1), 0.5 * (wx0 + wx1)))
 
     best: tuple[float, list[tuple[float, float]], float] | None = None
-    for ticks in _cluster_y_tick_columns(candidates):
+    for ticks in _cluster_y_tick_columns(
+        candidates, repair_missing_decimal=repair_ocr_decimal
+    ):
         if len(ticks) < 2:
             continue
         ys = [y for _value, y in ticks]
@@ -187,15 +210,21 @@ def _best_y_axis_for_panel(
 
 def _normalize_y_tick_candidates(
     candidates: list[tuple[float, float]],
+    *,
+    repair_missing_decimal: bool = False,
 ) -> list[tuple[float, float]]:
     """Collapse labels on one side of a plot into a monotone y-axis."""
 
-    runs = _normalize_y_tick_candidate_runs(candidates)
+    runs = _normalize_y_tick_candidate_runs(
+        candidates, repair_missing_decimal=repair_missing_decimal
+    )
     return max(runs, key=_y_tick_run_score) if runs else []
 
 
 def _normalize_y_tick_candidate_runs(
     candidates: list[tuple[float, float]],
+    *,
+    repair_missing_decimal: bool = False,
 ) -> list[list[tuple[float, float]]]:
     """Return maximal linear descending runs from one label column."""
 
@@ -215,6 +244,9 @@ def _normalize_y_tick_candidate_runs(
         return []
 
     ticks.sort(key=lambda item: item[1])
+    if repair_missing_decimal:
+        repaired = _repair_single_missing_decimal(ticks)
+        ticks = repaired if repaired != ticks else [tick for tick in ticks if tick[0] <= 30]
     valid: list[tuple[int, int, list[tuple[float, float]]]] = []
     for start in range(len(ticks) - 1):
         for stop in range(start + 2, len(ticks) + 1):
@@ -244,6 +276,42 @@ def _normalize_y_tick_candidate_runs(
     ]
 
 
+def _repair_single_missing_decimal(
+    ticks: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Repair one OCR-dropped decimal only when the full axis proves it.
+
+    The correction is deliberately sequence-gated: at least three other
+    fractional anchors must exist, and dividing one integral two-digit token
+    by ten must produce a descending linear position/value fit.  A standalone
+    ``45`` is never rewritten on appearance alone.
+    """
+
+    if len(ticks) < 5:
+        return ticks
+    fractional_anchors = sum(abs(value - round(value)) > 0.05 for value, _y in ticks)
+    if fractional_anchors < 3:
+        return ticks
+    best: tuple[float, list[tuple[float, float]]] | None = None
+    for index, (value, y) in enumerate(ticks):
+        if not 10.0 <= abs(value) < 100.0 or abs(value - round(value)) > 1e-9:
+            continue
+        trial = list(ticks)
+        trial[index] = (value / 10.0, y)
+        values = np.array([candidate for candidate, _row_y in trial], dtype=float)
+        ys = np.array([row_y for _candidate, row_y in trial], dtype=float)
+        if np.any(np.diff(values) >= 0):
+            continue
+        slope, intercept = np.polyfit(ys, values, 1)
+        residual = float(np.max(np.abs(values - (slope * ys + intercept))))
+        value_span = float(values[0] - values[-1])
+        if residual > max(0.08, 0.04 * value_span):
+            continue
+        if best is None or residual < best[0]:
+            best = (residual, trial)
+    return best[1] if best is not None else ticks
+
+
 def _y_tick_run_score(run: list[tuple[float, float]]) -> float:
     return 10.0 * len(run) + 0.01 * (run[-1][1] - run[0][1])
 
@@ -259,9 +327,8 @@ def _best_x_axis_for_panel(
         words = page.get_text("words")
     except Exception:
         return None
-    for word in words:
-        wx0, wy0, wx1, wy1 = [float(value) for value in word[:4]]
-        value = _parse_numeric_label(str(word[4]))
+    for text, wx0, wy0, wx1, wy1 in _horizontal_numeric_tokens(words):
+        value = _parse_numeric_label(text)
         if value is None or value < 0 or value > 2000:
             continue
         candidates.append((value, 0.5 * (wx0 + wx1), 0.5 * (wy0 + wy1)))
@@ -301,6 +368,53 @@ def _best_x_axis_for_panel(
     return (best[1], best[2]) if best is not None else None
 
 
+def _horizontal_numeric_tokens(
+    words: list[tuple[object, ...]],
+) -> list[tuple[str, float, float, float, float]]:
+    """Join adjacent numeric glyph words without joining distinct tick labels."""
+
+    fragments: list[tuple[str, float, float, float, float]] = []
+    for word in words:
+        text = str(word[4]).strip()
+        if not re.fullmatch(r"[-+−–\d.]+", text):
+            continue
+        x0, y0, x1, y1 = [float(value) for value in word[:4]]
+        fragments.append((text, x0, y0, x1, y1))
+
+    rows: list[list[tuple[str, float, float, float, float]]] = []
+    for fragment in sorted(fragments, key=lambda item: (0.5 * (item[2] + item[4]), item[1])):
+        cy = 0.5 * (fragment[2] + fragment[4])
+        if rows:
+            row_cy = float(np.median([0.5 * (item[2] + item[4]) for item in rows[-1]]))
+        else:
+            row_cy = float("inf")
+        if rows and abs(cy - row_cy) <= 2.0:
+            rows[-1].append(fragment)
+        else:
+            rows.append([fragment])
+
+    tokens: list[tuple[str, float, float, float, float]] = []
+    for row in rows:
+        runs: list[list[tuple[str, float, float, float, float]]] = []
+        for fragment in sorted(row, key=lambda item: item[1]):
+            if runs and fragment[1] - runs[-1][-1][3] <= 1.5:
+                runs[-1].append(fragment)
+            else:
+                runs.append([fragment])
+        for run in runs:
+            text = "".join(item[0] for item in run)
+            tokens.append(
+                (
+                    text,
+                    min(item[1] for item in run),
+                    min(item[2] for item in run),
+                    max(item[3] for item in run),
+                    max(item[4] for item in run),
+                )
+            )
+    return tokens
+
+
 def _normalize_x_tick_candidates(
     candidates: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
@@ -321,6 +435,38 @@ def _normalize_x_tick_candidates(
             score = 10.0 * len(run) + 0.01 * float(xs[-1] - xs[0])
             if best is None or score > best[0]:
                 best = (score, run)
+
+    # OCR can corrupt one label in an otherwise regular row (for example the
+    # 50 nC and 90 nC glyphs in HY1001D both read as ``30``).  A contiguous-run
+    # search then truncates a valid 0..80 axis at 40.  Recover only OBSERVED
+    # labels that agree with a line proven by two seed anchors; never invent a
+    # missing tick value.  Requiring five inliers keeps unrelated condition
+    # numbers on the same visual row from creating a short accidental axis.
+    if best is not None and len(best[1]) >= 4:
+        proven = best[1]
+        proven_values = np.array([value for value, _x in proven], dtype=float)
+        proven_xs = np.array([x for _value, x in proven], dtype=float)
+        slope, intercept = np.polyfit(proven_xs, proven_values, 1)
+        tolerance = max(0.5, 0.06 * float(np.ptp(proven_values)))
+        inliers = [
+            (value, x)
+            for value, x in candidates
+            if abs(value - (slope * x + intercept)) <= tolerance
+        ]
+        values = np.array([value for value, _x in inliers], dtype=float)
+        xs = np.array([x for _value, x in inliers], dtype=float)
+        if (
+            len(inliers) >= len(proven) + 2
+            and np.all(np.diff(values) > 0)
+            and np.all(np.diff(xs) > 0)
+        ):
+            fit_slope, fit_intercept = np.polyfit(xs, values, 1)
+            residual = float(np.max(np.abs(values - (fit_slope * xs + fit_intercept))))
+            value_span = float(values[-1] - values[0])
+            if residual <= max(0.5, 0.06 * value_span):
+                score = 10.0 * len(inliers) + 0.01 * float(xs[-1] - xs[0])
+                if score > best[0]:
+                    best = (score, inliers)
     return best[1] if best is not None else []
 
 

@@ -212,6 +212,8 @@ def _densify_vector_component(
     segments: list[tuple[tuple[float, float], tuple[float, float]]],
     rect: pymupdf.Rect,
     scale: float,
+    *,
+    reducer: str = "median",
 ) -> list[tuple[int, int]]:
     """Sample connected vector segments at approximately one-pixel cadence."""
 
@@ -225,7 +227,46 @@ def _densify_vector_component(
             x = int(round(x0 + fraction * (x1 - x0)))
             y = int(round(y0 + fraction * (y1 - y0)))
             points_by_x.setdefault(x, []).append(y)
+    if reducer == "minimum":
+        return [(x, min(ys)) for x, ys in sorted(points_by_x.items())]
+    if reducer != "median":
+        raise ValueError(f"unsupported vector reducer: {reducer}")
     return [(x, int(round(float(np.median(ys))))) for x, ys in sorted(points_by_x.items())]
+
+
+def _terminal_bundle_upper_branch(
+    median: list[tuple[int, int]],
+    upper: list[tuple[int, int]],
+    plot_box: tuple[int, int, int, int],
+) -> list[tuple[int, int]]:
+    """Follow one upper terminal branch instead of median-switching a bundle."""
+
+    if len(median) != len(upper) or len(median) < 20:
+        return median
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    bundle_start = x0 + 0.55 * width
+    material_spread = max(5.0, 0.03 * height)
+    bundled_columns = sum(
+        1
+        for (mx, my), (ux, uy) in zip(median, upper, strict=True)
+        if mx == ux and mx >= bundle_start and my - uy >= material_spread
+    )
+    if bundled_columns < max(8, int(round(0.04 * width))):
+        return median
+
+    # The upper envelope follows the first/leftmost VDS branch. Once that
+    # branch terminates, the envelope jumps down to a neighboring branch;
+    # stop before that source-discontinuous switch rather than splicing them.
+    termination_jump = max(5.0, 0.04 * height)
+    for index in range(1, len(upper)):
+        x, y = upper[index]
+        if x < bundle_start:
+            continue
+        if y - upper[index - 1][1] >= termination_jump:
+            return upper[:index]
+    return upper
 
 
 def _trace_vector_gate_curve(
@@ -279,7 +320,11 @@ def _trace_vector_gate_curve(
     height = max(1, y1 - y0)
     candidates: list[tuple[float, list[tuple[int, int]]]] = []
     for component in _connected_segment_components(segments):
-        points = _densify_vector_component(component, rect, scale)
+        median_points = _densify_vector_component(component, rect, scale)
+        upper_points = _densify_vector_component(
+            component, rect, scale, reducer="minimum"
+        )
+        points = _terminal_bundle_upper_branch(median_points, upper_points, plot_box)
         point_xs = [x for x, _y in points]
         point_ys = [y for _x, y in points]
         if np.ptp(point_xs) < 0.30 * width or np.ptp(point_ys) < 0.20 * height:
@@ -303,18 +348,12 @@ def _detect_inner_plot_box(crop: Image.Image, fallback: tuple[int, int, int, int
     if roi.shape[0] < 40 or roi.shape[1] < 40:
         return fallback
 
-    _, bw = cv2.threshold(roi, 238, 255, cv2.THRESH_BINARY_INV)
-    h, w = bw.shape
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, int(0.28 * w)), 1))
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(30, int(0.28 * h))))
-    h_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, h_kernel)
-    v_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, v_kernel)
+    h_components, v_components = _axis_line_components(roi)
+    h, w = roi.shape
 
-    def centers(img: np.ndarray, orient: str) -> list[float]:
-        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    def centers(components: list[tuple[int, int, int, int]], orient: str) -> list[float]:
         vals: list[float] = []
-        for contour in contours:
-            x, y, ww, hh = cv2.boundingRect(contour)
+        for x, y, ww, hh in components:
             if orient == "h":
                 if ww < 0.35 * w or hh > 10:
                     continue
@@ -336,8 +375,8 @@ def _detect_inner_plot_box(crop: Image.Image, fallback: tuple[int, int, int, int
                 grouped.append([val])
         return [float(np.median(group)) for group in grouped]
 
-    hs = centers(h_lines, "h")
-    vs = centers(v_lines, "v")
+    hs = centers(h_components, "h")
+    vs = centers(v_components, "v")
     if len(hs) < 2 or len(vs) < 2:
         return fallback
 
@@ -374,6 +413,145 @@ def _detect_inner_plot_box(crop: Image.Image, fallback: tuple[int, int, int, int
     if x1 - x0 < 0.35 * (fx1 - fx0) or y1 - y0 < 0.35 * (fy1 - fy0):
         return fallback
     return (x0, y0, x1, y1)
+
+
+def _axis_line_components(gray: np.ndarray) -> tuple[
+    list[tuple[int, int, int, int]], list[tuple[int, int, int, int]]
+]:
+    """Return horizontal and vertical long-stroke component rectangles."""
+
+    _, bw = cv2.threshold(gray, 238, 255, cv2.THRESH_BINARY_INV)
+    h, w = bw.shape
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(30, int(0.22 * w)), 1))
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(30, int(0.22 * h))))
+    h_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, h_kernel)
+    v_lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, v_kernel)
+
+    def components(image: np.ndarray) -> list[tuple[int, int, int, int]]:
+        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        return [cv2.boundingRect(contour) for contour in contours]
+
+    return components(h_lines), components(v_lines)
+
+
+def _detect_aligned_plot_frame(
+    gray: np.ndarray,
+    fallback: tuple[int, int, int, int],
+) -> tuple[int, int, int, int] | None:
+    """Find a closed plot frame from aligned grid endpoints.
+
+    The search covers the rendered crop rather than only ``fallback`` because
+    OCR/finder bboxes can end at the last readable tick while the real frame
+    extends one unlabeled interval farther.  ``fallback`` remains the locality
+    anchor used to reject a neighbouring panel.
+    """
+
+    height, width = gray.shape
+    h_components, v_components = _axis_line_components(gray)
+    min_h_width = 0.25 * width
+    horizontal = [
+        component
+        for component in h_components
+        if component[2] >= min_h_width and component[3] <= 10
+    ]
+    vertical = [
+        component
+        for component in v_components
+        if component[3] >= 0.25 * height and component[2] <= 10
+    ]
+    if len(horizontal) < 2 or len(vertical) < 2:
+        return None
+
+    span_tolerance = max(6, int(round(0.012 * width)))
+    groups: list[list[tuple[int, int, int, int]]] = []
+    for component in sorted(horizontal, key=lambda item: (item[0], item[0] + item[2])):
+        start = component[0]
+        end = component[0] + component[2] - 1
+        for group in groups:
+            group_starts = [item[0] for item in group]
+            group_ends = [item[0] + item[2] - 1 for item in group]
+            if (
+                abs(start - float(np.median(group_starts))) <= span_tolerance
+                and abs(end - float(np.median(group_ends))) <= span_tolerance
+            ):
+                group.append(component)
+                break
+        else:
+            groups.append([component])
+
+    fx0, fy0, fx1, fy1 = fallback
+    fallback_width = max(1, fx1 - fx0)
+    fallback_height = max(1, fy1 - fy0)
+    fallback_center = (0.5 * (fx0 + fx1), 0.5 * (fy0 + fy1))
+    candidates: list[tuple[float, tuple[int, int, int, int]]] = []
+    for group in groups:
+        y_centers = sorted({int(round(y + 0.5 * hh)) for _x, y, _ww, hh in group})
+        if len(y_centers) < 2:
+            continue
+        x_start = int(round(float(np.median([x for x, _y, _ww, _hh in group]))))
+        x_end = int(
+            round(float(np.median([x + ww - 1 for x, _y, ww, _hh in group])))
+        )
+        candidate_width = x_end - x_start
+        if candidate_width < 0.30 * fallback_width:
+            continue
+
+        edge_tolerance = max(6, int(round(0.015 * candidate_width)))
+        left_edges: list[tuple[float, tuple[int, int, int, int]]] = []
+        right_edges: list[tuple[float, tuple[int, int, int, int]]] = []
+        for component in vertical:
+            x, y, ww, hh = component
+            center_x = x + 0.5 * ww
+            if abs(center_x - x_start) <= edge_tolerance:
+                left_edges.append((center_x, component))
+            if abs(center_x - x_end) <= edge_tolerance:
+                right_edges.append((center_x, component))
+        if not left_edges or not right_edges:
+            continue
+        for left_center, left in left_edges:
+            for right_center, right in right_edges:
+                vertical_start = max(left[1], right[1])
+                vertical_end = min(left[1] + left[3] - 1, right[1] + right[3] - 1)
+                supported_ys = [
+                    y
+                    for y in y_centers
+                    if vertical_start - edge_tolerance <= y <= vertical_end + edge_tolerance
+                ]
+                if len(supported_ys) < 2:
+                    continue
+                y_start, y_end = supported_ys[0], supported_ys[-1]
+                candidate_height = y_end - y_start
+                if candidate_height < 0.30 * fallback_height:
+                    continue
+                if (
+                    abs(y_start - vertical_start) > edge_tolerance
+                    or abs(y_end - vertical_end) > edge_tolerance
+                ):
+                    continue
+                frame = (
+                    int(round(left_center)),
+                    y_start,
+                    int(round(right_center)),
+                    y_end,
+                )
+
+                ix0 = max(frame[0], fx0)
+                iy0 = max(frame[1], fy0)
+                ix1 = min(frame[2], fx1)
+                iy1 = min(frame[3], fy1)
+                intersection = max(0, ix1 - ix0) * max(0, iy1 - iy0)
+                frame_area = max(1, (frame[2] - frame[0]) * (frame[3] - frame[1]))
+                overlap_fraction = intersection / frame_area
+                if overlap_fraction < 0.35:
+                    continue
+                center_distance = math.hypot(
+                    0.5 * (frame[0] + frame[2]) - fallback_center[0],
+                    0.5 * (frame[1] + frame[3]) - fallback_center[1],
+                ) / max(fallback_width, fallback_height)
+                line_support = min(10, len(supported_ys)) / 10.0
+                score = 4.0 * overlap_fraction + line_support - center_distance
+                candidates.append((score, frame))
+    return max(candidates, key=lambda item: item[0])[1] if candidates else None
 
 
 def _detect_regular_grid_box(

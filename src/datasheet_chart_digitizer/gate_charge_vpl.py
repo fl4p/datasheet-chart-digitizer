@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -83,6 +84,7 @@ def main() -> int:
     out.mkdir(parents=True, exist_ok=True)
     images = []
     rows = []
+    manifests = []
     had_errors = False
 
     for rel, ref_vpl, comment in samples:
@@ -156,6 +158,7 @@ def main() -> int:
         guide_color = (20, 170, 40) if ok else (255, 40, 40)
         if y_vpl is not None:
             draw.line([(visual_plot_box[0], y_vpl), (visual_plot_box[2], y_vpl)], fill=guide_color, width=2)
+        _draw_axis_verification(draw, result)
         ref_s = f"{ref_vpl:.2f}" if ref_vpl is not None else "n/a"
         label = (
             f"{mpn}  ref={ref_s}  Vpl={est_s} {err_s}  status={result.status} "
@@ -192,6 +195,9 @@ def main() -> int:
 
         out_path = out / f"{mpn}.fullcurve.overlay.png"
         annotated.save(out_path)
+        manifest = result.to_manifest()
+        manifest["overlay"] = str(out_path)
+        manifests.append(manifest)
         images.append(annotated)
         rows.append((mpn, out_path, len(curve), label))
 
@@ -208,6 +214,9 @@ def main() -> int:
 
     for _mpn, path, _npts, label in rows:
         print(f"{label}: {path}")
+    (out / "gate_charge_digitization.json").write_text(
+        json.dumps(manifests, indent=2) + "\n"
+    )
     if batch_name:
         print(f"BATCH_CONTACT_SHEET: {batch_path}")
     else:
@@ -215,6 +224,49 @@ def main() -> int:
         print(f"NEXT10_CONTACT_SHEET: {next10_path}")
         print(f"ALL15_CONTACT_SHEET: {all15_path}")
     return 1 if had_errors else 0
+
+
+def _format_tick(value: float) -> str:
+    return f"{value:g}"
+
+
+def _clamped_text_x(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    x: float,
+    left: int,
+    right: int,
+    font,
+) -> int:
+    box = draw.textbbox((0, 0), text, font=font)
+    width = box[2] - box[0]
+    return int(min(max(left + 2, round(x - width / 2)), right - width - 2))
+
+
+def _draw_axis_verification(draw: ImageDraw.ImageDraw, result) -> None:
+    """Draw consumed tick labels and exact-centred crosshairs inside the axes."""
+
+    x0, y0, x1, y1 = result.plot_box_px
+    color = (20, 70, 225)
+    font = _font(11)
+    if result.x_tick_unit:
+        for value, x in result.x_ticks_px:
+            xi = int(round(x))
+            draw.line((xi - 4, y1, xi + 4, y1), fill=color, width=1)
+            draw.line((xi, y1 - 4, xi, y1 + 4), fill=color, width=1)
+            text = f"{_format_tick(value)} {result.x_tick_unit}"
+            tx = _clamped_text_x(draw, text, x, x0, x1, font)
+            draw.text((tx, y1 - 15), text, fill=color, font=font)
+    for value, y in result.y_ticks_px:
+        yi = int(round(y))
+        draw.line((x0 - 4, yi, x0 + 4, yi), fill=color, width=1)
+        draw.line((x0, yi - 4, x0, yi + 4), fill=color, width=1)
+        draw.text(
+            (x0 + 7, min(max(y0 + 1, yi - 12), y1 - 13)),
+            f"{_format_tick(value)} {result.y_tick_unit}",
+            fill=color,
+            font=font,
+        )
 
 
 def _review_overlay_key(result) -> tuple[int, int]:
