@@ -35,6 +35,7 @@ import numpy as np
 
 from .breakdown_voltage import NUM_RE, _calibrate, _vector_plot_frame, _words_in_crop_px
 from .capacitance_traces import find_plot_box
+from .overlay import draw_axis_ticks, draw_plot_frame
 from .capacitance_types import PlotBox, VectorEdge
 from .capacitance_vector import _load_fitz, _resample_vector_trace_pixels, _vector_curve_edges
 from .crop_transform import CropTransform
@@ -276,7 +277,7 @@ def _draw_overlay(
     fit: dict | None,
 ) -> np.ndarray:
     overlay = image.copy()
-    cv2.rectangle(overlay, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 0), 1)
+    draw_plot_frame(overlay, plot, (0, 180, 0), 1)
     by_temperature = sorted(zip(curves, pixel_curves), key=lambda item: item[0].tj_c)
     colors = [(0, 0, 255), (255, 80, 0)]
     for (curve, points), color in zip(by_temperature, colors):
@@ -292,38 +293,20 @@ def _draw_overlay(
             1,
             cv2.LINE_AA,
         )
-    # Self-contained calibration evidence: do not make the reviewer infer which
-    # original glyph each magenta guide used. Label every selected tick and name
-    # both physical axes directly on the plot.
+    # Self-contained calibration evidence: label every selected tick directly on
+    # the plot so the reviewer needn't infer which glyph each guide used.
+    # LinearAxis.ticks are (value, pixel); the shared renderer wants (pixel, value).
     tick_color = (180, 0, 180)
-    for value, px in x_axis.ticks:
-        x = int(round(px))
-        cv2.drawMarker(overlay, (x, plot.y1), tick_color, cv2.MARKER_CROSS, 8, 1)
-        label = f"{value:g}"
-        (tw, _), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-        cv2.putText(
-            overlay,
-            label,
-            (max(plot.x0, min(x - tw // 2, plot.x1 - tw)), plot.y1 - 5),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.35,
-            tick_color,
-            1,
-            cv2.LINE_AA,
-        )
-    for value, py in y_axis.ticks:
-        y = int(round(py))
-        cv2.drawMarker(overlay, (plot.x0, y), tick_color, cv2.MARKER_CROSS, 8, 1)
-        cv2.putText(
-            overlay,
-            f"{value:g}",
-            (plot.x0 + 5, max(plot.y0 + 12, y - 4)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.35,
-            tick_color,
-            1,
-            cv2.LINE_AA,
-        )
+    draw_axis_ticks(
+        overlay,
+        plot,
+        x_ticks=[(px, value) for value, px in x_axis.ticks],
+        y_ticks=[(py, value) for value, py in y_axis.ticks],
+        color=tick_color,
+        marker_size=8,
+        font_scale=0.35,
+    )
+
     def boxed_axis_label(text: str, origin: tuple[int, int]) -> None:
         scale = 0.60
         thickness = 2

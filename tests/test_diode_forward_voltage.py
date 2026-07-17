@@ -42,7 +42,7 @@ class NumericAxisTests(unittest.TestCase):
         with patch(
             "datasheet_chart_digitizer.diode_forward_voltage.cv2.imread",
             return_value=np.full((100, 100, 3), 255, dtype=np.uint8),
-        ), patch("datasheet_chart_digitizer.diode_forward_voltage.cv2.drawMarker") as marker:
+        ), patch("datasheet_chart_digitizer.overlay.cv2.drawMarker") as marker:
             overlay = _draw_overlay(Path("crop.png"), calibration, [], panel)
 
         centers = [call.args[1] for call in marker.call_args_list]

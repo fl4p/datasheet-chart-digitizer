@@ -30,6 +30,7 @@ from .crop_transform import CropTransform
 from .find_charts import ChartPanel, process_pdf
 from .gate_charge_trace import _detect_regular_grid_box, _projection_line_centers
 from .numeric_axis import AxisTick, NumericAxis, fit_numeric_axis, tick_aligned_plot
+from .overlay import draw_axis_ticks, draw_plot_frame
 
 _NUMERIC_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 _SCIENTIFIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)[Ee][+-]?\d+$")
@@ -626,20 +627,6 @@ def _verified_crossover(curves: list[dict[str, object]], log_current: bool, volt
     return float(10 ** (coordinate[left] + fraction * (coordinate[right] - coordinate[left])) if log_current else current[left] + fraction * (current[right] - current[left]))
 
 
-def _draw_tick_label(image, text: str, origin: tuple[int, int]) -> None:
-    for color, thickness in (((255, 255, 255), 3), ((255, 0, 0), 1)):
-        cv2.putText(
-            image,
-            text,
-            origin,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.32,
-            color,
-            thickness,
-            cv2.LINE_AA,
-        )
-
-
 def _draw_overlay(
     crop_path: Path,
     calibration: PanelCalibration,
@@ -665,7 +652,7 @@ def _draw_overlay(
     )
     cv2.putText(image, f"SELECTED p{panel.page} FIGURE/DIAGRAM {panel.diagram}: {panel.title}", (5, header_y + 12), cv2.FONT_HERSHEY_SIMPLEX, 0.34, (0, 0, 0), 1)
     cv2.putText(image, "AXES: IF/IS (A) versus VSD (V)", (5, header_y + 27), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 0), 1)
-    cv2.rectangle(image, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 0), 2)
+    draw_plot_frame(image, plot, (0, 180, 0), 2)
     colors = ((0, 0, 255), (255, 80, 0), (0, 170, 255), (180, 0, 180), (0, 150, 0), (255, 0, 100))
     for index, curve in enumerate(curves):
         color = colors[index % len(colors)]
@@ -674,19 +661,19 @@ def _draw_overlay(
             cv2.circle(image, (int(x), int(y)), 2 if emphasized else 1, color, -1)
         label = f'{"*" if emphasized else " "}{curve["temperature_c"]:g}C'
         cv2.putText(image, label, (plot.x1 - 70, plot.y0 + 32 + 14 * index), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 2 if emphasized else 1)
-    tick_color = (255, 0, 0)
-    for tick in calibration.x_axis.ticks:
-        x = int(round(tick.pixel))
-        cv2.drawMarker(image, (x, plot.y1), tick_color, cv2.MARKER_CROSS, 8, 1, cv2.LINE_AA)
-        text = f"{tick.value:g} V"
-        width = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)[0][0]
-        label_x = min(max(plot.x0 + 2, x - width // 2), plot.x1 - width - 2)
-        _draw_tick_label(image, text, (label_x, plot.y1 - 10))
-    for tick in calibration.y_axis.ticks:
-        y = int(round(tick.pixel))
-        cv2.drawMarker(image, (plot.x0, y), tick_color, cv2.MARKER_CROSS, 8, 1, cv2.LINE_AA)
-        label_y = min(max(plot.y0 + 7, y + 4), plot.y1 - 3)
-        _draw_tick_label(image, f"{tick.value:g} A", (plot.x0 + 20, label_y))
+    draw_axis_ticks(
+        image,
+        plot,
+        x_ticks=[(t.pixel, t.value) for t in calibration.x_axis.ticks],
+        y_ticks=[(t.pixel, t.value) for t in calibration.y_axis.ticks],
+        color=(255, 0, 0),
+        marker_size=8,
+        font_scale=0.32,
+        unit_x=" V",
+        unit_y=" A",
+        line_aa=True,
+        halo=True,
+    )
     return image
 
 

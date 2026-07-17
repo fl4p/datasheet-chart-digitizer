@@ -54,6 +54,7 @@ from .capacitance_vector import (
 )
 from .crop_transform import CropTransform
 from .numeric_axis import AxisTick, fit_axis_ticks
+from .overlay import draw_axis_ticks, draw_plot_frame
 
 INT_RE = re.compile(r"^-?\d+$")
 NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -279,17 +280,19 @@ def _words_in_crop_px(page, transform: CropTransform, image_shape: tuple[int, in
 def _draw_overlay(image: np.ndarray, plot: PlotBox, points: list[tuple[int, int]],
                   x_axis: LinearAxis, y_axis: LinearAxis) -> np.ndarray:
     overlay = image.copy()
-    cv2.rectangle(overlay, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 0), 1)
+    draw_plot_frame(overlay, plot, (0, 180, 0), 1)
     for x, y in points:
         cv2.circle(overlay, (x, y), 1, (0, 0, 255), -1)
-    for value, px in x_axis.ticks:
-        cv2.drawMarker(overlay, (int(round(px)), plot.y1), (255, 0, 0), cv2.MARKER_CROSS, 10, 1)
-        cv2.putText(overlay, f"{value:g}", (int(round(px)) - 10, plot.y1 + 32),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 0), 1, cv2.LINE_AA)
-    for value, py in y_axis.ticks:
-        cv2.drawMarker(overlay, (plot.x0, int(round(py))), (255, 0, 0), cv2.MARKER_CROSS, 10, 1)
-        cv2.putText(overlay, f"{value:g}", (plot.x0 + 4, int(round(py)) - 3),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 0, 0), 1, cv2.LINE_AA)
+    # LinearAxis.ticks are (value, pixel); the shared renderer wants (pixel, value)
+    draw_axis_ticks(
+        overlay,
+        plot,
+        x_ticks=[(px, value) for value, px in x_axis.ticks],
+        y_ticks=[(py, value) for value, py in y_axis.ticks],
+        color=(255, 0, 0),
+        marker_size=10,
+        font_scale=0.35,
+    )
     return overlay
 
 
