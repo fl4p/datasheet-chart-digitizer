@@ -60,30 +60,54 @@ def test_collapsed_points_are_excluded(tmp_path):
     assert max(v for v, _i in hot.points) <= 8.0 - 0.8 + 1e-9
 
 
-def test_span_relative_conflict_fires_on_logic_level_scale(tmp_path):
-    """RJK0853 known-bad: a steep logic-level curve with the pivot offset right.
-
-    Absolute cold RMS stays ~0.1 V (under the 0.35 V absolute bound), but on a
-    part whose overdrive span is <1 V that is a screaming figure-vs-figure
-    conflict; the span-relative guard must refuse it.
-    """
-    import json
-
-    from datasheet_chart_digitizer.transfer_tempco_curve_anchor import evaluate_part
-
+def _write_synth_csv(tmp_path, vth25=2.3, k25=176.0, dvth=-0.002, dlnk=-0.002,
+                     hot_t=75.0, imax=44.0, offset_pivot=False):
+    dt = hot_t - 25.0
+    vth_hot = vth25 + dvth * dt
+    k_hot = k25 * np.exp(dlnk * dt)
     rows = ["curve_id,temperature_c,Vgs_V,Id_A,collapsed"]
-    # Steep curve: 44 A over ~0.5 V of gate swing (like the Renesas part).
-    for i in np.linspace(0.5, 44, 60):
-        rows.append(f"curve_1,25,{2.3 + 0.5*(i/44)**0.5:.5f},{i:.4f},0")
-        rows.append(f"curve_2,75,{2.2 + 0.5*(i/44)**0.5:.5f},{i:.4f},0")
+    for i in np.linspace(0.5, imax, 60):
+        rows.append(f"curve_1,25,{vth25 + (i/k25)**0.5:.5f},{i:.4f},0")
+        rows.append(f"curve_2,{hot_t:g},{vth_hot + (i/k_hot)**0.5:.5f},{i:.4f},0")
     csv_path = tmp_path / "points.csv"
     csv_path.write_text("\n".join(rows) + "\n")
+    return csv_path
+
+
+def test_ratio_mode_recovers_tempco_despite_offset_pivot(tmp_path):
+    """RJK0853-geometry known-bad turned informative: the pivot sits 0.25 V
+    right of the curve. Ratio mode must (a) recover the true temperature
+    transform from the curves, (b) record the pivot discrepancy with the
+    absolute-anchor badge withheld, and (c) NOT refuse the transform."""
+    from datasheet_chart_digitizer.transfer_tempco_curve_anchor import evaluate_part
+
+    csv_path = _write_synth_csv(tmp_path, dvth=-0.002)
     anchor = {
         "manufacturer": "T", "part": "SYNTH-LOGIC", "id_gc_a": 40.0,
         "vpl_v": 3.05, "vpl_id_a": 40.0, "vgs_drive_v": 4.5,
         "vds_cond_v": 25.0, "vpl_source": "synthetic", "status": "test",
     }
-    manifest_entry = {"points_csv": csv_path.name, "overlay": "n/a"}
-    result = evaluate_part(anchor, manifest_entry, tmp_path)
-    assert any("span-relative" in g or "anchor-curve-conflict" in g
-               for g in result["guard_reasons"]), json.dumps(result["guard_reasons"])
+    result = evaluate_part(anchor, {"points_csv": csv_path.name, "overlay": "n/a"}, tmp_path)
+    assert result["status"] == "fit-review-required", result["guard_reasons"]
+    fit = result["fit"]
+    assert fit["mode"] == "temperature-transform"
+    assert fit["d_vth_eff_v_per_k"] == pytest.approx(-0.002, abs=3e-4)
+    pivot = fit["pivot_cross_check"]
+    assert not pivot["absolute_anchor_eligible"]
+    # true curve reaches 40 A at ~2.777 V; the claimed chart pivot is 3.05 V
+    assert pivot["discrepancy_v"] == pytest.approx(3.05 - (2.3 + (40 / 176.0) ** 0.5), abs=0.03)
+
+
+def test_ratio_mode_badges_consistent_pivot(tmp_path):
+    from datasheet_chart_digitizer.transfer_tempco_curve_anchor import evaluate_part
+
+    csv_path = _write_synth_csv(tmp_path)
+    true_vpl = 2.3 + (40 / 176.0) ** 0.5
+    anchor = {
+        "manufacturer": "T", "part": "SYNTH-OK", "id_gc_a": 40.0,
+        "vpl_v": round(true_vpl, 3), "vpl_id_a": 40.0, "vgs_drive_v": 10,
+        "vds_cond_v": 25.0, "vpl_source": "synthetic", "status": "test",
+    }
+    result = evaluate_part(anchor, {"points_csv": csv_path.name, "overlay": "n/a"}, tmp_path)
+    assert result["status"] == "fit-review-required", result["guard_reasons"]
+    assert result["fit"]["pivot_cross_check"]["absolute_anchor_eligible"]
