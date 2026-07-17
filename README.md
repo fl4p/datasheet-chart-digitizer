@@ -2,7 +2,7 @@
 
 Standalone datasheet chart digitizer.
 
-The package currently ships four MOSFET chart plugins:
+The `dsdig` CLI currently wires five MOSFET chart plugins:
 
 1. Capacitance plots (`Ciss`, `Coss`, and `Crss` versus `VDS`).
 2. Gate-charge plots for Miller plateau voltage (`Vpl`) extraction.
@@ -17,6 +17,14 @@ The package currently ships four MOSFET chart plugins:
    the curve touches the frame, and a fitted `V(25 °C)`/slope summary plus a
    tri-state spec-table anchor verdict that verifies the chart's min-anchored
    interpretation instead of assuming it).
+5. Saturation transfer plots (`Id` versus `Vgs` at multiple junction
+   temperatures), with optional anchor-based temperature-coefficient fitting
+   whose output requires human review before curation or use.
+
+Two additional chart-native digitizers are available through the Python API
+but are not yet wired into `dsdig`: body-diode forward voltage
+(`diode_forward_voltage.digitize_pdf`) and normalized `RDS(on)` versus
+temperature (`rdson_temperature.digitize_pdf`).
 
 The core pieces are kept generic so other datasheet chart types can be added
 as plugins.
@@ -54,9 +62,11 @@ dsdig find /path/to/datasheets/*.pdf --out work/charts
 dsdig digitize-capacitance work/charts/charts.json --out work/charts
 dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
 dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
+dsdig export-coss-dslib work/charts/capacitance_digitization.json --out work/dslib-coss
 dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
+dsdig digitize-transfer work/charts/charts.json --out work/transfer
 ```
 
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
@@ -67,11 +77,14 @@ package scalar `find_vpl()` API because the result status and diagnostics are
 part of the experimental compatibility contract.
 Relative PDF arguments are resolved under `--datasheet-root/datasheets`.
 
-When normal gate-charge discovery finds no panels, the Vpl digitizer can use an
-installed `tesseract` executable as a bounded, per-page OCR fallback. OCR words
-are mapped back to PDF-point coordinates and recorded with
-`text_source=tesseract_fallback`. Missing, failed, or timed-out Tesseract runs
-degrade to no fallback; they do not change the normal finder path.
+The Vpl digitizer can use an installed `tesseract` executable in two bounded
+fallback cases. If normal discovery finds no gate-charge panel, per-page OCR can
+supply words to a second discovery pass. If a normally discovered panel produces
+only an assumed or grid-inferred axis, OCR can retry that panel's axis
+extraction before the result is accepted or refused. OCR words are mapped back
+to PDF-point coordinates and recorded with `text_source=tesseract_fallback`.
+Missing, failed, or timed-out Tesseract runs leave the native result unchanged;
+they do not replace the normal finder path.
 
 If `.pdf.nop.csv` anchor tables are not next to the PDFs, pass their directory:
 
@@ -81,7 +94,7 @@ dsdig digitize-capacitance work/charts/charts.json \
   --out work/charts
 ```
 
-Key outputs:
+Key capacitance-pipeline outputs:
 
 - `charts.json`: chart panel index.
 - `crops/...png`: cropped chart panels.
@@ -122,11 +135,14 @@ primitive or fitted models from them when needed.
 
 ## Downstream Consumers
 
-This package stops at chart-native artifacts: calibrated point CSVs, validation
-manifests, compact Coss knot JSON, and Qoss/Eoss tables. Consumer-specific
-database adapters belong in the consumer repository. For example, dslib/fetlib
-imports `datasheet-chart-digitizer` and converts reviewed C(V) point CSVs into
-its own `COSS_CURVES`/`CISS_CURVES` database format.
+The package emits chart-native artifacts—calibrated point CSVs and validation
+manifests—plus explicit, file-based export formats. `export-coss-spice` writes
+portable Coss/Qoss model artifacts, while `export-coss-dslib` converts only
+validation-gated capacitance manifests into dslib-style `(VDS, Coss, Crss)`
+knots and optional `(VDS, Ciss)` pairs. The latter records pass/rejection
+reasons in per-chart JSON files and `dslib_coss_manifest.json`; it does not
+modify a downstream parts database. Database persistence, curation, and other
+consumer-specific integration remain the consumer repository's responsibility.
 
 ## Local Regression Corpus
 
@@ -167,7 +183,9 @@ the legacy estimator remains a separate consumer change.
 ## Scope
 
 The repository name is intentionally generic. Planned plugins include Qoss(VDS),
-SOA, diode, thermal-impedance, efficiency, and magnetics curves.
+SOA, thermal-impedance, efficiency, and magnetics curves. Body-diode forward
+voltage and normalized `RDS(on)`-temperature extraction already exist as direct
+Python APIs; CLI integration remains future work.
 The existing MOSFET capacitance digitizer is the first production-quality
 plugin and acts as the reference implementation for extraction, calibration,
 overlays, and validation status reporting. The Vpl digitizer is a standalone
