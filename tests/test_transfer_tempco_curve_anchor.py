@@ -111,3 +111,24 @@ def test_ratio_mode_badges_consistent_pivot(tmp_path):
     result = evaluate_part(anchor, {"points_csv": csv_path.name, "overlay": "n/a"}, tmp_path)
     assert result["status"] == "fit-review-required", result["guard_reasons"]
     assert result["fit"]["pivot_cross_check"]["absolute_anchor_eligible"]
+
+
+def test_matched_shift_table_matches_synthetic_law(tmp_path):
+    from datasheet_chart_digitizer.transfer_tempco_curve_anchor import evaluate_part
+
+    dvth, dlnk, hot_t, k25 = -0.002, -0.002, 75.0, 176.0
+    csv_path = _write_synth_csv(tmp_path, dvth=dvth, dlnk=dlnk, hot_t=hot_t, k25=k25)
+    anchor = {
+        "manufacturer": "T", "part": "SYNTH-TBL", "id_gc_a": 40.0,
+        "vpl_v": 2.8, "vpl_id_a": 40.0, "vgs_drive_v": 10,
+        "vds_cond_v": 25.0, "vpl_source": "synthetic", "status": "test",
+    }
+    result = evaluate_part(anchor, {"points_csv": csv_path.name, "overlay": "n/a"}, tmp_path)
+    table = result["fit"]["matched_shift_table"]
+    assert table["tj_hot_c"] == hot_t
+    ids = np.array(table["id_a"])
+    deltas = np.array(table["delta_vgs_v"])
+    dt = hot_t - 25.0
+    k_hot = k25 * np.exp(dlnk * dt)
+    expected = dvth * dt + np.sqrt(ids) * (1 / np.sqrt(k_hot) - 1 / np.sqrt(k25))
+    assert np.allclose(deltas, expected, atol=5e-3)

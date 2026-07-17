@@ -207,6 +207,24 @@ def evaluate_part(
             fit["mode"] = "temperature-transform"
             fit["collapse_exclusions"] = collapse_stats
             fit["vth_identification"] = law
+            # Nonparametric matched-current shift over the FULL common span:
+            # the raw curve-vs-curve quantity with no law assumption. The
+            # compact (dVth/dT, dlnK/dT) pair is a two-parameter summary of
+            # this table; where the summary strains, the table shows it.
+            cold_curve, hot_curve = curves[0], curves[-1]
+            common_lo = max(min(i for _v, i in c.points) for c in curves)
+            common_hi = 0.95 * min(max(i for _v, i in c.points) for c in curves)
+            if common_hi > common_lo:
+                grid = np.linspace(max(common_lo, 1e-3), common_hi, 40)
+                delta = _inverse_vgs(hot_curve.points, grid) - _inverse_vgs(
+                    cold_curve.points, grid
+                )
+                fit["matched_shift_table"] = {
+                    "tj_hot_c": hot_curve.tj_c,
+                    "id_a": [round(float(i), 5) for i in grid],
+                    "delta_vgs_v": [round(float(d), 5) for d in delta],
+                    "note": "hot-minus-cold Vgs at matched current, full common span, no model",
+                }
             overdrive_span = max(v for v, _i in curves[0].points) - law["vth_eff_v"]
             # Gate-charge pivot demoted to a signed cross-figure check.
             discrepancy = float(anchor["vpl_v"]) - model_vpl
@@ -246,7 +264,7 @@ def evaluate_part(
             key: anchor.get(key)
             for key in (
                 "id_gc_a", "vpl_v", "vpl_id_a", "vgs_drive_v", "vds_cond_v",
-                "vpl_source", "vpl_note", "status",
+                "vpl_source", "vpl_note", "status", "figure_provenance_flags",
             )
         },
         "transfer_points_csv": manifest_entry["points_csv"],
