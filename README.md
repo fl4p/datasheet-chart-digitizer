@@ -151,7 +151,7 @@ regression after trace, calibration, or validation changes:
 
 ```bash
 DSDIG_DATASHEET_ROOT=/path/to/datasheet-corpus \
-  python tools/run_local_regression.py
+  python tools/regression/run_local_regression.py
 ```
 
 This runs the C(V) corpus and the Vpl gate-charge full-curve verifier against
@@ -164,7 +164,7 @@ conservative PyMuPDF text fallback, recorded as `text_source` in chart metadata.
 For C(V)-only work, use:
 
 ```bash
-python tools/run_capacitance_regression.py
+python tools/regression/run_capacitance_regression.py
 ```
 
 The C(V) harness regenerates outputs in a temporary directory and fails on

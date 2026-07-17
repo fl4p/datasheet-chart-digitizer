@@ -1,6 +1,6 @@
 import unittest
 
-from tools import run_vpl_finder_parity as parity
+from tools.regression import run_vpl_finder_parity as parity
 
 
 class VplFinderParityTests(unittest.TestCase):

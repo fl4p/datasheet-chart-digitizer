@@ -177,7 +177,12 @@ def test_review_trace_interpolates_accepted_source_gaps_and_records_them():
 
 
 def test_stk295_vector_paths_and_temperature_identity_match_source():
-    script = Path(__file__).parents[1] / "scripts" / "generate_transfer_review25.py"
+    script = (
+        Path(__file__).parents[1]
+        / "tools"
+        / "transfer_review"
+        / "generate_transfer_review25.py"
+    )
     spec = importlib.util.spec_from_file_location("generate_transfer_review25", script)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -245,7 +250,12 @@ def test_transient_ztc_crossing_is_not_collapse():
 
 
 def test_stk295_collapse_flags_match_the_shared_tail():
-    script = Path(__file__).parents[1] / "scripts" / "generate_transfer_review25.py"
+    script = (
+        Path(__file__).parents[1]
+        / "tools"
+        / "transfer_review"
+        / "generate_transfer_review25.py"
+    )
     spec = importlib.util.spec_from_file_location("generate_transfer_review25", script)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
