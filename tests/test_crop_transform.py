@@ -188,7 +188,7 @@ class FreshFinderCropTransformEndToEnd(unittest.TestCase):
         expected = {
             "BSC014N04LS": ("raster", "position_text"),
             "BSC016N06NS": ("vector", "position_text"),
-            "IAUCN08S5L160T": ("vector", "grid_text"),
+            "IAUCN08S5L160T": ("vector", "position_text"),
         }
         for part, (_, result) in self.results.items():
             self.assertEqual(
@@ -202,7 +202,7 @@ class FreshFinderCropTransformEndToEnd(unittest.TestCase):
         expected = {
             "BSC014N04LS": (0.07627819, -8.42946005, -0.00552817, 4.38814795),
             "BSC016N06NS": (0.11441731, -12.64419946, -0.00552817, 4.38814795),
-            "IAUCN08S5L160T": (0.15267176, -15.87786260, -0.00737191, 4.59270075),
+            "IAUCN08S5L160T": (0.15255660, -15.82277066, -0.00737473, 4.59065286),
         }
         for part, (_, result) in self.results.items():
             axis = result["axis_calibration"]

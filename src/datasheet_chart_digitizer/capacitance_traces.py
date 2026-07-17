@@ -7,6 +7,233 @@ import numpy as np
 
 from .capacitance_types import CapAnchor, PlotBox, Trace
 
+
+SHARED_CISS_COSS_DISTANCE_FRACTION = 0.008
+SHARED_CISS_COSS_MIN_SPAN_FRACTION = 0.04
+SHARED_CISS_COSS_MIN_POINTS = 12
+SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
+MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
+FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
+FLAT_GRID_CAPTURE_MIN_X_SPAN_FRACTION = 0.90
+COLUMN_RUN_CLUSTER_GAP_PX = 6.0
+CISS_COSS_IDENTITY_MIN_RANGE_RATIO = 1.5
+CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION = 0.03
+CISS_COSS_IDENTITY_MIN_SHARED_TAIL_POINTS = 12
+UPPER_CROSSING_MIN_MERGED_COLUMNS = 12
+UPPER_CROSSING_MIN_COST_ADVANTAGE_PX = 4.0
+UPPER_CROSSING_MAX_SOURCE_SEATING_DISTANCE_PX = 1.0
+
+
+def repair_merged_ciss_coss_identity(
+    traces: list[Trace], plot: PlotBox
+) -> tuple[list[Trace], dict[str, object]]:
+    """Repair a high-confidence Ciss/Coss swap before a shared right tail.
+
+    The directional tracker names the upper branch Ciss at its seed. That is
+    wrong when Coss starts above Ciss and the two later merge: their printed
+    right-edge labels sit on the same source stroke and cannot recover the
+    pre-merge branch by endpoint order alone. Keep the existing Ciss-flatness
+    guard load-bearing and use it only when the candidates have a material
+    range separation and a sustained shared right tail. Otherwise fail closed.
+    """
+
+    by_name = {trace.name: trace for trace in traces}
+    if not {"Ciss", "Coss"}.issubset(by_name):
+        return traces, {"changed": False, "reason": "missing_ciss_or_coss"}
+
+    ciss = by_name["Ciss"]
+    coss = by_name["Coss"]
+    ciss_range = _trace_y_range(ciss)
+    coss_range = _trace_y_range(coss)
+    range_gap = ciss_range - coss_range
+    ratio = ciss_range / max(1, coss_range)
+    shared_tail_points = _shared_right_tail_point_count(ciss, coss, plot)
+    rank_swap_count = _ciss_coss_rank_swap_count(ciss.points, coss.points)
+    diagnostics: dict[str, object] = {
+        "changed": False,
+        "reason": "ciss_already_flatter",
+        "ciss_y_range_px_before": ciss_range,
+        "coss_y_range_px_before": coss_range,
+        "range_ratio_before": ratio,
+        "range_gap_fraction_of_plot": range_gap / max(1, plot.height - 1),
+        "shared_right_tail_point_count": shared_tail_points,
+        "rank_swap_count_before": rank_swap_count,
+        "thresholds": {
+            "minimum_range_ratio": CISS_COSS_IDENTITY_MIN_RANGE_RATIO,
+            "minimum_range_gap_fraction_of_plot": (
+                CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION
+            ),
+            "minimum_shared_tail_points": CISS_COSS_IDENTITY_MIN_SHARED_TAIL_POINTS,
+        },
+    }
+    if ciss_range < coss_range:
+        return traces, diagnostics
+    if ratio < CISS_COSS_IDENTITY_MIN_RANGE_RATIO:
+        diagnostics["reason"] = "range_ratio_not_material"
+        return traces, diagnostics
+    if range_gap < CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION * (plot.height - 1):
+        diagnostics["reason"] = "range_gap_not_material"
+        return traces, diagnostics
+    has_shared_tail = shared_tail_points >= CISS_COSS_IDENTITY_MIN_SHARED_TAIL_POINTS
+    has_single_crossing = rank_swap_count == 1
+    if not has_shared_tail and not has_single_crossing:
+        diagnostics["reason"] = "no_shared_tail_or_single_crossing"
+        return traces, diagnostics
+
+    swapped = {
+        "Ciss": _renamed_trace(coss, "Ciss"),
+        "Coss": _renamed_trace(ciss, "Coss"),
+    }
+    repaired = [swapped.get(trace.name, trace) for trace in traces]
+    diagnostics.update(
+        {
+            "changed": True,
+            "reason": (
+                "flatness_guard_repaired_merged_tail_swap"
+                if has_shared_tail
+                else "flatness_guard_repaired_single_crossing_swap"
+            ),
+            "selected_source_assignment": {
+                "Ciss": "Coss",
+                "Coss": "Ciss",
+                "Crss": "Crss",
+            },
+        }
+    )
+    return repaired, diagnostics
+
+
+def ciss_coss_shared_spans(
+    traces: list[Trace], plot: PlotBox
+) -> list[dict[str, object]]:
+    """Return sustained one-stroke Ciss/Coss spans, excluding crossings."""
+
+    by_name = {trace.name: trace for trace in traces}
+    if not {"Ciss", "Coss"}.issubset(by_name):
+        return []
+    ciss = _median_y_by_x(by_name["Ciss"].points)
+    coss = _median_y_by_x(by_name["Coss"].points)
+    common_x = sorted(ciss.keys() & coss.keys())
+    distance_tolerance = max(
+        1.0,
+        min(plot.width, plot.height) * SHARED_CISS_COSS_DISTANCE_FRACTION,
+    )
+    close_x = [
+        x for x in common_x if abs(ciss[x] - coss[x]) <= distance_tolerance
+    ]
+    runs: list[list[int]] = []
+    for x in close_x:
+        if not runs or x - runs[-1][-1] > SHARED_CISS_COSS_MAX_COLUMN_GAP_PX:
+            runs.append([x])
+        else:
+            runs[-1].append(x)
+
+    spans: list[dict[str, object]] = []
+    for run in runs:
+        span_fraction = (run[-1] - run[0]) / max(1, plot.width - 1)
+        if (
+            len(run) < SHARED_CISS_COSS_MIN_POINTS
+            or span_fraction < SHARED_CISS_COSS_MIN_SPAN_FRACTION
+        ):
+            continue
+        sign_before = _nearest_separated_sign(
+            common_x, ciss, coss, distance_tolerance, run[0], direction=-1
+        )
+        sign_after = _nearest_separated_sign(
+            common_x, ciss, coss, distance_tolerance, run[-1], direction=1
+        )
+        # A sign-changing close run is an ordinary source crossing whose
+        # identities remain recoverable after re-divergence, not one stroke.
+        if (
+            sign_before is not None
+            and sign_after is not None
+            and sign_before != sign_after
+        ):
+            continue
+        spans.append(
+            {
+                "curves": ["Ciss", "Coss"],
+                "x0_px": run[0],
+                "x1_px": run[-1],
+                "sample_count": len(run),
+                "span_fraction": span_fraction,
+                "distance_tolerance_px": distance_tolerance,
+                "separated_sign_before": sign_before,
+                "separated_sign_after": sign_after,
+            }
+        )
+    return spans
+
+
+def _median_y_by_x(points: list[tuple[int, int]]) -> dict[int, float]:
+    grouped: dict[int, list[int]] = {}
+    for x, y in points:
+        grouped.setdefault(x, []).append(y)
+    return {x: float(np.median(ys)) for x, ys in grouped.items()}
+
+
+def _ciss_coss_rank_swap_count(
+    ciss_points: list[tuple[int, int]], coss_points: list[tuple[int, int]]
+) -> int:
+    ciss = _median_y_by_x(ciss_points)
+    coss = _median_y_by_x(coss_points)
+    signs = [
+        int(np.sign(ciss[x] - coss[x]))
+        for x in sorted(ciss.keys() & coss.keys())
+        if ciss[x] != coss[x]
+    ]
+    return sum(current != previous for previous, current in zip(signs, signs[1:]))
+
+
+def _nearest_separated_sign(
+    common_x: list[int],
+    ciss: dict[int, float],
+    coss: dict[int, float],
+    tolerance: float,
+    boundary_x: int,
+    *,
+    direction: int,
+) -> int | None:
+    candidates = (
+        reversed([x for x in common_x if x < boundary_x])
+        if direction < 0
+        else (x for x in common_x if x > boundary_x)
+    )
+    for x in candidates:
+        difference = ciss[x] - coss[x]
+        if abs(difference) > tolerance:
+            return 1 if difference > 0 else -1
+    return None
+
+
+def _shared_right_tail_point_count(ciss: Trace, coss: Trace, plot: PlotBox) -> int:
+    ciss_by_x = _median_y_by_x(ciss.points)
+    coss_by_x = _median_y_by_x(coss.points)
+    common_x = sorted(ciss_by_x.keys() & coss_by_x.keys())
+    tolerance = max(
+        1.0,
+        min(plot.width, plot.height) * SHARED_CISS_COSS_DISTANCE_FRACTION,
+    )
+    count = 0
+    previous_x: int | None = None
+    for x in reversed(common_x):
+        if previous_x is not None and previous_x - x > SHARED_CISS_COSS_MAX_COLUMN_GAP_PX:
+            break
+        if abs(ciss_by_x[x] - coss_by_x[x]) > tolerance:
+            break
+        count += 1
+        previous_x = x
+    return count
+
+
+def _trace_y_range(trace: Trace) -> int:
+    ys = [y for _x, y in trace.points]
+    return max(ys) - min(ys)
+
+
+def _renamed_trace(trace: Trace, name: str) -> Trace:
+    return Trace(name=name, area=trace.area, bbox=trace.bbox, points=trace.points)
+
 def find_plot_box(gray: np.ndarray) -> PlotBox:
     height, width = gray.shape
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
@@ -94,6 +321,7 @@ def extract_trace_components(
     assigned = _repair_leading_steep_coss(mask, centers_by_x, assigned, plot)
     assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
     assigned = _repair_leading_steep_crss(mask, assigned, plot)
+    assigned = _repair_reseparated_upper_crossing(centers_by_x, assigned, plot)
 
     traces: list[Trace] = []
     for name in ["Ciss", "Coss", "Crss"]:
@@ -134,9 +362,9 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
         ciss = np.array([_interp_y(by_name["Ciss"], x) for x in samples])
         coss = np.array([_interp_y(by_name["Coss"], x) for x in samples])
         crss = np.array([_interp_y(by_name["Crss"], x) for x in samples])
-        signs = np.sign(ciss - coss)
-        nonzero = signs[signs != 0]
-        swap_count = int(np.sum(nonzero[1:] != nonzero[:-1])) if len(nonzero) > 1 else 0
+        swap_count = _ciss_coss_rank_swap_count(
+            by_name["Ciss"], by_name["Coss"]
+        )
         crss_bottom = float(np.mean(crss >= np.maximum(ciss, coss))) if len(samples) else 0.0
         ciss_range = int(max(y for _, y in by_name["Ciss"]) - min(y for _, y in by_name["Ciss"]))
         coss_range = int(max(y for _, y in by_name["Coss"]) - min(y for _, y in by_name["Coss"]))
@@ -162,8 +390,24 @@ def trace_validation_summary(diagnostics: dict[str, object]) -> dict[str, object
         span = float(trace_diag.get("x_span_fraction") or 0.0)
         if points < 8:
             reasons.append(f"{name}_too_few_points")
-        if span < 0.75:
+        # This is a material-source-span guard, not a requirement that the
+        # printed stroke reach the plot's right frame.  Some NXP C(V) charts
+        # intentionally stop all three source strokes around 10--15 V on a
+        # 100 V axis (68--71% of the log-pixel width).  A 65% floor preserves
+        # those complete source strokes while the calibrated 40% truncated
+        # fixture below still fires fail-closed.
+        if span < MIN_MATERIAL_TRACE_X_SPAN_FRACTION:
             reasons.append(f"{name}_short_x_span")
+        y_range = int(trace_diag.get("y_range_px") or 0)
+        if (
+            y_range <= FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX
+            and span >= FLAT_GRID_CAPTURE_MIN_X_SPAN_FRACTION
+        ):
+            # A flat full-span result is not independently trustworthy, but
+            # flatness alone does not prove it captured a gridline: some real
+            # Ciss strokes are genuinely flat. Refuse without inventing the
+            # failure mechanism.
+            reasons.append(f"{name}_flat_full_span_unverified")
 
     checks = diagnostics.get("checks")
     if not isinstance(checks, dict):
@@ -222,6 +466,145 @@ def _track_directional_traces(
             plot=plot,
         )
     return tracked
+
+
+def _repair_reseparated_upper_crossing(
+    centers_by_x: list[list[float]],
+    assigned: dict[str, list[tuple[int, int]]],
+    plot: PlotBox,
+) -> dict[str, list[tuple[int, int]]]:
+    """Reconnect two upper traces after a line-width-obscured crossing.
+
+    A greedy tracker can keep both names on one branch when two source strokes
+    become indistinguishable around a crossing.  Repair only when distinct
+    upper pairs bound a material merged run and the incoming slopes predict the
+    crossed right-hand pairing substantially better than the parallel pairing.
+    An unbounded merge has no right-hand evidence and is deliberately left
+    shared/fail-closed.
+    """
+
+    if not {"Ciss", "Coss"}.issubset(assigned):
+        return assigned
+    upper_pairs: list[tuple[float, float] | None] = [
+        (centers[0], centers[1]) if len(centers) >= 3 else None
+        for centers in centers_by_x
+    ]
+    missing_runs: list[tuple[int, int]] = []
+    run_start: int | None = None
+    for x, pair in enumerate(upper_pairs + [None]):
+        if pair is None and run_start is None:
+            run_start = x
+        elif pair is not None and run_start is not None:
+            missing_runs.append((run_start, x - 1))
+            run_start = None
+
+    for start, end in missing_runs:
+        if (
+            end - start + 1 < UPPER_CROSSING_MIN_MERGED_COLUMNS
+            or start == 0
+            or end + 1 >= len(upper_pairs)
+        ):
+            continue
+        left_x = start - 1
+        right_x = end + 1
+        left_pair = upper_pairs[left_x]
+        right_pair = upper_pairs[right_x]
+        if left_pair is None or right_pair is None:
+            continue
+
+        history = [
+            (x, upper_pairs[x])
+            for x in range(max(0, left_x - 23), left_x + 1)
+            if upper_pairs[x] is not None
+        ]
+        if len(history) < 6:
+            continue
+        history_x = np.array([x for x, _pair in history], dtype=float)
+        predicted: list[float] = []
+        for pair_index in (0, 1):
+            history_y = np.array(
+                [pair[pair_index] for _x, pair in history if pair is not None],
+                dtype=float,
+            )
+            slope, intercept = np.polyfit(history_x, history_y, 1)
+            predicted.append(float(slope * right_x + intercept))
+
+        parallel_cost = sum(
+            abs(predicted[index] - right_pair[index]) for index in (0, 1)
+        )
+        crossing_cost = sum(
+            abs(predicted[index] - right_pair[1 - index]) for index in (0, 1)
+        )
+        if parallel_cost - crossing_cost < UPPER_CROSSING_MIN_COST_ADVANTAGE_PX:
+            continue
+
+        left_indices: dict[str, int] = {}
+        identity_x: int | None = None
+        identity_pair: tuple[float, float] | None = None
+        # Existing repair passes can temporarily put both names on one branch
+        # immediately before the crossing. Walk back to the nearest column
+        # where the two identities are still distinct instead of inferring an
+        # identity from their collapsed coordinates.
+        for probe_x in range(left_x, -1, -1):
+            probe_pair = upper_pairs[probe_x]
+            if probe_pair is None:
+                continue
+            probe_indices: dict[str, int] = {}
+            probe_distances: dict[str, float] = {}
+            global_x = plot.x0 + probe_x
+            global_pair = tuple(plot.y0 + y for y in probe_pair)
+            for name in ("Ciss", "Coss"):
+                y = _interp_y_in_range(assigned[name], global_x, max_gap=3)
+                if y is None:
+                    break
+                selected = min(
+                    (0, 1), key=lambda index: abs(y - global_pair[index])
+                )
+                probe_indices[name] = selected
+                probe_distances[name] = abs(y - global_pair[selected])
+            if (
+                len(probe_indices) == 2
+                and len(set(probe_indices.values())) == 2
+                and max(probe_distances.values())
+                <= UPPER_CROSSING_MAX_SOURCE_SEATING_DISTANCE_PX
+            ):
+                left_indices = probe_indices
+                identity_x = probe_x
+                identity_pair = probe_pair
+                break
+        if (
+            len(left_indices) != 2
+            or len(set(left_indices.values())) != 2
+            or identity_x is None
+            or identity_pair is None
+        ):
+            continue
+
+        repaired = {name: dict(points) for name, points in assigned.items()}
+        crossing_width = right_x - identity_x
+        for local_x in range(identity_x + 1, right_x):
+            fraction = (local_x - identity_x) / crossing_width
+            global_x = plot.x0 + local_x
+            for name in ("Ciss", "Coss"):
+                left_index = left_indices[name]
+                right_index = 1 - left_index
+                y = identity_pair[left_index] + fraction * (
+                    right_pair[right_index] - identity_pair[left_index]
+                )
+                repaired[name][global_x] = plot.y0 + int(round(y))
+        for local_x in range(right_x, len(upper_pairs)):
+            pair = upper_pairs[local_x]
+            if pair is None:
+                continue
+            global_x = plot.x0 + local_x
+            for name in ("Ciss", "Coss"):
+                right_index = 1 - left_indices[name]
+                repaired[name][global_x] = plot.y0 + int(round(pair[right_index]))
+        return {
+            name: sorted(points.items()) if isinstance(points, dict) else points
+            for name, points in repaired.items()
+        }
+    return assigned
 
 
 def _repair_leading_steep_coss(
@@ -1041,7 +1424,11 @@ def _cluster_column_runs(column: np.ndarray) -> list[float]:
 
     clustered: list[list[float]] = []
     for center in sorted(centers):
-        if clustered and center - clustered[-1][-1] <= 14:
+        # Merge antialias fragments of one stroke, but keep two nearby source
+        # curves distinct after a crossing.  The prior 14 px tolerance merged
+        # PSMN6R1's visibly re-separated Ciss/Coss tail into one centerline and
+        # fabricated a sustained shared span.
+        if clustered and center - clustered[-1][-1] <= COLUMN_RUN_CLUSTER_GAP_PX:
             clustered[-1].append(center)
         else:
             clustered.append([center])

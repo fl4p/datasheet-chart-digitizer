@@ -12,14 +12,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-try:
-    from .axis_calibration import _x_ticks_look_log, calibrate_axes
-except Exception:  # pragma: no cover - optional standalone use
-    try:
-        from axis_calibration import _x_ticks_look_log, calibrate_axes
-    except Exception:
-        calibrate_axes = None  # type: ignore
-        _x_ticks_look_log = None  # type: ignore
+from .axis_calibration import _number_tokens, _x_ticks_look_log, calibrate_axes
 
 from .capacitance_traces import _interp_y
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
@@ -436,12 +429,6 @@ def _parse_y_decades_from_chart_text(text: str, x_start_index: int) -> list[floa
 
 def _is_power_ten_exponent(value: float) -> bool:
     return 0.0 <= value <= 6.0 and abs(value - round(value)) < 1e-9
-
-
-def _number_tokens(text: str) -> list[float]:
-    superscript_map = str.maketrans("\u2070\u00b9\u00b2\u00b3\u2074\u2075\u2076\u2077\u2078\u2079", "0123456789")
-    normalized = text.translate(superscript_map)
-    return [float(raw) for raw in re.findall(r"(?<![A-Za-z])[-+]?[0-9]+(?:\.[0-9]+)?", normalized)]
 
 
 def trace_data_points(

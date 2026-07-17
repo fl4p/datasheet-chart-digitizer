@@ -73,6 +73,10 @@ from .capacitance_refs import (
     parse_output_charge_reference,
 )
 from .capacitance_traces import (
+    SHARED_CISS_COSS_DISTANCE_FRACTION,
+    SHARED_CISS_COSS_MAX_COLUMN_GAP_PX,
+    SHARED_CISS_COSS_MIN_POINTS,
+    SHARED_CISS_COSS_MIN_SPAN_FRACTION,
     _changed_repair_runs,
     _changed_repair_segment,
     _cluster_column_runs,
@@ -90,6 +94,7 @@ from .capacitance_traces import (
     _repair_leading_steep_coss,
     _repair_leading_steep_crss,
     _repair_missing_leading_knee,
+    _repair_reseparated_upper_crossing,
     _repair_shape_guard,
     _seed_x_from_anchors,
     _seed_x_from_middle,
@@ -103,8 +108,10 @@ from .capacitance_traces import (
     _track_directional_traces,
     _track_one_trace,
     _trim_repair_points_on_peer,
+    ciss_coss_shared_spans,
     extract_trace_components,
     find_plot_box,
+    repair_merged_ciss_coss_identity,
     trace_semantic_diagnostics,
     trace_validation_summary,
 )
@@ -147,6 +154,19 @@ from .capacitance_vector import (
 )
 
 
+def _axis_result_is_trusted(
+    calibration: AxisCalibration | None,
+    *,
+    position_error: str | None,
+    grid_error: str | None,
+    ocr_error: str | None,
+) -> bool:
+    """A selected calibration cannot be trusted beside an active fit error."""
+    return axis_calibration_is_trusted(calibration) and not any(
+        (position_error, grid_error, ocr_error)
+    )
+
+
 def process_chart(
     chart: dict[str, object],
     crop_path: Path,
@@ -167,28 +187,36 @@ def process_chart(
     axis_text_order_error: str | None = None
     axis_grid_error: str | None = None
     axis_position_error: str | None = None
+    axis_attempt_errors: dict[str, str] = {}
     axis_error: str | None = None
     axis_warning: str | None = None
     try:
         axis_text_order = infer_text_order_axis_calibration(chart)
     except Exception as text_exc:
         axis_text_order_error = str(text_exc)
+        axis_attempt_errors["text_order"] = axis_text_order_error
     try:
         axis_calibration = infer_position_axis_calibration(chart, image, plot)
         rejection = reject_bad_position_calibration(axis_calibration)
         if rejection is not None:
             axis_position_error = rejection
+            axis_attempt_errors["position"] = rejection
             try:
                 axis_calibration = infer_gridline_axis_calibration(chart, image, plot)
+                axis_position_error = None
             except Exception as grid_exc:
                 axis_grid_error = str(grid_exc)
+                axis_attempt_errors["grid"] = axis_grid_error
                 axis_calibration = axis_text_order
     except Exception as position_exc:
         axis_position_error = str(position_exc)
+        axis_attempt_errors["position"] = axis_position_error
         try:
             axis_calibration = infer_gridline_axis_calibration(chart, image, plot)
+            axis_position_error = None
         except Exception as grid_exc:
             axis_grid_error = str(grid_exc)
+            axis_attempt_errors["grid"] = axis_grid_error
             axis_calibration = axis_text_order
     axis_ocr_error: str | None = None
     if not axis_calibration_is_trusted(axis_calibration):
@@ -200,16 +228,25 @@ def process_chart(
             rejection = reject_bad_position_calibration(ocr_calibration)
             if rejection is None:
                 axis_calibration = ocr_calibration
+                axis_position_error = None
+                axis_grid_error = None
             else:
                 axis_ocr_error = rejection
+                axis_attempt_errors["ocr"] = rejection
         except Exception as ocr_exc:
             axis_ocr_error = str(ocr_exc)
+            axis_attempt_errors["ocr"] = axis_ocr_error
     if axis_calibration is None:
         axis_error = (
             f"position: {axis_position_error}; grid: {axis_grid_error}; "
             f"text_order: {axis_text_order_error}; ocr: {axis_ocr_error}"
         )
-    axis_trusted = axis_calibration_is_trusted(axis_calibration)
+    axis_trusted = _axis_result_is_trusted(
+        axis_calibration,
+        position_error=axis_position_error,
+        grid_error=axis_grid_error,
+        ocr_error=axis_ocr_error,
+    )
     if axis_calibration is not None and not axis_trusted:
         axis_warning = (
             "untrusted text-order axis fallback; physical vds_V/cap_pF columns "
@@ -230,7 +267,15 @@ def process_chart(
         axis_calibration if axis_trusted else None,
         anchors,
     )
-    overlay = draw_trace_overlay(image, plot, traces)
+    traces, identity_diagnostics = repair_merged_ciss_coss_identity(traces, plot)
+    shared_spans = ciss_coss_shared_spans(traces, plot)
+    overlay = draw_trace_overlay(
+        image,
+        plot,
+        traces,
+        axis_calibration if axis_trusted else None,
+        shared_spans,
+    )
 
     overlay_path = out_dir / "overlays" / rel_stem.with_suffix(".overlay.png")
     points_path = out_dir / "points" / rel_stem.with_suffix(".points.csv")
@@ -255,11 +300,28 @@ def process_chart(
 
     with points_path.open("w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis", "vds_V", "cap_pF"])
+        writer.writerow(
+            [
+                "trace",
+                "x_px",
+                "y_px",
+                "x_norm",
+                "y_norm_log_axis",
+                "vds_V",
+                "cap_pF",
+                "shared_collapsed",
+            ]
+        )
+        shared_ranges = [
+            (int(span["x0_px"]), int(span["x1_px"])) for span in shared_spans
+        ]
         for trace in traces:
             data_points = trace_data.get(trace.name)
             for idx, (x, y) in enumerate(trace.points):
                 vds, cap = data_points[idx] if data_points is not None else ("", "")
+                shared_collapsed = trace.name in {"Ciss", "Coss"} and any(
+                    x0 <= x <= x1 for x0, x1 in shared_ranges
+                )
                 writer.writerow(
                     [
                         trace.name,
@@ -269,6 +331,7 @@ def process_chart(
                         (plot.y1 - y) / max(1, plot.height - 1),
                         vds,
                         cap,
+                        str(shared_collapsed).lower(),
                     ]
                 )
 
@@ -313,6 +376,18 @@ def process_chart(
 
     diagnostics = trace_semantic_diagnostics(traces, plot)
     validation = trace_validation_summary(diagnostics)
+    status_reasons = list(validation["reasons"])
+    if not axis_trusted:
+        status_reasons.insert(0, "axis_calibration_untrusted")
+    status = "ok" if not status_reasons else "unverified"
+    physical_output_available = axis_trusted and validation["status"] == "pass"
+    output_charge_reference = output_charge_reference_to_json(output_ref)
+    if not physical_output_available:
+        # Datasheet reference values may be useful during validation, but they
+        # are not independently safe output when the chart axis/trace contract
+        # failed. Withhold every physical scalar instead of leaking a plausible
+        # value beside physical_output_available=false.
+        output_charge_reference = {name: None for name in output_charge_reference}
 
     return {
         "crop": str(crop_path),
@@ -329,11 +404,16 @@ def process_chart(
         "axis_grid_error": axis_grid_error,
         "axis_text_order_error": axis_text_order_error,
         "axis_ocr_error": axis_ocr_error,
+        "axis_attempt_errors": axis_attempt_errors,
         "axis_error": axis_error,
         "axis_warning": axis_warning,
         "axis_calibration_trusted": axis_trusted,
+        "status": status,
+        "status_reasons": status_reasons,
+        "physical_output_available": physical_output_available,
         "anchor_diagnostics": anchor_diagnostics,
-        "output_charge_reference": output_charge_reference_to_json(output_ref),
+        "identity_diagnostics": identity_diagnostics,
+        "output_charge_reference": output_charge_reference,
         "qoss_metrics": qoss_metrics,
         "qoss_vendor_tail_validation": qoss_vendor_tail_validation,
         "qoss_validation_status": qoss_validation_status(metrics, qoss_validation_error, qoss_vendor_tail_validation),
@@ -341,6 +421,13 @@ def process_chart(
         "coss_top_decade_clip": coss_clip_diag,
         "trace_validation_status": validation["status"],
         "trace_validation_reasons": validation["reasons"],
+        "shared_collapse_spans": shared_spans,
+        "shared_collapse_thresholds": {
+            "distance_fraction_of_short_plot_side": SHARED_CISS_COSS_DISTANCE_FRACTION,
+            "minimum_span_fraction": SHARED_CISS_COSS_MIN_SPAN_FRACTION,
+            "minimum_source_points": SHARED_CISS_COSS_MIN_POINTS,
+            "maximum_column_gap_px": SHARED_CISS_COSS_MAX_COLUMN_GAP_PX,
+        },
         "diagnostics": diagnostics,
         "anchors": {
             name: {"value_pf": anchor.value_pf, "vds_v": anchor.vds_v}
