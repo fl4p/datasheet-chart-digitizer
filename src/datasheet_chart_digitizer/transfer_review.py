@@ -147,6 +147,81 @@ def maximum_pairwise_collapse_fraction(
     return maximum
 
 
+@dataclass(frozen=True)
+class CollapseSpan:
+    """One sustained merge between two traces, in image rows."""
+
+    first_index: int
+    second_index: int
+    y_lo: int
+    y_hi: int
+    reorders_after: bool
+
+
+def sustained_collapse_spans(
+    traces: list[ReviewTrace],
+    tolerance_px: float = 1.5,
+    min_run_rows: int = 12,
+) -> tuple[list[CollapseSpan], list[set[int]]]:
+    """Locate sustained merges and the rows they occupy on EVERY trace.
+
+    A pair of traces is *collapsed* over a maximal run of consecutive rows
+    where their interpolated centerlines sit within ``tolerance_px`` (about
+    one stroke width) — provided the run is sustained (``min_run_rows`` or
+    longer).  A transient ZTC-style crossing also touches zero spread, but
+    the curves re-diverge immediately, so its run stays short and is NOT
+    reported; those rows keep their independent identities.
+
+    Collapsed rows are returned for BOTH traces of a pair, including any
+    retained "primary" one: within a merge the extracted centerline is the
+    shared stroke, not either temperature's true value, so neither side may
+    present those points as measured evidence.
+    """
+    spans: list[CollapseSpan] = []
+    collapsed_rows: list[set[int]] = [set() for _ in traces]
+    for (first_index, first), (second_index, second) in itertools.combinations(
+        enumerate(traces), 2
+    ):
+        first_x = {y: x for x, y in first.pixels}
+        second_x = {y: x for x, y in second.pixels}
+        first_y = sorted(first_x)
+        second_y = sorted(second_x)
+        if not first_y or not second_y:
+            continue
+        lo = max(first_y[0], second_y[0])
+        hi = min(first_y[-1], second_y[-1])
+        if hi < lo:
+            continue
+        rows = np.arange(lo, hi + 1, dtype=float)
+        delta = np.interp(rows, first_y, [first_x[y] for y in first_y]) - np.interp(
+            rows, second_y, [second_x[y] for y in second_y]
+        )
+        within = np.abs(delta) <= tolerance_px
+        indexes = np.flatnonzero(within)
+        if not len(indexes):
+            continue
+        for run in np.split(indexes, np.flatnonzero(np.diff(indexes) > 1) + 1):
+            if len(run) < min_run_rows:
+                continue
+            run_lo = int(rows[run[0]])
+            run_hi = int(rows[run[-1]])
+            before = delta[run[0] - 1] if run[0] > 0 else 0.0
+            after = delta[run[-1] + 1] if run[-1] + 1 < len(delta) else 0.0
+            spans.append(
+                CollapseSpan(
+                    first_index=first_index,
+                    second_index=second_index,
+                    y_lo=run_lo,
+                    y_hi=run_hi,
+                    reorders_after=bool(before * after < 0),
+                )
+            )
+            marked = set(range(run_lo, run_hi + 1))
+            collapsed_rows[first_index] |= marked
+            collapsed_rows[second_index] |= marked
+    return spans, collapsed_rows
+
+
 def calibrate_pixels(
     pixels: list[tuple[int, int]], plot: PlotBox, axis: TransferAxis
 ) -> list[tuple[float, float]]:

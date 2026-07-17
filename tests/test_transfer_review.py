@@ -14,6 +14,7 @@ from datasheet_chart_digitizer.transfer_review import (
     extract_transfer_traces,
     maximum_pairwise_collapse_fraction,
     review_trace_from_pixels,
+    sustained_collapse_spans,
 )
 
 
@@ -201,3 +202,73 @@ def test_stk295_vector_paths_and_temperature_identity_match_source():
 
     assert vgs_at(traces[1], 600) < vgs_at(traces[2], 600)
     assert vgs_at(traces[1], 700) > vgs_at(traces[2], 700)
+
+
+def test_sustained_merge_is_flagged_on_both_traces():
+    plot = PlotBox(0, 0, 300, 400)
+    axis = TransferAxis(0.0, 10.0, 0.0, 100.0)
+    shared = [(150, y) for y in range(0, 161)]
+    first = review_trace_from_pixels(
+        shared + [(150 - int(round(0.5 * (y - 160))), y) for y in range(161, 401)],
+        plot,
+        axis,
+    )
+    second = review_trace_from_pixels(
+        shared + [(150 + int(round(0.5 * (y - 160))), y) for y in range(161, 401)],
+        plot,
+        axis,
+    )
+    spans, collapsed_rows = sustained_collapse_spans([first, second])
+    assert len(spans) == 1
+    span = spans[0]
+    assert span.y_lo == 0
+    assert 155 <= span.y_hi <= 170
+    # The merged centerline is not either temperature's value: BOTH traces
+    # carry the flag, including any retained "primary" one.
+    assert collapsed_rows[0] == collapsed_rows[1]
+    fraction = len(collapsed_rows[0]) / len(first.pixels)
+    assert 0.38 <= fraction <= 0.45
+
+
+def test_transient_ztc_crossing_is_not_collapse():
+    plot = PlotBox(0, 0, 300, 400)
+    axis = TransferAxis(0.0, 10.0, 0.0, 100.0)
+    first = review_trace_from_pixels(
+        [(50 + int(round(0.4 * y)), y) for y in range(0, 401)], plot, axis
+    )
+    second = review_trace_from_pixels(
+        [(210 - int(round(0.4 * y)), y) for y in range(0, 401)], plot, axis
+    )
+    spans, collapsed_rows = sustained_collapse_spans([first, second])
+    assert spans == []
+    assert collapsed_rows == [set(), set()]
+
+
+def test_stk295_collapse_flags_match_the_shared_tail():
+    script = Path(__file__).parents[1] / "scripts" / "generate_transfer_review25.py"
+    spec = importlib.util.spec_from_file_location("generate_transfer_review25", script)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(spec.name, None)
+
+    traces = module._stk_vector_traces(
+        PlotBox(115, 178, 491, 553), TransferAxis(0, 7, 0, 800)
+    )
+    spans, collapsed_rows = sustained_collapse_spans(traces)
+    assert spans, "the STK295 hot-curve coincidence band must fire the detector"
+    # The refined vector extraction keeps the 25C path fully separate; only
+    # the 175C/55C pair runs within one stroke width through its slow
+    # crossing, and BOTH of those carry the flag.
+    assert not collapsed_rows[0]
+    assert collapsed_rows[1] and collapsed_rows[1] == collapsed_rows[2]
+    fractions = [
+        len(collapsed_rows[i]) / len(traces[i].pixels) for i in (1, 2)
+    ]
+    assert all(0.1 <= fraction <= 0.3 for fraction in fractions)
+    # The band sits at the top of the plot; the separated lower region where
+    # the temperatures genuinely differ must stay unflagged.
+    assert max(max(rows) for rows in collapsed_rows[1:]) < 350
