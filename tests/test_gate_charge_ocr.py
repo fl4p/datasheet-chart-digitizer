@@ -161,10 +161,10 @@ class GateChargeOcrTests(unittest.TestCase):
         ocr.assert_called_once_with(Path("sample.pdf"))
         injected.assert_called_once_with(Path("sample.pdf"), Path("out"), 120, [ocr_page])
 
-    def test_ocr_arithmetic_x_axis_extrapolates_omitted_zero(self) -> None:
+    def test_arithmetic_x_axis_extrapolates_omitted_zero(self) -> None:
         ticks = [(25.0, 350.0), (50.0, 400.0), (75.0, 450.0), (100.0, 500.0)]
 
-        repaired = gate._ocr_x_ticks_with_zero(
+        repaired = gate._x_ticks_with_zero(
             ticks, pymupdf.Rect(295.0, 100.0, 550.0, 400.0)
         )
 
@@ -173,7 +173,7 @@ class GateChargeOcrTests(unittest.TestCase):
         self.assertEqual(repaired[1:], ticks)
         irregular = [(25.0, 350.0), (50.0, 400.0), (90.0, 450.0)]
         self.assertEqual(
-            gate._ocr_x_ticks_with_zero(
+            gate._x_ticks_with_zero(
                 irregular, pymupdf.Rect(295.0, 100.0, 550.0, 400.0)
             ),
             irregular,
@@ -185,7 +185,7 @@ class GateChargeOcrTests(unittest.TestCase):
             (100.0, 525.0),
         ]
         self.assertEqual(
-            gate._ocr_x_ticks_with_zero(
+            gate._x_ticks_with_zero(
                 irregular_positions, pymupdf.Rect(295.0, 100.0, 550.0, 400.0)
             ),
             irregular_positions,
@@ -263,6 +263,68 @@ class GateChargeOcrTests(unittest.TestCase):
                         result.dpi / 72
                     )
                     self.assertLess(plot_left, 340.0)
+
+
+class GateChargeOcrContaminationRegression(unittest.TestCase):
+    """A panel's OCR retry must not leak into another panel's primary (native) text.
+
+    Regression for PSMB050N10NS2 / PSMB055N08NS1 / PSMP050N10NS2: a page-1
+    part-summary 'Gate charge' spec-table match (axis_assumed) triggered a global
+    OCR populate that then bled the neighbour Fig.8 normalized 0.9-1.1 axis into
+    the correct page-4 Fig.7 native panel, dropping Vpl from the native 4.96 V to
+    a bogus ~1.0 V.
+    """
+
+    def test_ocr_retry_does_not_contaminate_other_panels_native_extraction(self) -> None:
+        import tempfile
+
+        panel_summary = _panel()
+        object.__setattr__(panel_summary, "page", 1)
+        object.__setattr__(panel_summary, "diagram", 951)
+        panel_chart = _panel()
+        object.__setattr__(panel_chart, "page", 4)
+
+        calls: list[tuple[int, object]] = []
+
+        def fake_digitize(pdf, doc, panel, dpi, page_text=None):  # noqa: ANN001
+            calls.append((panel.page, page_text))
+            if panel.page == 1:
+                # spec-table match: no real plot -> fail-closed axis_assumed
+                return SimpleNamespace(
+                    status="axis_assumed", vpl=1.75, y_tick_count=0, panel=panel, score=-1e9
+                )
+            # page-4 real chart: native gives the true ~5 V plateau; any injected
+            # (OCR) page_text simulates the neighbour-axis contamination -> ~1.0 V.
+            if page_text is None:
+                return SimpleNamespace(
+                    status="ok", vpl=4.96, y_tick_count=5, panel=panel, score=26.0
+                )
+            return SimpleNamespace(
+                status="ok", vpl=1.0, y_tick_count=5, panel=panel, score=26.0
+            )
+
+        with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+            with mock.patch.object(
+                gate, "_discover_gate_panels", return_value=([panel_summary, panel_chart], {})
+            ), mock.patch.object(
+                gate, "_digitize_panel", side_effect=fake_digitize
+            ), mock.patch.object(
+                gate,
+                "run_tesseract_page_text",
+                return_value=[SimpleNamespace(page_num=1), SimpleNamespace(page_num=4)],
+            ), mock.patch.object(
+                gate.pymupdf, "open", return_value=mock.MagicMock()
+            ):
+                results = gate.digitize_gate_charge(tmp.name)
+
+        # The page-4 panel's PRIMARY extraction must have received native text
+        # (None), never the OCR text populated by the page-1 panel's retry.
+        primary_page4 = [pt for page, pt in calls if page == 4][0]
+        self.assertIsNone(primary_page4)
+
+        selected = sorted(results, key=gate._result_sort_key)[0]
+        self.assertEqual(selected.panel.page, 4)
+        self.assertAlmostEqual(selected.vpl, 4.96, places=2)
 
 
 if __name__ == "__main__":
