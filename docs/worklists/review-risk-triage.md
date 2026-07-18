@@ -136,3 +136,34 @@ review_risk: {
 - All 8 guard-review answers written and passing.
 - Crossing/refused/novelty rules unit-tested incl. far-tail.
 - Dual-agent review + Fab sign-off before it gates any real queue. Until then, shadow-only.
+
+---
+
+## Corrections from adversarial review (SUPERSEDE §1–§3 before build)
+
+- **T1 — never trust `axis_calibration_trusted=true` or low residuals alone.** An internally
+  consistent axis mis-scale (superscript/decade misread) produces low residuals AND
+  `axis_calibration_trusted=true` while being wrong — the project rule is that *active axis errors
+  override that flag* (`dsdig-superscript-axis-trust`). The auto-clear condition must apply the
+  active-axis-error override; a self-reported trust flag cannot by itself lower risk.
+
+- **T2 — the exemplar base is unvetted ground truth.** Familiarity matches against a human-GREEN
+  corpus this project's own history shows is contaminated (the 3/30; the "do NOT fit from the
+  20260715 packet" note). A contaminated exemplar with a common fingerprint lets any matching wrong
+  extraction cite it. Pin an **authoritative, versioned** exemplar corpus and **audit the exemplar
+  base itself** (the 7% sample currently only audits auto-clears, never the exemplars).
+
+- **T3 — the 3/30 have no emitted signal.** They passed `status=ok`, low residuals, both agent
+  lanes, and the checklist — clean intrinsic + familiar fingerprint → they would auto-clear. "Zero
+  false-auto-clears on the 3/30" is therefore NOT achievable by the signals in §1; that defect
+  class (axis/box/tick that leaves clean self-report) stays **mandatory-human** until a concrete
+  emitted feature distinguishes it. Do not tune the gate to overfit the five known-bad.
+
+- **T4 — familiarity ≠ correctness; `auto_cleared_low_risk` is NOT a consumability signal.**
+  Familiarity measures *typicality*. A wrong-but-typical extraction (anchor in the usual band,
+  familiar layout) is exactly what it rewards. Precedence contract with the acceptance oracle:
+  nothing skips a human on the triage lane unless it ALSO clears the oracle's grounding bar.
+  Downstream must never consume a chart on the strength of `auto_cleared_low_risk` alone.
+
+These gate the build; §1–§3 as written are unsafe without them. (Full analysis mirrored in
+`docs/worklists/auto-acceptance-oracle.md` §10 in the datasheet-chart-digitizer repo.)

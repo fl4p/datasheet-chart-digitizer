@@ -81,9 +81,14 @@ by a wrong curve; two *independent-class* agreements cannot (cheaply).
    evidence flips back to accept. Test the far tail.
 4. **Ensemble never grounds alone** (same pixels). Physics-only can ground *refusal* but for
    *acceptance* requires pairing with T or X (physics can be satisfied by a plausibly-wrong curve).
-5. **Crossings**: auto-accept requires the X-class Qoss/Qgd integral check AND passing the
-   microscopic intersection test — the Coss-snap passed normal-scale similarity but violates
-   `Coss ≥ Crss` / the integral; the oracle must catch it. (`crossing-approach-snap-check`.)
+5. **Crossings**: **every C(V) triple is crossing-class by construction** — never gate on a
+   self-computed `crossing` flag (the approach-snap rides along without a clean intersection, so a
+   flag can miss it, which is why both agent lanes did). A C(V) triple can NEVER `auto_accept`; it
+   requires the microscopic intersection test. Note (correcting an earlier draft): a ride-along
+   snap makes digitized `Coss ≈ Ciss`, so `Coss ≥ Crss` still holds and `Ciss ≥ Coss` is violated
+   only on *overshoot*, not ride-along — **P does not catch a ride-along snap**, and a graph-only
+   Qoss reference is not independent, so X may also miss it. Hence: crossings → mandatory
+   microscopic/human, not oracle-accept. (`crossing-approach-snap-check`.)
 6. **Auto-accept ≠ human_verified**; distinct provenance state; round-trip the distinction.
 
 ---
@@ -170,3 +175,73 @@ human-RED chart**; tolerances derived from labelled correct/wrong pairs; all 8 g
 written and passing; crossing/disagreement/independence rules unit-tested incl. the crafted
 single-anchor-wrong-curve and Coss-snap far-tail; dual-agent review + Fab sign-off before it
 substitutes for any human review. Until then, shadow-only.
+
+---
+
+## 10. Corrections from adversarial review (SUPERSEDE §1–§9 before build)
+
+An adversarial pass broke the naive design. The through-line: guarding *independence of
+truth-source* does NOT imply *joint coverage of the extraction* or *independence of the underlying
+measurement*, and the human-GREEN corpus is not clean ground truth. Required tightenings:
+
+- **C1 — coverage, not a point + a shape.** The ≥2 groundings must jointly constrain the curve
+  **across its domain** (a multi-point / integral residual over the whole trace), not "one table
+  anchor (T) + monotonicity (P)". Two curves through one anchor, both monotone and correctly
+  ordered, diverge arbitrarily in the body. **The "coincidental agreement is exponentially
+  unlikely" premise holds only for independent RANDOM errors; a systematic Y-scale/decade error
+  shifts T, P, and X together.** Accept requires a bounded residual over the sampled domain, and at
+  least one grounding must be a *distributed* (not single-point) constraint.
+
+- **C2 — a check that is expected-applicable but returns `not_applicable` = disagreement, never
+  neutral.** A wrong-enough extraction *degrades* a check (can't locate the plateau → P goes
+  `n/a`) rather than failing it; §2's escalate-on-fail then silently drops it. Worsening the input
+  must never flip `fail → n/a → accept`. Each chart type declares its *expected-applicable* checks;
+  any expected check that returns `n/a` routes to `human_review`.
+
+- **C3 — groundings must depend on DISJOINT extracted quantities.** Source-label independence is
+  insufficient: gate-charge T (`table Qgd` vs plateau) and P (`plateau length ≈ Qgd`) both read the
+  same plateau landmark; transfer T (`Vth` vs Id-onset) and P (monotone above Vth) both hinge on
+  Id-onset. Mis-locate the landmark → both move together = one measurement counted twice. Require
+  the two groundings to rest on disjoint measured features.
+
+- **C4 — X grounds only against a TABLE scalar, never a co-digitized graph** (a graph Qoss is
+  pixel-derived by the same extractor = correlated error). And integrals are area-dominated
+  (low-VDS region) so tail/shape errors barely move them — pair any integral with a tail/multi-point
+  residual.
+
+- **C5 — the must-catch set is a FLOOR, and each entry needs a named emitted signal first.** For
+  each must-catch defect, enumerate the *concrete emitted feature* the oracle trips on **before**
+  claiming it as an acceptance criterion. The **3/30 sweep-GREEN** axis/box/tick defects passed
+  `status=ok` + low residuals + both agent lanes + the checklist — they have **no distinguishing
+  emitted signal**, so they CANNOT be the acceptance bar and their class stays **mandatory-human**
+  until a real signal exists (do not tune the gate to overfit five examples). Also validate on a
+  **held-out** human-RED set never used to set tolerances; report its false-accept rate.
+
+- **C6 — the exemplar/tolerance corpus is unvetted and self-widening.** Tolerances fit from a
+  human-GREEN corpus that this project's own history shows is contaminated
+  (`dsdig-sweep-green-axis-integrity-retro`; `transfer-review25-verified`: "do NOT fit from the
+  20260715 packet"). A wrong-but-GREEN chart has a *larger* residual, so a raw fit **widens** the
+  accept tolerance (monotone the wrong way). Pin an **authoritative, versioned** exemplar corpus;
+  **audit the exemplar base itself** (not just auto-accepts); use a robust/quarantined tolerance
+  fit.
+
+- **C7 — most chart types have NO grounding; `served_unverified` must be hard-non-consumable.**
+  No T/P/X exists for body-diode VSD, Qrr (feeds N_TAU fits), Zth (known human-RED, issue #8),
+  gfs/gm (#9), SOA/avalanche. Zth/gfs → **`refused`**, not served. `served_unverified` gets an
+  explicit **downstream hard-gate contract**: fits/consumers MUST refuse it (the whole honesty of
+  the flag depends on this, and it is a required companion change, not optional). Gate-charge note:
+  a curve-switch can leave the Vpl scalar correct yet the curve RED — P-only is known-insufficient
+  there.
+
+- **C8 — audit power + kill-switch dimension.** 7% uniform sampling has poor power for a rare
+  systematic error (a 1/500 defect needs ~7000 accepts before detection). Risk-stratify: oversample
+  first-N of every new fingerprint and near-threshold accepts. The kill-switch must key on the
+  **failure's actual dimension** (e.g. "all log-log C(V)"), not only the fingerprint tuple, or
+  sibling classes stay live.
+
+- **C9 — precedence vs triage.** `auto_cleared_low_risk` (triage) measures *typicality, not
+  correctness* and has zero independent grounding. It is **NOT a consumability signal**. Nothing
+  skips a human on the triage lane unless it ALSO clears this oracle's grounding bar. Document that
+  contract in both files.
+
+These corrections gate the build: §1–§9 as originally written are unsafe without them.
