@@ -1,169 +1,83 @@
-# Review-risk triage — worklist (proposal)
+# Review-queue de-prioritization filter — worklist
 
-**Problem.** Human verification is the throughput bottleneck. Current batches are "everything
-that changed / the whole pool," so charts *structurally identical to many previously
-human-verified GREENs* (low risk) consume the same human attention as the few novel/high-risk
-ones. Goal: route human eyes to the top of the risk distribution and **de-prioritize** familiar
-low-risk charts — **without** recreating the anti-monotone false-PASS.
+**Goal.** Stop putting **very-low-risk charts that are near-duplicates of ones a human already
+verified** in front of the reviewer. This is a **display/queue filter only**: a hidden chart is NOT
+verified, NOT consumable, and never gets `human_verified` — it is simply not shown this round.
+Failure cost is bounded — a hidden wrong chart is no worse than today, where the reviewer can't look
+at everything anyway.
 
-**Non-goal / hard invariant.** Triage NEVER sets `human_verified`. Auto-clear is a *distinct*
-state (`auto_cleared_low_risk`), meaning "not shown to a human this round," not "verified." The
-`human_verified` invariant is untouched.
-
----
-
-## 1. Two components
-
-**(A) Intrinsic risk** — from signals already emitted per extraction, no new detection:
-- `trace_source` (raster/OCR ≫ vector), `status` (any non-`ok`), `score`, `curve_px` point count,
-  `ytick_count`
-- axis residuals `x_resid`/`y_resid`, `axis_calibration_trusted`
-- diagnostics: `vpl_outside_expected_range`, `near_axis_top`, `clipped`,
-  `shared_collapse_spans`, `graph_table_inconsistent`, any refusal reason
-- **crossing-ness** (Ciss/Coss/Crss that intersect) — inherently high risk
-- primary value outside its expected physical band (e.g. Vpl vs VGS axis)
-
-**(B) Novelty / familiarity** — the new part. A **fingerprint** per chart:
-`(vendor, chart_type, panel_layout_signature, axis_model[log|lin + decade span + tick count per
-axis], curve_count, unit_set)`. Familiarity = count of **human-verified GREEN exemplars** with a
-matching fingerprint AND matching extraction shape (same curve topology, same monotonicity class,
-Vpl/anchor in the same band). High familiarity (≥ `k`, start `k=8`) = low novelty.
-
-The exemplar set is the corpus of charts a **human** marked GREEN — never agent-GREEN (agent-GREEN
-is not ground truth; §checklist).
+**Explicitly NOT in scope** (and demolished by two adversarial reviews — see the shelved
+`auto-acceptance-oracle.md` / `agent-orchestration.md`): auto-*accepting* charts, certifying
+correctness, or letting downstream *consume* a value that no human verified. This filter certifies
+nothing; it only prioritizes attention.
 
 ---
 
-## 2. Triage lanes
+## 1. Hide rule
 
-- **REFUSED** — `status` is a fail-closed refusal (unresolved / rejected_non_gate / axis_assumed /
-  null-served). No per-instance human needed to confirm a null, but each refusal **class** gets a
-  periodic once-per-class human spot-check (is the refusal itself correct?).
-- **AUTO-CLEAR (low-risk)** — ALL of: `status=ok`; zero diagnostics; residuals under threshold;
-  NOT a crossing/shared-span chart; primary value in-band; **AND** familiarity ≥ `k` positive
-  exemplar matches. Recorded `auto_cleared_low_risk` + the matched exemplar ids. **~7% sampled
-  into HUMAN-REVIEW** anyway (drift detection).
-- **HUMAN-REVIEW (risk-sorted)** — everything else, highest intrinsic risk first. Batches become
-  "here are the N that need you," not "here are 46, 40 of which you've seen."
+Hide chart C from the reviewer's queue **iff BOTH**:
 
----
+- **(low risk)** `status == ok` AND no diagnostic flag (`vpl_outside_expected_range`,
+  `near_axis_top`, `clipped`, `shared_collapse_spans`, `graph_table_inconsistent`, any refusal
+  reason) AND axis residual under threshold AND **not a C(V) crossing** (crossing = the chart is a
+  Ciss/Coss/Crss triple — *structural*, never hidden); **AND**
+- **(familiar)** C matches **≥ k human-GREEN exemplars (k ≥ 8)** of the same **fingerprint**,
+  produced by the **same extractor version**.
 
-## 3. Fail-safe rules (this triage is a GUARD — build it monotone)
+Everything else → **shown** (human queue, risk-sorted). Hiding requires BOTH positive signals;
+absence of either shows the chart.
 
-1. **Absence of evidence → HUMAN-REVIEW, never auto-clear.** Unknown/under-populated fingerprint
-   (novel vendor/layout/type, `< k` exemplars) → HUMAN. Missing/unparseable features (can't
-   compute intrinsic or fingerprint) → HUMAN. A chart is auto-cleared only by a **positive**
-   exemplar match, never by "no defect found."
-2. **Monotone.** As any risk feature worsens, the lane moves monotonically toward HUMAN-REVIEW;
-   there is no region where more risk flips back to auto-clear. Test the far tail explicitly.
-3. **Crossing / shared-collapse charts NEVER auto-clear.** The Coss-snaps-onto-Ciss defect looked
-   fine at normal scale and both agent lanes missed it — structural similarity is insufficient
-   for crossings; they stay microscopic/human. (`[[crossing-approach-snap-check]]`)
-4. **Any fail-closed diagnostic disqualifies auto-clear.**
-5. **Auto-clear ≠ human_verified.** Distinct state; provenance says `auto_cleared_low_risk` with
-   matched exemplar ids, never launders into `human_verified`.
-6. **Sampled audit + drift kill-switch.** Audit ~7% of auto-clears against a human. If any
-   false-auto-clear surfaces for a fingerprint class, that class **loses auto-clear eligibility**
-   until re-calibrated. A guard never seen to catch a real defect is not trusted.
+## 2. Fingerprint — what "very similar" means
 
----
+`(vendor, chart_type, panel_layout_signature, axis_model [log|lin + decade span + tick count/axis],
+curve_count, unit_set, extractor_version)`. Same fingerprint ⇒ same datasheet family + same
+extraction path. All fields are already derivable from the chart record + build metadata.
 
-## 4. Calibration set — the known-bad it MUST route to HUMAN (guard-checklist #7)
+## 3. Exemplar set = human-verified GREENs only
 
-Construct from this project's actual misses; if the triage would AUTO-CLEAR any of these, it is
-broken and must not gate:
-- the **3/30 sweep-GREEN** charts Fab caught by eye that both agent lanes passed
-- **PSMN5R3** Coss-onto-Ciss approach-snap crossing
-- **DI280** multi-panel Vpl (16.96 V off the avalanche panel)
-- **FDPF190** `near_axis_top` / clipped-Qoss
-- an axis-residual outlier (the tick-center ~1-3 px / +31 px cases)
+Keyed by `(fingerprint, extractor_version)`. **Never agent-GREEN.** When the human GREENs a chart it
+becomes an exemplar for its fingerprint at that extractor version.
 
-Acceptance requires **zero false-auto-clears** across this set.
+## 4. Fail-safe rules (cheap — and the reviews confirmed this is the sound part)
 
----
+1. **Absence of a match → show.** Novel or under-populated fingerprint (`< k` exemplars), or
+   unparseable features → show. Hiding needs a *positive* exemplar match, never "nothing looked
+   wrong."
+2. **Any flag / crossing / non-ok status → show**, regardless of familiarity.
+3. **Monotone:** more risk only ever moves toward *show*; nothing flips a flagged chart to hidden.
+4. **Hidden ≠ verified ≠ consumable.** Provenance: `hidden_familiar_low_risk` + matched exemplar
+   ids. `human_verified` stays false; downstream must never read "hidden" as usable.
 
-## 5. Rollout — shadow first, gate never-until-calibrated
+## 5. Two safety valves (the honest residual-risk mitigations)
 
-1. **Shadow mode.** Compute `review_risk` + lane on the existing human-verified corpus. Measure:
-   of human-GREEN charts, what % would auto-clear (the yield); of human-RED / defect charts, what
-   % would auto-clear (**must be 0**). Report the confusion matrix.
-2. Only after **0 false-auto-clears on the calibration set AND on the historical human-RED set**
-   does auto-clear reduce a real human queue. Even then, keep the 7% audit + kill-switch.
-3. Ship as a **dsdig library extension** (`review_risk` module) that consumes the already-emitted
-   signals; the only new detection is the fingerprint + exemplar match. Per project rule, propose
-   for inclusion, don't hand-roll one-off.
+- **Sample-back:** re-inject a random ~5 % of the hidden set into the queue, so a *per-chart* defect
+  the exemplars didn't have still reaches the reviewer occasionally.
+- **Extractor-version re-surface (the load-bearing one):** on any extractor change touching a chart
+  type, **un-hide that type's familiar class** until the reviewer re-verifies a few new-version
+  exemplars. A *new systematic bug* from an extractor fix won't resemble old-version verified charts
+  — but only if the match is version-keyed. This is the guard that stops a fresh shared bug from
+  being silently hidden.
 
----
+## 6. Honest limits
 
-## 6. Output schema (per chart)
+- "Similar to verified" is only as good as those verified charts; a contaminated exemplar
+  propagates. Bounded because this is *prioritization, not certification*, and the sample-back +
+  version-resurface catch the two ways it degrades.
+- Yield concentrates on high-volume vendor/layout families (where ≥ k exemplars accumulate); the
+  long tail always shows. That's correct — the tail is where novelty risk lives.
 
-```
-review_risk: {
-  lane: "refused" | "auto_clear" | "human_review",
-  intrinsic_score: float,                 # bounded, monotone in risk
-  intrinsic_flags: [ ... ],               # which signals fired
-  fingerprint: "<vendor|type|layout|axis|curves|units>",
-  familiarity_matches: int,               # human-GREEN exemplars matched
-  matched_exemplar_ids: [ ... ],
-  auto_clear_reason | human_review_reason: str,   # explicit, never silent
-  crossing: bool,
-}
-```
-`human_verified` is NOT part of this and is never written by the triage.
+## 7. Output
 
----
+The queue omits hidden charts and reports `hidden: N (M sampled back)` per batch, so the reviewer
+sees the count and can spot-open the hidden set on demand. Nothing is deleted or marked verified.
 
-## 7. Guard-review self-check (answer in the PR)
+## 8. Build / acceptance
 
-1. **Returns on un-evaluatable input?** → `human_review` (not auto_clear). ✔ by rule 1.
-2. **Monotone?** → yes by rule 2; test the far tail (max residual, raster, crossing all set →
-   must be human_review).
-3. **Precondition checked?** → auto_clear gated on `familiarity ≥ k` *existing*, not assumed.
-4. **Signature vs proxy?** → fingerprint covers extraction SHAPE + human-verified exemplars, not
-   metadata alone or agent-GREEN.
-5. **Persist a false verdict?** → no; auto_clear is a distinct de-prioritization state, not
-   `human_verified`; round-trip the distinction.
-6. **Provenance honest?** → `auto_cleared_low_risk` + exemplar ids; never claims human verified.
-7. **Calibrated against known-bad?** → §4 set; zero false-auto-clears required.
-8. **Fixing the check or the number?** → N/A; triage reorders attention, never alters extractions.
-
----
-
-## 8. Acceptance gate
-
-- Shadow confusion matrix on the human-verified corpus: **0 auto-clears of any historical
-  human-RED / calibration-set chart**; report auto-clear yield on human-GREENs.
-- All 8 guard-review answers written and passing.
-- Crossing/refused/novelty rules unit-tested incl. far-tail.
-- Dual-agent review + Fab sign-off before it gates any real queue. Until then, shadow-only.
-
----
-
-## Corrections from adversarial review (SUPERSEDE §1–§3 before build)
-
-- **T1 — never trust `axis_calibration_trusted=true` or low residuals alone.** An internally
-  consistent axis mis-scale (superscript/decade misread) produces low residuals AND
-  `axis_calibration_trusted=true` while being wrong — the project rule is that *active axis errors
-  override that flag* (`dsdig-superscript-axis-trust`). The auto-clear condition must apply the
-  active-axis-error override; a self-reported trust flag cannot by itself lower risk.
-
-- **T2 — the exemplar base is unvetted ground truth.** Familiarity matches against a human-GREEN
-  corpus this project's own history shows is contaminated (the 3/30; the "do NOT fit from the
-  20260715 packet" note). A contaminated exemplar with a common fingerprint lets any matching wrong
-  extraction cite it. Pin an **authoritative, versioned** exemplar corpus and **audit the exemplar
-  base itself** (the 7% sample currently only audits auto-clears, never the exemplars).
-
-- **T3 — the 3/30 have no emitted signal.** They passed `status=ok`, low residuals, both agent
-  lanes, and the checklist — clean intrinsic + familiar fingerprint → they would auto-clear. "Zero
-  false-auto-clears on the 3/30" is therefore NOT achievable by the signals in §1; that defect
-  class (axis/box/tick that leaves clean self-report) stays **mandatory-human** until a concrete
-  emitted feature distinguishes it. Do not tune the gate to overfit the five known-bad.
-
-- **T4 — familiarity ≠ correctness; `auto_cleared_low_risk` is NOT a consumability signal.**
-  Familiarity measures *typicality*. A wrong-but-typical extraction (anchor in the usual band,
-  familiar layout) is exactly what it rewards. Precedence contract with the acceptance oracle:
-  nothing skips a human on the triage lane unless it ALSO clears the oracle's grounding bar.
-  Downstream must never consume a chart on the strength of `auto_cleared_low_risk` alone.
-
-These gate the build; §1–§3 as written are unsafe without them. (Full analysis mirrored in
-`docs/worklists/auto-acceptance-oracle.md` §10 in the datasheet-chart-digitizer repo.)
+- **Shadow first:** run the filter over a labelled batch; confirm it would hide only charts the
+  reviewer agrees are low-risk near-duplicates, and hides **zero** flagged / crossing / novel
+  charts.
+- **Unit tests:** novel fingerprint → shown; any flag → shown; crossing (C(V) triple) → shown;
+  `< k` exemplars → shown; extractor-version bump → familiar class re-surfaced; hidden chart never
+  carries `human_verified` or a consumable flag.
+- It is a small filter over already-emitted signals + the human-GREEN log — **no new extraction, no
+  grounding, no oracle.** Feasible as a dsdig helper.

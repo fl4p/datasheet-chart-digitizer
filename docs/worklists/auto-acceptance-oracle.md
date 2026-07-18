@@ -1,3 +1,11 @@
+> **STATUS: SHELVED — explored, not pursued.** Two adversarial reviews established that
+> auto-*accepting* digitizations (certifying correctness without a human) automates only a
+> low-consequence minority while every high-value chart (Coss(V), Qrr, C(V) crossings) stays
+> human, and carries a structural, unmeasurable false-accept rate (the "3/30" no-signal defect
+> class, against a contaminated ground-truth corpus). The actual goal is a **display-queue
+> filter** (`review-risk-triage.md`), not a trust oracle. Kept here for the analysis of *why* this
+> path fails — do not build from it.
+
 # Automated acceptance oracle — worklist (proposal)
 
 **Goal.** Enable **auto-acceptance of a digitization without human review** when the extraction
@@ -245,3 +253,38 @@ measurement*, and the human-GREEN corpus is not clean ground truth. Required tig
   contract in both files.
 
 These corrections gate the build: §1–§9 as originally written are unsafe without them.
+
+---
+
+## 11. Geometry is measured, not eyeballed; the artifact must show the discrepancy; route lanes by modality
+
+- **Geometric groundings are CV MEASUREMENTS, not LLM/human visual judgments.** Tick-center vs
+  printed tick, box-owns-its-frame, exact crossing coordinate, monotonicity/ordering — compute
+  these from the image (pixel positions, curve geometry) and compare to source with an explicit
+  tolerance. LLMs of **any** family at **any** zoom *estimate* geometry — they answer "looks
+  aligned," never "within N px." The pass/fail is the measurement; visual review is corroboration
+  only. Evidence: FDPF190 was missed **with the 5× crop present** — the fix was a measured per-tick
+  exact-center assertion (`cap-axis-tick-centers`), not more zoom.
+
+- **The review artifact must expose SOURCE vs EXTRACTED as two separate marks.** Never render the
+  extracted marker at its own inverse-fit *predicted* position — that draws the extraction on
+  itself, so upscaling shows perfect self-agreement (the mute-button trap: the reviewer, LLM or
+  human, becomes MORE confident in a wrong calibration). The crop overlays the **source printed
+  tick/curve AND the extracted position**; the visible gap (and the measured residual) is what's
+  judged.
+
+- **5×/8× upscaling helps resolution-limited defects ONLY** — a sub-perceptual offset becomes
+  visible (this is why the crossing microscopic check catches ride-alongs). It does NOT catch:
+  attention/rigor failures (a reviewer who doesn't check — see FDPF), estimation-vs-measurement
+  gaps (still "looks close"), or semantic misreads (an internally-consistent axis mis-scale, e.g.
+  `10²`→102, renders a perfectly-aligned tick crop while the number is wrong). Treat the crop as
+  corroboration, never the gate.
+
+- **Route review lanes by MODALITY, not just vendor.** Geometry → CV/measurement (authoritative).
+  Identity / plausibility / curve-binding ("right chart? right temperature bound? sane values?") →
+  **≥2 DIFFERENT capable multi-modal LLMs**; cross-family consensus is meaningful and decorrelates
+  blind spots (this session: GPT/codex caught Claude's FDPF over-call; Claude caught the over-null
+  risk). Ungrounded or CV-vs-LLM disagreement → human. Caveat: model diversity reduces
+  *uncorrelated* misses but NOT the class all current models share (the 3/30 fine axis/tick) — that
+  stays CV-or-human. Vet each LLM lane on a labelled set (a weak-vision lane adds false-REDs); keep
+  the count small (2–3).

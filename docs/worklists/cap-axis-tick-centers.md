@@ -1,7 +1,7 @@
 # Capacitance actual-artifact tick-centering worklist
 
-**Status:** design/diagnosis only. Do not alter the frozen bottom-frame packet,
-commit, push, or set `human_verified`.
+**Status:** isolated implementation and full-corpus acceptance in progress. Do
+not alter the frozen dependency packets, commit, push, or set `human_verified`.
 
 ## Defect
 
@@ -36,6 +36,19 @@ not least-squares residual. These classes must not share a cosmetic fix.
 6. Treat an evidenced consumed tick outside the plot box as a separate
    box/axis-ownership failure. Extend only to the panel's own continuous frame;
    otherwise reject the foreign tick/panel binding.
+7. Bind semantic values to nearby label/fit evidence before grid regularity.
+   Exact centering alone must not snap a non-decade endpoint to an interior
+   minor gridline or mistake a wider unlabeled frame for the last tick.
+8. Collapse duplicate semantic labels only when their candidate centers agree
+   spatially. Conflicting duplicates fail closed; their median is not evidence.
+9. Permit at most one unlabeled endpoint interval (with bounded raster
+   tolerance). Two or more unconsumed intervals require semantic tick recovery
+   or an untrusted axis; long extrapolation from centered interior ticks is not
+   accepted.
+10. Delegate the linearized least-squares fit to the shared public
+    `numeric_axis.fit_axis_ticks` core. Raster evidence selection and the
+    piecewise served mapping may remain capacitance-specific; do not add another
+    hand-rolled axis fitter.
 
 ## Fixtures and acceptance
 
@@ -48,6 +61,10 @@ not least-squares residual. These classes must not share a cosmetic fix.
   an interior minor log line close to a major tick; and a missing gridline.
 - Negative: a genuine frame extending beyond the last labeled tick. The last
   tick stays on its own gridline and must not be snapped to the wider frame.
+- Negative: two spatially distinct occurrences of the same semantic tick value
+  must refuse; agreeing duplicates may collapse.
+- Coverage pair: one unlabeled endpoint interval remains accepted, while two
+  missing endpoint intervals fail closed.
 - Full frozen 800-chart same-environment A/B. This is data-moving: compare every
   served C(V) point/value, calibration, tick-evidence, overlay, and physical
   scalar. Prove each movement reduces residual to printed grid truth.
