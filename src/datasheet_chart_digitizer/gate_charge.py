@@ -717,7 +717,35 @@ def _aligned_frame_improves_axis_binding(
         return False
     if max(frame_errors) > 0.18:
         return False
-    return sum(frame_errors) + 0.10 < sum(current_errors)
+    if sum(frame_errors) + 0.10 < sum(current_errors):
+        return True
+
+    # Axis geometry alone cannot choose between a frame at the final labeled
+    # tick and one exactly one unlabeled interval beyond it: both have zero edge
+    # error by construction.  In that tie, accept direct closed-frame evidence
+    # only when it CONSTRICTS the current loose box.  This closes side-by-side
+    # neighbor capture (2N7002K/AGM056N10C) and dead-whitespace overshoot
+    # (FDB120N10) without relaxing the existing evidence requirement for any
+    # outward expansion.  Genuine unlabeled terminal intervals still use the
+    # original strict-improvement path above (DI110N15PQ/HY1001D/IXFB/IXTH).
+    edge_tolerance_px = 2.0
+    frame_is_contained = (
+        frame[0] >= current[0] - edge_tolerance_px
+        and frame[1] >= current[1] - edge_tolerance_px
+        and frame[2] <= current[2] + edge_tolerance_px
+        and frame[3] <= current[3] + edge_tolerance_px
+    )
+    frame_constricts = (
+        frame[0] > current[0] + edge_tolerance_px
+        or frame[1] > current[1] + edge_tolerance_px
+        or frame[2] < current[2] - edge_tolerance_px
+        or frame[3] < current[3] - edge_tolerance_px
+    )
+    return (
+        frame_is_contained
+        and frame_constricts
+        and sum(frame_errors) <= sum(current_errors) + 0.05
+    )
 
 
 def _snap_tick_coordinates_to_plot(

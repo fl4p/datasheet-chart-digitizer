@@ -412,6 +412,18 @@ class GateChargeVplTests(unittest.TestCase):
         for actual, expected in zip(detected, (30, 25, 260, 185), strict=True):
             self.assertAlmostEqual(actual, expected, delta=1)
 
+    def test_aligned_frame_wins_axis_tie_against_loose_extra_interval(self) -> None:
+        accepted = gate._aligned_frame_improves_axis_binding(
+            (100, 80, 500, 380),
+            (100, 80, 600, 380),
+            estimation.pymupdf.Rect(0.0, 0.0, 700.0, 500.0),
+            1.0,
+            [(0.0, 100.0), (1.0, 200.0), (2.0, 300.0), (3.0, 400.0), (4.0, 500.0)],
+            [(3.0, 80.0), (2.0, 180.0), (1.0, 280.0), (0.0, 380.0)],
+        )
+
+        self.assertTrue(accepted)
+
     def test_inboard_edge_tick_is_snapped_to_evidenced_plot_corner(self) -> None:
         ticks = ((0.0, 100.0), (10.0, 200.0), (20.0, 295.0))
 
@@ -701,6 +713,26 @@ class GateChargeVplTests(unittest.TestCase):
                     )
                 else:
                     self.assertEqual(result.plot_box_px[2], result.x_ticks_px[-1][1])
+
+    def test_real_gate_frame_does_not_expand_into_neighbor_or_whitespace(self) -> None:
+        root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
+        cases = (
+            "xnrusemi/2N7002K.pdf",
+            "onsemi/FDB120N10.pdf",
+            "agmsemi/AGM056N10C.pdf",
+        )
+        if not all((root / relative).exists() for relative in cases):
+            self.skipTest("gate-frame expansion regressions are not configured")
+
+        for relative in cases:
+            with self.subTest(pdf=relative):
+                result = gate.find_vpl_result(root / relative)
+                self.assertIsNotNone(result)
+                assert result is not None
+                self.assertEqual(result.status, "ok")
+                self.assertAlmostEqual(
+                    result.plot_box_px[2], result.x_ticks_px[-1][1], delta=4.0
+                )
 
     def test_real_mcc_omitted_zero_keeps_initial_rise_and_plateau(self) -> None:
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets/mcc"
