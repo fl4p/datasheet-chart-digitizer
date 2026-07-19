@@ -375,7 +375,7 @@ def process_chart(
             qoss_validation_error = str(exc)
 
     diagnostics = trace_semantic_diagnostics(traces, plot)
-    validation = trace_validation_summary(diagnostics)
+    validation = trace_validation_summary(diagnostics, extraction_method)
     status_reasons = list(validation["reasons"])
     if not axis_trusted:
         status_reasons.insert(0, "axis_calibration_untrusted")

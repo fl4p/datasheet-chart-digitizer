@@ -401,6 +401,55 @@ class AxisCalibrationTests(unittest.TestCase):
         self.assertEqual("suspect", summary["status"])
         self.assertEqual(["Ciss_flat_full_span_unverified"], summary["reasons"])
 
+    def test_flat_raster_trace_in_dead_zone_span_refuses(self) -> None:
+        # A dead-flat RASTER trace (y_range_px <= 1) with span in [0.65, 0.90) is
+        # above the short-span floor yet below the old 0.90 full-span-flat gate,
+        # so it used to escape BOTH guards and pass a mis-seated flat line.  This
+        # is the HXY/onsemi/AO Crss-latched-onto-bottom-axis failure (12 corpus
+        # C(V) charts, all raster).  Grid-capture is a raster phenomenon, so the
+        # raster gate fires across the whole non-short span range: a flat trace
+        # is never more trustworthy for also being shorter.
+        diagnostics = {
+            "Ciss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 40},
+            "Coss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60},
+            "Crss": {"points": 200, "x_span_fraction": 0.76, "y_range_px": 0},
+            "checks": {
+                "common_samples": 200,
+                "ciss_coss_rank_swap_count": 0,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics, "raster")
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Crss_flat_full_span_unverified", summary["reasons"])
+        # Unknown provenance is treated conservatively as raster.
+        self.assertEqual("suspect", mc.trace_validation_summary(diagnostics)["status"])
+
+    def test_flat_vector_trace_in_dead_zone_span_passes(self) -> None:
+        # Vector extraction reads actual PDF curve paths and cannot latch onto a
+        # gridline, so a flat vector trace in the [0.65, 0.90) band is a genuine
+        # flat curve, not grid-capture.  It must keep passing (this is the
+        # RJK0853 full-span vector regression at the unit level).
+        diagnostics = {
+            "Ciss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 40},
+            "Coss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60},
+            "Crss": {"points": 200, "x_span_fraction": 0.76, "y_range_px": 0},
+            "checks": {
+                "common_samples": 200,
+                "ciss_coss_rank_swap_count": 0,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics, "vector")
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
     def test_column_runs_keep_reseparated_crossing_curves_distinct(self) -> None:
         column = np.zeros(80, dtype=np.uint8)
         column[20:23] = 1

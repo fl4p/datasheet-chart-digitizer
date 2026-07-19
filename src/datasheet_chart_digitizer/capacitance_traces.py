@@ -14,7 +14,18 @@ SHARED_CISS_COSS_MIN_POINTS = 12
 SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
 MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
-FLAT_GRID_CAPTURE_MIN_X_SPAN_FRACTION = 0.90
+# Grid-capture (a flat trace latched onto a rendered gridline/frame) is a RASTER
+# failure: column pixel-following can grab a horizontal line.  Vector reads PDF
+# paths and cannot capture a gridline, so a flat vector trace is a real curve.
+# Hence two span gates.  Raster fires down to the material-span floor (0.65): the
+# old single 0.90 gate left a dead zone where a dead-flat raster trace with span
+# in [0.65, 0.90) was neither "short" nor "full-span-flat" and escaped BOTH
+# guards, serving a mis-seat as pass (12 onsemi/AO C(V) charts, Crss latched onto
+# the bottom axis at ~0.76 span while the real Crss dropped a decade).  Lowering
+# it makes the raster verdict monotone.  Vector keeps 0.90 (preserves the RJK0853
+# full-span vector verdict; grid-capture cannot occur there).
+FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
+FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION = 0.90
 COLUMN_RUN_CLUSTER_GAP_PX = 6.0
 CISS_COSS_IDENTITY_MIN_RANGE_RATIO = 1.5
 CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION = 0.03
@@ -379,7 +390,16 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
     return diagnostics
 
 
-def trace_validation_summary(diagnostics: dict[str, object]) -> dict[str, object]:
+def trace_validation_summary(
+    diagnostics: dict[str, object], extraction_method: str | None = None
+) -> dict[str, object]:
+    # Grid-capture is raster-only; vector paths cannot latch onto a gridline.
+    # An unknown provenance is treated conservatively as raster (stricter gate).
+    flat_span_gate = (
+        FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION
+        if extraction_method == "vector"
+        else FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION
+    )
     reasons: list[str] = []
     for name in ("Ciss", "Coss", "Crss"):
         trace_diag = diagnostics.get(name)
@@ -401,7 +421,7 @@ def trace_validation_summary(diagnostics: dict[str, object]) -> dict[str, object
         y_range = int(trace_diag.get("y_range_px") or 0)
         if (
             y_range <= FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX
-            and span >= FLAT_GRID_CAPTURE_MIN_X_SPAN_FRACTION
+            and span >= flat_span_gate
         ):
             # A flat full-span result is not independently trustworthy, but
             # flatness alone does not prove it captured a gridline: some real
