@@ -9,6 +9,32 @@ import numpy as np
 
 from .capacitance_types import AxisCalibration, OutputChargeReference
 
+# Ciss/Coss/Crss are monotonically non-increasing in Vds, so a trace whose value
+# RISES from low to high Vds is not a capacitance curve -- it is a mis-seat onto a
+# non-cap panel misclassified as capacitance (SOA/Zth envelopes rise).  Flag when
+# value climbs > this fraction of the plot height (left-fifth to right-fifth
+# medians).  Calibrated: 24 good PASS charts top out at +0.011, while the SOA
+# (NCE2010E, +0.221) and Zth (FDD6612A, +0.097) leaks sit far above 0.05.
+UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
+
+
+def value_rise_fraction(points: list[tuple[int, int]], plot_height: int) -> float:
+    """Signed fraction of plot height a trace's value climbs, left-fifth to right.
+
+    Value increases upward (smaller y_px), so positive => value rose with Vds.
+    """
+    xs = sorted(x for x, _ in points)
+    span = xs[-1] - xs[0] if xs else 0
+    if span <= 0:
+        return 0.0
+    lo, hi = xs[0] + 0.2 * span, xs[-1] - 0.2 * span
+    left = [y for x, y in points if x <= lo]
+    right = [y for x, y in points if x >= hi]
+    if not left or not right:
+        return 0.0
+    return (float(np.median(left)) - float(np.median(right))) / max(1, plot_height)
+
+
 def coss_metrics_to_json(metrics: object) -> dict[str, float]:
     return {
         "Qoss_pc": float(metrics.Qoss),

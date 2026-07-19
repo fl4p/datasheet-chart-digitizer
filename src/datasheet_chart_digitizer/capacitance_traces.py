@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .capacitance_types import CapAnchor, PlotBox, Trace
+from .capacitance_validation import UNPHYSICAL_VALUE_RISE_FRACTION, value_rise_fraction
 
 
 SHARED_CISS_COSS_DISTANCE_FRACTION = 0.008
@@ -15,15 +16,10 @@ SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
 MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
 # Grid-capture (a flat trace latched onto a rendered gridline/frame) is a RASTER
-# failure: column pixel-following can grab a horizontal line.  Vector reads PDF
-# paths and cannot capture a gridline, so a flat vector trace is a real curve.
-# Hence two span gates.  Raster fires down to the material-span floor (0.65): the
-# old single 0.90 gate left a dead zone where a dead-flat raster trace with span
-# in [0.65, 0.90) was neither "short" nor "full-span-flat" and escaped BOTH
-# guards, serving a mis-seat as pass (12 onsemi/AO C(V) charts, Crss latched onto
-# the bottom axis at ~0.76 span while the real Crss dropped a decade).  Lowering
-# it makes the raster verdict monotone.  Vector keeps 0.90 (preserves the RJK0853
-# full-span vector verdict; grid-capture cannot occur there).
+# failure that vector paths cannot suffer, so the flat guard uses two span gates:
+# raster fires down to the material-span floor (0.65), closing a dead zone in
+# [0.65, 0.90) where a dead-flat raster trace was neither "short" nor "full-span-
+# flat" and escaped both guards (12 onsemi/AO mis-seats); vector keeps 0.90.
 FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
 FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION = 0.90
 COLUMN_RUN_CLUSTER_GAP_PX = 6.0
@@ -346,9 +342,9 @@ def extract_trace_components(
     return traces
 
 
-
 def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, object]:
     by_name = {trace.name: trace.points for trace in traces}
+    plot_height = plot.y1 - plot.y0
     diagnostics: dict[str, object] = {}
     for name, points in by_name.items():
         if not points:
@@ -356,6 +352,7 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
                 "points": 0,
                 "x_span_fraction": 0.0,
                 "y_range_px": 0,
+                "value_rise_fraction": 0.0,
             }
             continue
         xs = [x for x, _ in points]
@@ -364,6 +361,7 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
             "points": len(points),
             "x_span_fraction": (max(xs) - min(xs)) / max(1, plot.width - 1),
             "y_range_px": max(ys) - min(ys),
+            "value_rise_fraction": value_rise_fraction(points, plot_height),
         }
 
     if all(name in by_name and by_name[name] for name in ("Ciss", "Coss", "Crss")):
@@ -428,6 +426,10 @@ def trace_validation_summary(
             # Ciss strokes are genuinely flat. Refuse without inventing the
             # failure mechanism.
             reasons.append(f"{name}_flat_full_span_unverified")
+        if float(trace_diag.get("value_rise_fraction") or 0.0) > UNPHYSICAL_VALUE_RISE_FRACTION:
+            # Capacitance cannot climb with Vds; a rising trace is a mis-seat
+            # onto a non-cap panel (SOA/Zth) misclassified as capacitance.
+            reasons.append(f"{name}_rises_with_vds_unphysical")
 
     checks = diagnostics.get("checks")
     if not isinstance(checks, dict):

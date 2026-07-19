@@ -450,6 +450,54 @@ class AxisCalibrationTests(unittest.TestCase):
         self.assertEqual("pass", summary["status"])
         self.assertEqual([], summary["reasons"])
 
+    def test_rising_trace_is_unphysical_and_refuses(self) -> None:
+        # Capacitance is monotonically non-increasing in Vds. A trace whose value
+        # climbs with Vds is a mis-seat onto a non-cap panel (SOA/Zth) that the
+        # classifier mislabeled as capacitance. Calibrated: 24 good charts top out
+        # at +0.011, the SOA/Zth leaks at +0.221/+0.097 (threshold 0.05).
+        diagnostics = {
+            "Ciss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 40,
+                     "value_rise_fraction": -0.30},
+            "Coss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60,
+                     "value_rise_fraction": 0.22},
+            "Crss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60,
+                     "value_rise_fraction": -0.20},
+            "checks": {
+                "common_samples": 200,
+                "ciss_coss_rank_swap_count": 0,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics, "raster")
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Coss_rises_with_vds_unphysical", summary["reasons"])
+
+    def test_small_low_v_rise_within_tolerance_passes(self) -> None:
+        # A real capacitance can wobble slightly near 0 V; net rise below the
+        # calibrated 0.05 floor (good charts top out at +0.011) must NOT flag.
+        diagnostics = {
+            "Ciss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 40,
+                     "value_rise_fraction": 0.011},
+            "Coss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60,
+                     "value_rise_fraction": -0.08},
+            "Crss": {"points": 200, "x_span_fraction": 0.95, "y_range_px": 60,
+                     "value_rise_fraction": -0.30},
+            "checks": {
+                "common_samples": 200,
+                "ciss_coss_rank_swap_count": 0,
+                "crss_bottom_fraction": 1.0,
+                "ciss_flatter_than_coss": True,
+            },
+        }
+
+        summary = mc.trace_validation_summary(diagnostics, "raster")
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
     def test_column_runs_keep_reseparated_crossing_curves_distinct(self) -> None:
         column = np.zeros(80, dtype=np.uint8)
         column[20:23] = 1
