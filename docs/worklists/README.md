@@ -14,12 +14,12 @@ canonical PDFs by page and document structure before choosing vendor-series
 samples. Generated `*.pdf.<transform>.pdf` copies are excluded and indexed as
 variants; cluster labels are sampling metadata, never runtime detector input.
 
-Fab stopped the earlier continuous five-vendor random-sampling loop. Current
-sampling is layout-driven: choose canonical medoids/outliers from the structural
-index, presently emphasizing Nexperia, ROHM, Vishay, and IXYS/Littelfuse. Do
-not restart an unbounded sampling watcher without a new explicit instruction.
-SPD03 remains a historical open packet; its gates are not waived or laundered
-into later slices.
+Fab stopped the earlier five-vendor random sampler, then explicitly authorized
+an unsupervised defect-closing loop on 2026-07-20. Sampling remains
+layout-driven: choose canonical medoids/outliers from the structural index,
+presently emphasizing Nexperia, ROHM, Vishay, and IXYS/Littelfuse. Each newly
+flagged item must enter a bounded worklist and must not be laundered by later
+sampling. SPD03 remains a historical open packet; its gates are not waived.
 
 Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual-y-gate-charge.md),
 [ST normalized breakdown](current-st-normalized-breakdown-caption.md),
@@ -28,14 +28,15 @@ Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual
 plus [Onsemi shared-endpoint capacitance source paths](current-onsemi-shared-cap-source-paths.md),
 [capacitance unresolved shared-collapse fail-close](current-capacitance-unresolved-shared-collapse.md),
 [capacitance trace coverage and clipped top decade](current-capacitance-trace-coverage-top-clip.md),
+[capacitance left-edge trace coverage](current-capacitance-left-edge-coverage.md),
 [Infineon IPD50N10S3L-16 capacitance right-frame coverage](current-infineon-ipd50-cap-right-frame.md),
 [Infineon BSC normalized RDS(on) temperature routing](current-infineon-bsc059-rdst.md),
 [TI CSD19537Q3 converging transfer paths](current-ti-csd19537q3-transfer.md), and
 [ST MDmesh M9 thin vector strokes](current-st8l65-thin-vector-strokes.md), plus
 [compact formula caption ownership](current-compact-formula-captions.md) and
 [STH310 breakdown neighbor-rail ownership](current-sth310-breakdown-neighbor-rail.md).
-NDB5060L is human-GREEN across all charts as of 2026-07-20; only its shared
-landing gate remains open.
+NDB5060L is human-GREEN across all charts as of 2026-07-20; its shared landing
+gate was completed in `7f893fe`.
 The [STP15NK50Z detached caption](current-stp15nk50z-detached-caption.md)
 finder is GREEN while its outlined-tick extraction remains blocked. The
 [Toshiba TK100 raster caption](current-toshiba-tk100-raster-caption.md) finder

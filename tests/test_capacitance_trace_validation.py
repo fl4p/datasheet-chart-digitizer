@@ -5,11 +5,28 @@ from datasheet_chart_digitizer.capacitance_validation import (
 )
 
 
-def _diagnostics(*, ciss_span: float, coss_span: float, crss_span: float):
+def _diagnostics(
+    *,
+    ciss_span: float,
+    coss_span: float,
+    crss_span: float,
+):
     return {
-        "Ciss": {"points": 427, "x_span_fraction": ciss_span, "y_range_px": 20},
-        "Coss": {"points": 427, "x_span_fraction": coss_span, "y_range_px": 80},
-        "Crss": {"points": 389, "x_span_fraction": crss_span, "y_range_px": 120},
+        "Ciss": {
+            "points": 427,
+            "x_span_fraction": ciss_span,
+            "y_range_px": 20,
+        },
+        "Coss": {
+            "points": 427,
+            "x_span_fraction": coss_span,
+            "y_range_px": 80,
+        },
+        "Crss": {
+            "points": 389,
+            "x_span_fraction": crss_span,
+            "y_range_px": 120,
+        },
         "checks": {
             "common_samples": 200,
             "ciss_coss_rank_swap_count": 0,
@@ -55,6 +72,46 @@ class CapacitanceTraceValidationTests(unittest.TestCase):
 
         self.assertEqual("pass", summary["status"])
         self.assertNotIn("Crss_peer_relative_short_x_span", summary["reasons"])
+
+    def test_uniform_material_left_gap_refuses(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.92, coss_span=0.92, crss_span=0.92),
+            "vector",
+            left_start_fractions={"Ciss": 0.041, "Coss": 0.041, "Crss": 0.041},
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("all_traces_left_edge_gap", summary["reasons"])
+
+    def test_differential_ciss_late_start_refuses(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.96, coss_span=1.0, crss_span=1.0),
+            "vector",
+            left_start_fractions={"Ciss": 0.043, "Coss": 0.0, "Crss": 0.0},
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Ciss_peer_relative_late_x_start", summary["reasons"])
+
+    def test_small_common_left_inset_passes(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.97, coss_span=0.97, crss_span=0.97),
+            "raster",
+            left_start_fractions={"Ciss": 0.029, "Coss": 0.029, "Crss": 0.029},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
+    def test_two_late_source_authored_traces_need_more_evidence(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.66, coss_span=0.99, crss_span=0.96),
+            "vector",
+            left_start_fractions={"Ciss": 0.34, "Coss": 0.01, "Crss": 0.05},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
 
     def test_late_shared_ciss_coss_without_reseparation_refuses(self) -> None:
         shared = [{

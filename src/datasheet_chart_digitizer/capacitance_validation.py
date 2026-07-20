@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .capacitance_types import AxisCalibration, OutputChargeReference
+from .capacitance_types import AxisCalibration, OutputChargeReference, PlotBox, Trace
 
 # Ciss/Coss/Crss are monotonically non-increasing in Vds, so a trace whose value
 # RISES from low to high Vds is not a capacitance curve -- it is a mis-seat onto a
@@ -18,6 +18,8 @@ from .capacitance_types import AxisCalibration, OutputChargeReference
 UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
 MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 MAX_CRSS_PEER_X_SPAN_DEFICIT = 0.06
+MAX_TRACE_LEFT_EDGE_GAP_FRACTION = 0.03
+MAX_PEER_LEFT_START_DEFICIT = 0.03
 FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
 # Grid-capture is raster-only; vector paths cannot latch onto a gridline.
 FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
@@ -35,6 +37,7 @@ def trace_validation_summary(
     diagnostics: dict[str, object],
     extraction_method: str | None = None,
     shared_collapse_spans: list[dict[str, object]] | None = None,
+    left_start_fractions: dict[str, float] | None = None,
 ) -> dict[str, object]:
     """Fail closed on incomplete or semantically untrusted C(V) traces."""
 
@@ -73,6 +76,28 @@ def trace_validation_summary(
             # independent source-owned endpoint proof and uses the full rule.
             reasons.append("Crss_peer_relative_short_x_span")
 
+    left_starts = {
+        name: max(0.0, float(value))
+        for name, value in (left_start_fractions or {}).items()
+        if name in ("Ciss", "Coss", "Crss")
+    }
+    if len(left_starts) == 3:
+        earliest = min(left_starts.values())
+        if earliest > MAX_TRACE_LEFT_EDGE_GAP_FRACTION:
+            reasons.append("all_traces_left_edge_gap")
+        else:
+            late_names = [
+                name
+                for name, start in left_starts.items()
+                if start - earliest > MAX_PEER_LEFT_START_DEFICIT
+            ]
+            # A single lagging trace against two edge-reaching peers is strong
+            # differential evidence.  Two traces may legitimately begin later
+            # than the third (for example Toshiba Ciss/Crss source strokes), so
+            # that pattern needs source-ink proof rather than a pixel-only gate.
+            if len(late_names) == 1:
+                reasons.append(f"{late_names[0]}_peer_relative_late_x_start")
+
     for name in ("Ciss", "Coss", "Crss"):
         trace_diag = diagnostics.get(name)
         if not isinstance(trace_diag, dict):
@@ -109,6 +134,19 @@ def trace_validation_summary(
             reasons.append("ciss_not_flatter_than_coss")
 
     return {"status": "pass" if not reasons else "suspect", "reasons": reasons}
+
+
+def trace_left_start_fractions(
+    traces: list[Trace], plot: PlotBox
+) -> dict[str, float]:
+    """Measure each trace's first served source column in plot pixel space."""
+
+    width = max(1, plot.width - 1)
+    return {
+        trace.name: (min(x for x, _y in trace.points) - plot.x0) / width
+        for trace in traces
+        if trace.points
+    }
 
 
 def value_rise_fraction(points: list[tuple[int, int]], plot_height: int) -> float:
