@@ -128,9 +128,38 @@ def is_marketing_feature_title(title: str) -> bool:
     )
 
 
+def paired_gate_charge_waveform_is_definition(
+    title: str,
+    number: int,
+    siblings: list[tuple[int, str]],
+    panel_text: str,
+    page_text: str = "",
+) -> bool:
+    """Identify a non-numeric waveform paired with its measurement circuit."""
+    normalized = _normalized_chart_text(title)
+    if "gate charge" not in normalized or "waveform" not in normalized:
+        return False
+    if sum(re.fullmatch(r"[+-]?\d+(?:\.\d+)?", token.strip("(),;:")) is not None for token in panel_text.split()) >= 2:
+        return False
+    paired_title = any(
+        other_number // 10 == number // 10
+        and abs(other_number - number) == 1
+        and re.search(r"\bgate charge (?:test|measurement) circuit\b", _normalized_chart_text(other_title))
+        for other_number, other_title in siblings
+    )
+    compact_page = re.sub(r"[^a-z0-9]+", "", _normalized_chart_text(page_text))
+    previous = number - 1
+    paired_page = any(
+        f"{prefix}{previous}gatecharge{kind}circuit" in compact_page
+        for prefix in ("fig", "figure", "diagram")
+        for kind in ("test", "measurement")
+    )
+    return paired_title or paired_page
+
+
 def classify_chart(title: str, text: str) -> str:
     normalized_title = _normalized_chart_text(title)
-    if "test circuit" in normalized_title:
+    if "test circuit" in normalized_title or "measurement circuit" in normalized_title:
         return "chart"
     formula_kind = compact_formula_chart_kind(title)
     if formula_kind is not None:

@@ -608,6 +608,10 @@ def bbox_looks_like_spec_table(
         phrase in compact for phrase in _CAPACITANCE_ROW_PHRASES
     ) >= 2:
         return True
+    if any(phrase in compact for phrase in _SWITCHING_TIME_PHRASES) and sum(
+        phrase in compact for phrase in _CAPACITANCE_ROW_PHRASES
+    ) >= 2:
+        return True
     return len((_SPEC_TABLE_FAMILIES - own_families) & tokens) >= 4
 
 

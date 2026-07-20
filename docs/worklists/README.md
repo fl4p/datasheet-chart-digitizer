@@ -175,8 +175,9 @@ slice changes, invalidate and rerun later A/Bs rather than carrying stale hashes
   source page and one-to-one frame/axis ownership evidence.
 - [Finder panel-ownership follow-ups](finder-panel-ownership-followups.md): source-bound
   caption/crop fixes for the HXY and Toshiba finder defects discovered during the random loop.
-- [Gate-charge definition-waveform audit](gate-charge-definition-waveforms.md): source-gated
-  review of standalone waveform captions; never blanket-reject the word `waveform`.
+- [Gate-charge definition-waveform audit](gate-charge-definition-waveforms.md): the bounded
+  ROHM paired-circuit slice is independently agent-GREEN; broader standalone waveform
+  captions still require source-gated review and the word `waveform` is never blanket-rejected.
 - [Review-risk triage](review-risk-triage.md): display-queue filter only; hidden
   never means verified or consumable.
 - [Transfer signed semantics](transfer-signed-semantics.md): signed-temperature

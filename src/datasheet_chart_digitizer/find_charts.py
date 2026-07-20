@@ -20,7 +20,7 @@ import cv2
 import pymupdf
 from PIL import Image
 try:
-    from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
+    from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
     from .finder_caption_geometry import (
         bbox_iou as _bbox_iou,
@@ -47,7 +47,7 @@ try:
         words_in_bbox,
     )
 except ImportError:  # pragma: no cover - direct script compatibility
-    from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
+    from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
     from finder_caption_geometry import (
         bbox_iou as _bbox_iou,
@@ -278,7 +278,6 @@ def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[
     if not pages or not any(page.words for page in pages):
         raise RuntimeError(f"both bbox text paths returned no words for {pdf}")
     return pages
-
 def _dedupe_overprinted_words(words: list[Word]) -> list[Word]:
     """Collapse near-identical glyph layers emitted as repeated words."""
     buckets: dict[tuple[str, int, int], list[Word]] = {}
@@ -1186,7 +1185,7 @@ def _append_panel(
     out_dir: Path,
     lines: list[list[Word]],
     title: DiagramTitle,
-    bbox: tuple[float, float, float, float],
+    bbox: tuple[float, float, float, float], sibling_titles: list[DiagramTitle] | None = None,
 ) -> None:
     text_words = words_in_bbox(page.words, bbox)
     text = " ".join(w.text for w in sorted(text_words, key=lambda w: (w.y0, w.x0)))
@@ -1199,7 +1198,10 @@ def _append_panel(
         }
     )
     kind_from_title = title_owns_chart_kind(title.title, title.number, text)
-    if kind_from_title is not None:
+    is_definition = paired_gate_charge_waveform_is_definition(title.title, title.number, [(other.number, other.title) for other in sibling_titles or []], text, " ".join(word.text for word in page.words))
+    if is_definition:
+        kind = "chart"
+    elif kind_from_title is not None:
         # An explicit numbered caption/diagram title is stronger evidence than
         # the panel text, which can bleed in from an adjacent chart when a
         # caption binds across columns.
@@ -1276,8 +1278,6 @@ def crop_panel(
         crop[2] * page.width_pt / width_px,
         crop[3] * page.height_pt / height_px,
     )
-
-
 def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
     return process_page_texts(pdf, out_dir, dpi, run_text_bbox(pdf))
 def process_page_texts(
@@ -1334,7 +1334,7 @@ def process_page_texts(
                 bbox = choose_panel_bbox(page, title, titles, v_rules_pt, h_rules_pt)
                 if bbox is None:
                     continue
-                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox, titles + caption_titles)
             page_image_rects: list[tuple[float, float, float, float]] | None = None
             for title in caption_titles:
                 if is_spec_table_header_title(title.title) or is_marketing_feature_title(title.title): continue
@@ -1397,7 +1397,7 @@ def process_page_texts(
                 if _bbox_looks_like_spec_table(page, bbox): continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue
-                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox, titles + caption_titles)
             for axis_idx, axis_label_bbox in enumerate(axis_label_spans, start=1):
                 bbox = choose_axis_label_grid_bbox(page, axis_label_bbox, grid_regions)
                 if bbox is None:

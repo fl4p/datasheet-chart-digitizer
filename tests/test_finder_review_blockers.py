@@ -10,6 +10,34 @@ from datasheet_chart_digitizer import find_charts
 
 
 class FinderProductionPathGuardTests(unittest.TestCase):
+    def test_gate_charge_measurement_circuit_is_not_data(self) -> None:
+        self.assertEqual(
+            find_charts.classify_chart("Gate Charge Measurement Circuit", ""),
+            "chart",
+        )
+
+    def test_paired_nonnumeric_gate_waveform_is_definition(self) -> None:
+        siblings = [(21, "Gate Charge Measurement Circuit"), (22, "Gate Charge Waveform")]
+        self.assertTrue(find_charts.paired_gate_charge_waveform_is_definition(
+            "Gate Charge Waveform", 22, siblings, "VGS Qg Qgs Qgd Charge",
+        ))
+        self.assertFalse(find_charts.paired_gate_charge_waveform_is_definition(
+            "Gate Charge Waveform", 22, siblings, "0 10 20 Qg (nC)",
+        ))
+
+    def test_capacitance_and_switching_rows_are_spec_table_evidence(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [
+            find_charts.Word(text, 20, y, 160, y + 10)
+            for text, y in (
+                ("Output capacitance", 100),
+                ("Reverse transfer capacitance", 120),
+                ("Turn-on delay time", 140),
+            )
+        ])
+        self.assertTrue(find_charts._bbox_looks_like_spec_table(
+            page, (0, 90, 200, 170), own_families=frozenset({"charge"}),
+        ))
+
     def test_bbox_process_failure_falls_back_to_pymupdf_words(self) -> None:
         fallback = [
             find_charts.PageText(
@@ -1083,6 +1111,22 @@ class RealPanelOwnershipRegressionTests(unittest.TestCase):
                 self.assertLess(breakdown.bbox_pt[3], body.bbox_pt[1])
                 self.assertLess(breakdown.bbox_pt[3], 510)
                 self.assertGreater(body.bbox_pt[1], 530)
+
+    def test_rohm_gate_data_is_separate_from_table_and_definition_diagrams(self) -> None:
+        page3 = self._page_panels("rohm/RX3P10BBHC16.pdf", 3)
+        page8 = self._page_panels("rohm/RX3P10BBHC16.pdf", 8)
+        page9 = self._page_panels("rohm/RX3P10BBHC16.pdf", 9)
+
+        self.assertFalse([panel for panel in page3 if panel.kind == "gate_charge"])
+        gate = [panel for panel in page8 if panel.kind == "gate_charge"]
+        self.assertEqual([(panel.diagram, panel.title) for panel in gate], [
+            (902, "Typical Gate Charge"),
+        ])
+        self.assertFalse([panel for panel in page9 if panel.kind == "gate_charge"])
+        self.assertEqual(
+            {panel.title for panel in page9 if panel.kind == "chart"},
+            {"Gate Charge Waveform"},
+        )
 
 
 if __name__ == "__main__":
