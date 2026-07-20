@@ -121,6 +121,11 @@ gate** — guards and crosshair-centering alone do NOT prove fidelity.
   its label and fitted marker agree with each other. Extend the box only when the tick belongs
   to the panel's own evidenced frame; otherwise reject the foreign tick/panel binding. Never
   hide the mismatch by clipping or relocating the marker to the box edge.
+- **Verify full source-frame coverage before judging the traces inside it.** Inspect all four
+  detected plot edges against the unoverlaid source. No printed endpoint tick, owned frame rail,
+  curve tail, or source-series label may continue beyond the detected box. A perfectly seated
+  trace inside a box that ends at an interior gridline is still RED; first recover the positively
+  closed owned frame, then review the newly admitted tails for grid/frame rides.
 - **MANDATORY if intersecting curves exist:** Inspect **every curve intersection point**
   at 5× upscale before a GREEN verdict. Verify that each curve's extracted points stay on
   their own source stroke through the approach and intersection; the digitizer must not jump

@@ -9,6 +9,11 @@ to set `human_verified`, commit, or push.
 
 ## Current sampling loop
 
+The [datasheet layout clustering](current-layout-clustering.md) index groups
+canonical PDFs by page and document structure before choosing vendor-series
+samples. Generated `*.pdf.<transform>.pdf` copies are excluded and indexed as
+variants; cluster labels are sampling metadata, never runtime detector input.
+
 Fab explicitly superseded the earlier single-seed terminal rule: continue
 sampling MOSFET series across onsemi, Infineon, TI, Toshiba, and ST, fix each
 bounded detector/extractor defect, freeze deterministic evidence, and obtain
@@ -20,6 +25,9 @@ Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual
 [Onsemi frameless cover prose](current-onsemi-frameless-cover-prose.md), and
 [NDB5060L capacitance right frame](current-onsemi-ndb5060l-cap-right-frame.md),
 plus [Onsemi shared-endpoint capacitance source paths](current-onsemi-shared-cap-source-paths.md),
+[capacitance unresolved shared-collapse fail-close](current-capacitance-unresolved-shared-collapse.md),
+[capacitance trace coverage and clipped top decade](current-capacitance-trace-coverage-top-clip.md),
+[Infineon IPD50N10S3L-16 capacitance right-frame coverage](current-infineon-ipd50-cap-right-frame.md),
 [Infineon BSC normalized RDS(on) temperature routing](current-infineon-bsc059-rdst.md),
 [TI CSD19537Q3 converging transfer paths](current-ti-csd19537q3-transfer.md), and
 [ST MDmesh M9 thin vector strokes](current-st8l65-thin-vector-strokes.md), plus

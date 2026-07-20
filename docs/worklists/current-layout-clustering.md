@@ -12,8 +12,9 @@ by vendor or series name.
 
 ## Contract
 
-- Cluster page layouts first, separating `chart`, `table`, `mixed`, and `other`
-  roles and native-text, raster, hybrid, sparse, and vector-outline strata.
+- Classify `chart`, `table`, `mixed`, and `other` page roles, clustering
+  chart/table/mixed pages by default (`other` is opt-in with `--include-other`),
+  and separate native-text, raster, hybrid, sparse, and vector-outline strata.
 - Cluster whole documents from their ordered page-role and page-layout profile.
 - Exclude generated copies named `*.pdf.<transform>.pdf` from both levels.
   Retain them in a separate variant index linked to the canonical PDF.

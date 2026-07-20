@@ -11,6 +11,12 @@ endpoint, so color and pooled endpoint chaining merge the drawings and report
 only two vector candidates. Raster fallback may then ride grid lines or refuse
 an otherwise source-proven chart.
 
+This source-drawing endpoint rescue is distinct from
+[unresolved Ciss/Coss shared collapse](current-capacitance-unresolved-shared-collapse.md):
+that later slice concerns an already emitted Coss trace joining Ciss away from
+the low-V edge and never proving re-separation. Do not treat the source-drawing
+rescue or its physical-output hold as fixing that trace-validation defect.
+
 ## Bounded rescue contract
 
 - Run the established per-color and pooled component paths first.
