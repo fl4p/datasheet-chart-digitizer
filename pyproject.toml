@@ -22,6 +22,7 @@ datasheet-chart-find = "datasheet_chart_digitizer.find_charts:main"
 datasheet-chart-digitize-capacitance = "datasheet_chart_digitizer.mosfet_capacitance:main"
 datasheet-chart-digitize-vpl = "datasheet_chart_digitizer.gate_charge_vpl:main"
 datasheet-chart-export-coss-spice = "datasheet_chart_digitizer.coss_export:main"
+datasheet-layout-cluster = "datasheet_chart_digitizer.layout_clustering:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

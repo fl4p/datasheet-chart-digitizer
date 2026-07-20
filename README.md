@@ -67,6 +67,7 @@ dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 dsdig digitize-transfer work/charts/charts.json --out work/transfer
 dsdig annotate /path/to/datasheet.pdf --out /path/to/datasheet-with-curves.pdf
+datasheet-layout-cluster /path/to/datasheets --out work/layouts
 ```
 
 `annotate` is the single-PDF review workflow: it detects every currently supported chart,
@@ -95,6 +96,16 @@ extraction before the result is accepted or refused. OCR words are mapped back
 to PDF-point coordinates and recorded with `text_source=tesseract_fallback`.
 Missing, failed, or timed-out Tesseract runs leave the native result unchanged;
 they do not replace the normal finder path.
+
+`datasheet-layout-cluster` is an offline corpus-indexing tool for choosing
+representative regression samples. It emits page-level chart/table/mixed
+clusters and whole-document layout clusters from normalized geometry, text
+occupancy, image placement, caption families, frames, and ruling lines. Vendor
+and part-number text do not participate in similarity, so layouts may cluster
+across series or vendors. Files named like `PART.pdf.r600.pdf`,
+`PART.pdf.gs.pdf`, `PART.pdf.cups.pdf`, or `PART.pdf.sips.pdf` are excluded from
+clustering and recorded separately in `generated-pdf-variants.json`. Layout
+clusters are never runtime detector authority.
 
 Key capacitance-pipeline outputs:
 
