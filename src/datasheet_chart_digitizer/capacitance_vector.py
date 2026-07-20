@@ -6,8 +6,9 @@ from pathlib import Path
 
 import numpy as np
 
-from .capacitance_traces import _smooth_points
+from .capacitance_traces import _smooth_points, find_plot_box
 from .capacitance_types import PlotBox, Trace, VectorEdge
+from .capacitance_plot_box import _sparse_closed_frame
 from .crop_transform import CropTransform
 
 MIN_EXACT_COLOR_SOURCE_X_SPAN_FRACTION = 0.80
@@ -125,6 +126,38 @@ def extract_vector_trace_components_with_provenance(
             candidates = rescued
             selection_method = "source_drawing_rescue"
 
+    # Infineon also encodes each thick curve as one black filled polygon, then
+    # paints a white inline-label box over the rendered stroke. Raster tracing
+    # stops at that box although the owned vector path continues underneath.
+    # Admit this only when exactly three independent dark filled objects each
+    # prove one near-full-span centerline; frames/grid groups do not have the
+    # required vertex density and a fourth candidate makes the rescue refuse.
+    if len(candidates) < 3 and _has_right_extent_recovery(image, plot):
+        filled_candidates: list[tuple[float, list[tuple[int, int]]]] = []
+        for drawing in drawings:
+            if not _is_dark_stroke(drawing.get("fill")):
+                continue
+            centerline = _filled_path_centerline(
+                drawing,
+                plot_rect,
+                minimum_y_span_fraction=0.01,
+                outside_x_margin_fraction=0.05,
+            )
+            built = _build_candidates([centerline]) if centerline else []
+            if len(built) == 1:
+                length, points = built[0]
+                points = [
+                    point
+                    for point in points
+                    if plot.x0 <= point[0] <= plot.x1
+                    and plot.y0 <= point[1] <= plot.y1
+                ]
+                if len(points) >= 8:
+                    filled_candidates.append((length, points))
+        if len(filled_candidates) == 3:
+            candidates = filled_candidates
+            selection_method = "exact_filled_source_paths"
+
     if len(candidates) < 3:
         raise RuntimeError(f"found only {len(candidates)} vector curve candidates")
 
@@ -163,6 +196,19 @@ def _load_fitz():
         return fitz
     except ImportError:
         return None
+
+
+def _has_right_extent_recovery(image: np.ndarray, plot: PlotBox) -> bool:
+    """Prove the capacitance-specific detector extended an interior right rail."""
+
+    gray = image if image.ndim == 2 else np.min(image, axis=2).astype(np.uint8)
+    if _sparse_closed_frame(gray) is not None:
+        return False
+    try:
+        generic = find_plot_box(gray)
+    except RuntimeError:
+        return False
+    return plot.x1 - generic.x1 >= 0.02 * image.shape[1]
 
 
 def _vector_curve_edges(
@@ -208,7 +254,12 @@ def _vector_curve_edges(
 
 
 def _filled_path_centerline(
-    drawing: dict[str, object], plot_rect, *, bin_width: float = 0.8
+    drawing: dict[str, object],
+    plot_rect,
+    *,
+    bin_width: float = 0.8,
+    minimum_y_span_fraction: float = 0.1,
+    outside_x_margin_fraction: float = 0.0,
 ) -> list[tuple[float, float]]:
     """Recover the centerline of a filled polygon used as a thick curve.
 
@@ -218,10 +269,16 @@ def _filled_path_centerline(
     Filled rectangles and plot frames are rejected by the required x/y span.
     """
 
-    if drawing.get("type") != "f" or bin_width <= 0:
+    if (
+        drawing.get("type") != "f"
+        or bin_width <= 0
+        or minimum_y_span_fraction < 0
+        or outside_x_margin_fraction < 0
+    ):
         return []
     buckets: dict[int, list[tuple[float, float]]] = {}
-    expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
+    x_margin = max(1.5, outside_x_margin_fraction * plot_rect.width)
+    expanded = plot_rect + (-x_margin, -1.5, x_margin, 1.5)
     for item in drawing.get("items", []):
         if item[0] == "l":
             vertices = (item[1], item[2])
@@ -248,7 +305,10 @@ def _filled_path_centerline(
         return []
     x_span = centerline[-1][0] - centerline[0][0]
     ys = [point[1] for point in centerline]
-    if x_span < 0.35 * plot_rect.width or max(ys) - min(ys) < 0.1 * plot_rect.height:
+    if (
+        x_span < 0.35 * plot_rect.width
+        or max(ys) - min(ys) < minimum_y_span_fraction * plot_rect.height
+    ):
         return []
     return centerline
 

@@ -16,6 +16,12 @@ from .capacitance_types import AxisCalibration, OutputChargeReference
 # medians).  Calibrated: 24 good PASS charts top out at +0.011, while the SOA
 # (NCE2010E, +0.221) and Zth (FDD6612A, +0.097) leaks sit far above 0.05.
 UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
+MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
+MAX_CRSS_PEER_X_SPAN_DEFICIT = 0.06
+FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
+# Grid-capture is raster-only; vector paths cannot latch onto a gridline.
+FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
+FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION = 0.90
 QOSS_SERVABLE_STATUSES = frozenset(
     {
         "pass",
@@ -23,6 +29,86 @@ QOSS_SERVABLE_STATUSES = frozenset(
         "clipped_chart_completed",
     }
 )
+
+
+def trace_validation_summary(
+    diagnostics: dict[str, object],
+    extraction_method: str | None = None,
+    shared_collapse_spans: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    """Fail closed on incomplete or semantically untrusted C(V) traces."""
+
+    flat_span_gate = (
+        FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION
+        if extraction_method == "vector"
+        else FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION
+    )
+    reasons: list[str] = []
+    if any(
+        span.get("separated_sign_before") is not None
+        and span.get("separated_sign_after") is None
+        for span in shared_collapse_spans or ()
+    ):
+        # Normal low-V convergence has no sign_before and later separates.
+        reasons.append("ciss_coss_unresolved_shared_collapse")
+
+    upper_spans = [
+        float((diagnostics.get(name) or {}).get("x_span_fraction") or 0.0)
+        for name in ("Ciss", "Coss")
+        if isinstance(diagnostics.get(name), dict)
+    ]
+    crss_diag = diagnostics.get("Crss")
+    if upper_spans and isinstance(crss_diag, dict):
+        upper_span = max(upper_spans)
+        crss_span = float(crss_diag.get("x_span_fraction") or 0.0)
+        vector_tail_is_bounded = min(upper_spans) >= 0.98 and crss_span >= 0.85
+        if (
+            (extraction_method != "vector" or vector_tail_is_bounded)
+            and upper_span >= MIN_MATERIAL_TRACE_X_SPAN_FRACTION
+            and upper_span - crss_span > MAX_CRSS_PEER_X_SPAN_DEFICIT
+        ):
+            # Vector PDFs may intentionally stop Crss early, so only the
+            # bounded near-full case fires there: both upper paths reach the
+            # frame and Crss alone loses a short tail. Raster tracking has no
+            # independent source-owned endpoint proof and uses the full rule.
+            reasons.append("Crss_peer_relative_short_x_span")
+
+    for name in ("Ciss", "Coss", "Crss"):
+        trace_diag = diagnostics.get(name)
+        if not isinstance(trace_diag, dict):
+            reasons.append(f"missing_{name}")
+            continue
+        points = int(trace_diag.get("points") or 0)
+        span = float(trace_diag.get("x_span_fraction") or 0.0)
+        if points < 8:
+            reasons.append(f"{name}_too_few_points")
+        # Some complete NXP source strokes intentionally stop around 68% of a
+        # 100 V plot, so this is a material-source floor, not a frame-end rule.
+        if span < MIN_MATERIAL_TRACE_X_SPAN_FRACTION:
+            reasons.append(f"{name}_short_x_span")
+        y_range = int(trace_diag.get("y_range_px") or 0)
+        if y_range <= FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX and span >= flat_span_gate:
+            reasons.append(f"{name}_flat_full_span_unverified")
+        if (
+            float(trace_diag.get("value_rise_fraction") or 0.0)
+            > UNPHYSICAL_VALUE_RISE_FRACTION
+        ):
+            reasons.append(f"{name}_rises_with_vds_unphysical")
+
+    checks = diagnostics.get("checks")
+    if not isinstance(checks, dict):
+        reasons.append("missing_semantic_checks")
+    else:
+        if int(checks.get("common_samples") or 0) < 20:
+            reasons.append("too_few_common_samples")
+        if int(checks.get("ciss_coss_rank_swap_count") or 0) not in (0, 1):
+            reasons.append("ciss_coss_rank_swap_count")
+        if float(checks.get("crss_bottom_fraction") or 0.0) < 0.95:
+            reasons.append("crss_not_bottom")
+        if not bool(checks.get("ciss_flatter_than_coss")):
+            reasons.append("ciss_not_flatter_than_coss")
+
+    return {"status": "pass" if not reasons else "suspect", "reasons": reasons}
 
 
 def value_rise_fraction(points: list[tuple[int, int]], plot_height: int) -> float:

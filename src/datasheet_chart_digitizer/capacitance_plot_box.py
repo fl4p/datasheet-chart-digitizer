@@ -31,7 +31,7 @@ def find_closed_frame_plot_box(gray: np.ndarray) -> PlotBox:
         return recovered
     recovered = _sparse_closed_frame(gray)
     if recovered is None:
-        return detected
+        return _open_right_grid_extent(gray, detected) or detected
     height, width = gray.shape
     same_left_and_rows = (
         abs(recovered.x0 - detected.x0) <= max(4, round(0.02 * width))
@@ -47,6 +47,9 @@ def find_closed_frame_plot_box(gray: np.ndarray) -> PlotBox:
         # real chart frame can live there. Four mutually closing source rails
         # prove that the last admitted inner gridline is not the right frame.
         return recovered
+    open_right = _open_right_grid_extent(gray, detected)
+    if open_right is not None:
+        return open_right
     return detected
 
 
@@ -163,3 +166,72 @@ def _sparse_closed_frame(gray: np.ndarray) -> PlotBox | None:
     if not candidates:
         return None
     return max(candidates, key=lambda box: box.width * box.height)
+
+
+def _open_right_grid_extent(gray: np.ndarray, detected: PlotBox) -> PlotBox | None:
+    """Recover an occluded right rail from repeated owned grid-row endpoints.
+
+    A few Infineon charts clip the drawn right frame but retain many horizontal
+    rails through the true endpoint. Inline curve labels merge the final
+    vertical gridlines into wide contours, so the generic detector stops at an
+    interior line. Require a dominant common row endpoint, top/bottom closure,
+    and a regular owned vertical grid before extending; text is not evidence.
+    """
+
+    height, width = gray.shape
+    _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
+    horizontals = _orthogonal_line_boxes(bw, vertical=False)
+    left_tolerance = max(5.0, detected.width * 0.015)
+    row_tolerance = max(5.0, detected.height * 0.02)
+    rows = [
+        (y + (box_height - 1) / 2, x + box_width - 1)
+        for x, y, box_width, box_height in horizontals
+        if abs(x - detected.x0) <= left_tolerance
+        and detected.y0 - row_tolerance <= y <= detected.y1 + row_tolerance
+    ]
+    if len(rows) < 5:
+        return None
+
+    endpoint_tolerance = max(4.0, width * 0.008)
+    minimum_extension = 0.02 * width
+    endpoint_groups = [
+        [row for row in rows if abs(row[1] - endpoint) <= endpoint_tolerance]
+        for _center_y, endpoint in rows
+        if endpoint >= detected.x1 + minimum_extension
+    ]
+    if not endpoint_groups:
+        return None
+    support = max(endpoint_groups, key=len)
+    if len(support) < max(5, int(np.ceil(0.60 * len(rows)))):
+        return None
+    right = float(np.median([endpoint for _y, endpoint in support]))
+    support_rows = [center_y for center_y, _endpoint in support]
+    if (
+        not any(abs(center_y - detected.y0) <= row_tolerance for center_y in support_rows)
+        or not any(abs(center_y - detected.y1) <= row_tolerance for center_y in support_rows)
+    ):
+        return None
+
+    verticals = _orthogonal_line_boxes(bw, vertical=True)
+    centers = sorted(
+        x + (box_width - 1) / 2
+        for x, y, box_width, box_height in verticals
+        if detected.x0 - left_tolerance <= x <= detected.x1 + left_tolerance
+        and y <= detected.y0 + row_tolerance
+        and y + box_height - 1 >= detected.y1 - row_tolerance
+    )
+    if len(centers) < 6:
+        return None
+    gaps = np.diff(np.asarray(centers, dtype=float))
+    pitch = float(np.median(gaps))
+    if pitch <= 0 or float(np.mean(np.abs(gaps - pitch) <= 0.20 * pitch)) < 0.80:
+        return None
+    if abs(centers[-1] - detected.x1) > max(5.0, 0.20 * pitch):
+        return None
+
+    extension = right - detected.x1
+    if not (minimum_extension <= extension <= 0.20 * detected.width):
+        return None
+    if right > width * 0.985:
+        return None
+    return PlotBox(detected.x0, detected.y0, int(round(right)), detected.y1)

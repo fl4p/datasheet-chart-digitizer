@@ -1,11 +1,13 @@
 # Capacitance unresolved Ciss/Coss shared collapse
 
-Status: new frozen triage slice; fail-closed invariant not implemented.
-`human_verified=false`; no commit or push authorized by this document.
+Status: minimal fail-closed invariant implemented in the current worktree;
+focused unit and bounded positive/control checks pass. Full capacitance-corpus
+A/B and independent artifact review remain open. `human_verified=false` for
+the implementation packet.
 
 ## Defect
 
-Three capacitance results remain `status=ok` with
+Six capacitance results remained `status=ok` with
 `trace_validation_status=pass` after Coss joins the Ciss band away from the
 normal low-voltage convergence region and never proves a later downward
 separation:
@@ -15,20 +17,26 @@ separation:
 | onsemi `FDMS86200DC` | p6d8 | late span x=371..496, `separated_sign_before=-1`, `separated_sign_after=null` | Fab flagged; Coss snap plus separate Crss truncation |
 | Toshiba `TK55S10N1` | p6d88 | spans x=312..413 and 416..476, both with `separated_sign_before=-1`, `separated_sign_after=null` | agent RED pending human review; separate Crss truncation |
 | ST `STW70N60DM6-4` | p6d7 | span x=296..406, `separated_sign_before=1`, `separated_sign_after=null` | agent RED pending human review |
+| ST `STP60N043DM9` | p6d7 | span x=275..406, `separated_sign_before=1`, `separated_sign_after=null` | Fab human-FLAGGED |
+| ST `STW56N65M2-4` | p7d11 | span x=232..377, `separated_sign_before=1`, `separated_sign_after=null` | Fab human-FLAGGED |
+| ST `STW75N60M6` | p6d9 | span x=299..406, `separated_sign_before=1`, `separated_sign_after=null` | Fab human-FLAGGED |
 
-The extractor already records these regions in `shared_collapse_spans`, and the
-review overlay labels the shared Ciss/Coss band, but the signal does not affect
-trace validation. Physical Coss values therefore remain consumable even though
-the recorded provenance says the two curve identities never re-separated.
+The extractor already recorded these regions in `shared_collapse_spans`, and
+the review overlay labeled the shared Ciss/Coss band, but the signal did not
+previously affect trace validation. Physical Coss values therefore remained
+consumable even though the recorded provenance said the two curve identities
+never re-separated.
 
 Frozen review evidence:
 
 - `/Users/fab/dev/pv/ee/dsdig-verify-backlog/review-html/human-batch-26-capacitance/`
 - `/Users/fab/dev/pv/ee/dsdig-verify-backlog/MANIFEST.opus-cap-batch26.jsonl`
+- `/Users/fab/dev/pv/ee/dsdig-verify-backlog/MANIFEST.opus-cap-batch28.jsonl`
 
-The manifest is authoritative about review state: only `FDMS86200DC` is
-currently human-flagged for this mechanism; Toshiba and ST are agent RED and
-must not be described as human-verified.
+The manifest is authoritative about review state. `FDMS86200DC`,
+`STP60N043DM9`, `STW56N65M2-4`, and `STW75N60M6` are human-flagged;
+`TK55S10N1` and `STW70N60DM6-4` remain agent RED and must not be described as
+human-verified.
 
 ## Fail-closed contract
 
@@ -66,9 +74,9 @@ approximated by a global "any shared span fails" rule.
 
 ## Acceptance
 
-1. Freeze per-item candidate/repeat artifacts for the three positives and seven
+1. Freeze per-item candidate/repeat artifacts for the six positives and seven
    negatives at identical source/dependency closure.
-2. Assert the three positives cannot serialize `pass` or physical Coss while
+2. Assert the six positives cannot serialize `pass` or physical Coss while
    their non-edge unresolved span remains.
 3. Assert all seven negatives retain identical curves, values, validation state,
    overlays, and Qoss outputs.
@@ -76,6 +84,19 @@ approximated by a global "any shared span fails" rule.
    positive; monotonicity and rank checks alone are insufficient.
 5. Run the authoritative full capacitance-corpus A/B and review every changed
    `shared_collapse_spans`, trace status, Coss array, and derived Qoss result.
+
+## Current implementation evidence
+
+`trace_validation_summary` now emits
+`ciss_coss_unresolved_shared_collapse` when a shared span has a proved prior
+ordering but no proved later separation. Low-V edge convergence with a later
+separation remains accepted. A fresh bounded run makes `STW70N60DM6-4` p6d7
+`unverified` with physical output withheld, while the same-family clean
+`FDMS86202ET120` control stays `ok/pass`.
+
+ST `STB80N20M5` p6d7 is a separate crossing-seating defect: Fab flagged Coss
+cutting below its source curve and rejoining, but it emits no shared span and
+is not claimed fixed by this invariant.
 
 ## Separate trace-fidelity item
 

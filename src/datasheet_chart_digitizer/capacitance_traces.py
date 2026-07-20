@@ -13,15 +13,6 @@ SHARED_CISS_COSS_DISTANCE_FRACTION = 0.008
 SHARED_CISS_COSS_MIN_SPAN_FRACTION = 0.04
 SHARED_CISS_COSS_MIN_POINTS = 12
 SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
-MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
-FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
-# Grid-capture (a flat trace latched onto a rendered gridline/frame) is a RASTER
-# failure that vector paths cannot suffer, so the flat guard uses two span gates:
-# raster fires down to the material-span floor (0.65), closing a dead zone in
-# [0.65, 0.90) where a dead-flat raster trace was neither "short" nor "full-span-
-# flat" and escaped both guards (12 onsemi/AO mis-seats); vector keeps 0.90.
-FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
-FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION = 0.90
 COLUMN_RUN_CLUSTER_GAP_PX = 6.0
 CISS_COSS_IDENTITY_MIN_RANGE_RATIO = 1.5
 CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION = 0.03
@@ -386,72 +377,6 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
             "ciss_flatter_than_coss": ciss_range < coss_range,
         }
     return diagnostics
-
-
-def trace_validation_summary(
-    diagnostics: dict[str, object], extraction_method: str | None = None
-) -> dict[str, object]:
-    # Grid-capture is raster-only; vector paths cannot latch onto a gridline.
-    # An unknown provenance is treated conservatively as raster (stricter gate).
-    flat_span_gate = (
-        FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION
-        if extraction_method == "vector"
-        else FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION
-    )
-    reasons: list[str] = []
-    for name in ("Ciss", "Coss", "Crss"):
-        trace_diag = diagnostics.get(name)
-        if not isinstance(trace_diag, dict):
-            reasons.append(f"missing_{name}")
-            continue
-        points = int(trace_diag.get("points") or 0)
-        span = float(trace_diag.get("x_span_fraction") or 0.0)
-        if points < 8:
-            reasons.append(f"{name}_too_few_points")
-        # This is a material-source-span guard, not a requirement that the
-        # printed stroke reach the plot's right frame.  Some NXP C(V) charts
-        # intentionally stop all three source strokes around 10--15 V on a
-        # 100 V axis (68--71% of the log-pixel width).  A 65% floor preserves
-        # those complete source strokes while the calibrated 40% truncated
-        # fixture below still fires fail-closed.
-        if span < MIN_MATERIAL_TRACE_X_SPAN_FRACTION:
-            reasons.append(f"{name}_short_x_span")
-        y_range = int(trace_diag.get("y_range_px") or 0)
-        if (
-            y_range <= FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX
-            and span >= flat_span_gate
-        ):
-            # A flat full-span result is not independently trustworthy, but
-            # flatness alone does not prove it captured a gridline: some real
-            # Ciss strokes are genuinely flat. Refuse without inventing the
-            # failure mechanism.
-            reasons.append(f"{name}_flat_full_span_unverified")
-        if float(trace_diag.get("value_rise_fraction") or 0.0) > UNPHYSICAL_VALUE_RISE_FRACTION:
-            # Capacitance cannot climb with Vds; a rising trace is a mis-seat
-            # onto a non-cap panel (SOA/Zth) misclassified as capacitance.
-            reasons.append(f"{name}_rises_with_vds_unphysical")
-
-    checks = diagnostics.get("checks")
-    if not isinstance(checks, dict):
-        reasons.append("missing_semantic_checks")
-    else:
-        samples = int(checks.get("common_samples") or 0)
-        swaps = int(checks.get("ciss_coss_rank_swap_count") or 0)
-        crss_bottom = float(checks.get("crss_bottom_fraction") or 0.0)
-        ciss_flatter = bool(checks.get("ciss_flatter_than_coss"))
-        if samples < 20:
-            reasons.append("too_few_common_samples")
-        if swaps not in (0, 1):
-            reasons.append("ciss_coss_rank_swap_count")
-        if crss_bottom < 0.95:
-            reasons.append("crss_not_bottom")
-        if not ciss_flatter:
-            reasons.append("ciss_not_flatter_than_coss")
-
-    return {
-        "status": "pass" if not reasons else "suspect",
-        "reasons": reasons,
-    }
 
 
 def _interp_y(points: list[tuple[int, int]], x: int) -> float:

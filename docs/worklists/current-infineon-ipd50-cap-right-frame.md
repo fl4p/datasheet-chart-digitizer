@@ -1,8 +1,8 @@
 # Infineon IPD50N10S3L-16 capacitance right-frame coverage
 
-Status: Fab human-FLAGGED target; mechanism triage and repro packet pending.
-`human_verified=false`; no implementation, commit, or push authorized by this
-document.
+Status: bounded recovery implemented in the current worktree and focused
+end-to-end test passes. Candidate artifact is agent-inspected only;
+independent review and full capacitance-corpus A/B remain open.
 
 ## Defect
 
@@ -55,3 +55,27 @@ rail, crop border, label stroke, or whitespace.
 4. Candidate equals repeat for box, points, overlay, values, and annotated PDF.
 5. Run the authoritative full capacitance-corpus A/B and inspect every changed
    frame; zero unexplained box deltas are allowed.
+
+## Pinned mechanism and current evidence
+
+Fresh reproduction on current `main` confirmed the generic detector stopped at
+the 85 V interior vertical (`plot_box_px=[74,37,576,755]`). The rendered chart
+has a dominant set of horizontal source rails continuing to the visibly
+clipped right endpoint, while inline labels merge the final verticals into
+wide morphology contours. Recovery now requires all of:
+
+- at least 60% of owned horizontal rails share the farther endpoint;
+- both top and bottom rails support it;
+- at least six prior vertical rails form a regular grid; and
+- the extension stays within the bounded 2%-of-crop to 20%-of-box window.
+
+The recovered box is `[74,37,656,755]`. The clipped printed `100` tick appears
+as a stray trailing `1`; position calibration now discards only that single
+non-monotone fragment after a four-label increasing prefix and fits the owned
+0/20/40/60/80 labels (0.013 V RMS). Finally, the PDF's three black curves are
+continuous filled vector paths hidden under white inline-label boxes. An
+exactly-three dark-filled-source-path rescue recovers all three to the visible
+right boundary. Candidate output is `ok`, 583 points per curve, with each
+ending at 98.27 V; no physical value is inferred beyond the source's visibly
+clipped edge. Candidate/repeat annotated PDFs, overlays, and point CSVs are
+byte-identical; the manifest differs only in its output-path field.

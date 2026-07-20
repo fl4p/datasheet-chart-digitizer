@@ -385,6 +385,25 @@ def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=Non
         raise RuntimeError("need >=2 X tick labels for a position fit")
     x_source_ticks: tuple[float, ...] = ()
     x_value_transform: str | None = None
+    if all(value >= 0.0 for value, _pixel in xt):
+        by_pixel = sorted(xt, key=lambda item: item[1])
+        prefix = by_pixel[:-1]
+        prefix_values = np.asarray([value for value, _pixel in prefix], dtype=float)
+        prefix_steps = np.diff(prefix_values)
+        if (
+            len(prefix) >= 4
+            and all(right[0] > left[0] for left, right in zip(prefix, prefix[1:]))
+            and prefix_values[0] == 0.0
+            and len(prefix_steps) > 0
+            and float(np.std(prefix_steps)) <= 0.05 * float(np.median(prefix_steps))
+            and prefix_values[-1] >= 80.0
+            and by_pixel[-1][0] == 1.0
+        ):
+            # A crop may clip the final multi-digit tick ("100" -> "1").
+            # Drop only one non-monotone trailing fragment after a proven
+            # four-label increasing prefix; interior ambiguity still refuses
+            # through the normal residual gate.
+            xt = prefix
     if any(value < 0.0 for value, _pixel in xt):
         if not all(value < 0.0 for value, _pixel in xt):
             raise RuntimeError("mixed-sign VDS ticks cannot define a magnitude axis")

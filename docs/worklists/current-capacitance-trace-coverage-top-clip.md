@@ -1,9 +1,9 @@
 # Capacitance trace coverage and clipped top decade
 
-Status: frozen triage slice; validation invariant not implemented. Fab's final
-Batch 27 verdict marks `FDMS2572` human-FLAGGED for high-V Crss truncation.
-All items remain `human_verified=false` unless their manifest explicitly says
-otherwise. No commit or push authorized by this document.
+Status: peer-relative Crss tail refusal implemented in the current worktree;
+focused and bounded checks pass. Local full-count source-seating and clipped
+top-decade recovery remain open. Fab's final Batch 27 verdict marks `FDMS2572`
+human-FLAGGED. Full corpus A/B and independent review remain open.
 
 ## Defect families
 
@@ -30,12 +30,14 @@ A chart may carry both defects, but fixing one does not clear the other.
 | onsemi `FDMS2572` | p5d8 | Crss 389 points versus 427 for Ciss/Coss; x-span `0.9087`; `axis_top_pf=1000`, `max_low_v_coss_pf=1528.01`, `near_axis_top=true`; source result was `ok/pass` | Fab human-FLAGGED; high-V Crss truncation confirmed |
 | onsemi `FDMS86200DC` | p6d8 | Crss 341 points versus 466 and x-span `0.7173`; human report also flags high-V truncation | Fab flagged, co-occurs with shared-collapse RED |
 | Toshiba `TK55S10N1` | p6d88 | reviewer reports Crss truncation near 40 V | agent RED pending human review, co-occurs with shared-collapse RED |
+| Toshiba `TPH3R10AQM` | p6d811 | Coss stops near 40 V (`x_span~0.47`) while Ciss/Crss and the printed Coss source continue toward 100 V (`x_span~0.94`) | Fab human-FLAGGED |
 | Infineon `IPB160N04S2L-03` | p6d11 | Crss leaves the printed curve below roughly 1 V on a linear VDS axis despite a full point count | Fab flagged; distinct local-seating subtype |
 
 Frozen evidence:
 
 - `/Users/fab/dev/pv/ee/dsdig-verify-backlog/MANIFEST.opus-cap-batch26.jsonl`
 - `/Users/fab/dev/pv/ee/dsdig-verify-backlog/MANIFEST.opus-cap-batch27.jsonl`
+- `/Users/fab/dev/pv/ee/dsdig-verify-backlog/MANIFEST.opus-cap-batch29.jsonl`
 - their corresponding `values.verify.json`, raw crop, and overlay artifacts.
 
 ## Fail-closed contract
@@ -79,3 +81,23 @@ Frozen evidence:
    byte-identical.
 5. Run the authoritative full capacitance-corpus A/B; inspect every changed
    curve endpoint, physical value range, trace status, and Qoss output.
+
+## Current implementation evidence
+
+Raster Crss is now suspect when it ends more than six percent of plot width
+before a materially complete Ciss/Coss peer. The same bounded near-full rule
+also covers vector output only when both upper paths reach at least 98% and
+Crss itself reaches at least 85%; this catches `FDMS2572` without rejecting the
+reviewed vector charts whose printed Crss source intentionally ends much
+earlier. Fresh results:
+
+- `FDMS2572` p5d8: `unverified`, reason
+  `Crss_peer_relative_short_x_span`, physical output withheld.
+- `TK55S10N1` p6d88: `unverified` with the same reason.
+- `TPH3R10AQM` p6d811: already fails the existing material-span guard because
+  Coss reaches only about 47% of the plot; it is a frozen positive for later
+  source-owned tail recovery, not a new validation hole.
+- `FDMS86202ET120` p5d8: remains `ok/pass` with equal 98% spans.
+
+This is a safety refusal, not a tail reconstruction. `IPB160N04S2L-03` local
+low-V source seating and the clipped-top-decade policy are still unresolved.

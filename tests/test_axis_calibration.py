@@ -114,6 +114,23 @@ class CalibrateAxesLogXTests(unittest.TestCase):
         self.assertFalse(cal.x_log)
         self.assertAlmostEqual(cal.v_of_x(100.0 + 2.0 * 40.0), 40.0, delta=0.1)
 
+    def test_clipped_trailing_multi_digit_tick_does_not_poison_fit(self) -> None:
+        words = [
+            _word(100.0 + index * 40.0, 215.0, value)
+            for index, value in enumerate(("0", "20", "40", "60", "80", "1"))
+        ]
+
+        cal = axis_calibration.calibrate_axes(
+            _WordsPage(words + _y_decade_words()), **_BANDS
+        )
+
+        self.assertEqual(
+            (0.0, 20.0, 40.0, 60.0, 80.0),
+            tuple(value for value, _pixel in cal.x_ticks),
+        )
+        self.assertFalse(cal.x_log)
+        self.assertAlmostEqual(100.0, cal.v_of_x(300.0), places=6)
+
     def test_positive_only_linear_ticks_stay_linear(self) -> None:
         # All-positive but narrow-span (<1.5 decades) linear labels must not
         # trip the dual-fit log path.

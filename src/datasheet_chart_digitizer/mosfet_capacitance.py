@@ -113,7 +113,6 @@ from .capacitance_traces import (
     extract_trace_components,
     repair_merged_ciss_coss_identity,
     trace_semantic_diagnostics,
-    trace_validation_summary,
 )
 from .capacitance_types import (
     TRACE_COLORS_BGR,
@@ -132,6 +131,7 @@ from .capacitance_validation import (
     qoss_metrics_status_reasons,
     qoss_validation_status,
     top_decade_clip_diagnostic,
+    trace_validation_summary,
     vendor_qoss_tail_validation,
 )
 from .capacitance_vector import (
@@ -314,7 +314,9 @@ def process_chart(
         shared_spans,
     )
     diagnostics = trace_semantic_diagnostics(traces, plot)
-    validation = trace_validation_summary(diagnostics, extraction_method)
+    validation = trace_validation_summary(
+        diagnostics, extraction_method, shared_spans
+    )
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
     )

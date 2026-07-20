@@ -14,11 +14,12 @@ canonical PDFs by page and document structure before choosing vendor-series
 samples. Generated `*.pdf.<transform>.pdf` copies are excluded and indexed as
 variants; cluster labels are sampling metadata, never runtime detector input.
 
-Fab explicitly superseded the earlier single-seed terminal rule: continue
-sampling MOSFET series across onsemi, Infineon, TI, Toshiba, and ST, fix each
-bounded detector/extractor defect, freeze deterministic evidence, and obtain
-independent review until Fab says stop. SPD03 remains a historical open packet;
-its gates are not waived or laundered into later slices.
+Fab stopped the earlier continuous five-vendor random-sampling loop. Current
+sampling is layout-driven: choose canonical medoids/outliers from the structural
+index, presently emphasizing Nexperia, ROHM, Vishay, and IXYS/Littelfuse. Do
+not restart an unbounded sampling watcher without a new explicit instruction.
+SPD03 remains a historical open packet; its gates are not waived or laundered
+into later slices.
 
 Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual-y-gate-charge.md),
 [ST normalized breakdown](current-st-normalized-breakdown-caption.md),
