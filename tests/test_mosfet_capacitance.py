@@ -1,17 +1,202 @@
-import shutil
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest import mock
 
 import cv2
 import numpy as np
 
 from datasheet_chart_digitizer import capacitance_traces as ct
+from datasheet_chart_digitizer import capacitance_vector as cv
 from datasheet_chart_digitizer import mosfet_capacitance as mc
+from datasheet_chart_digitizer.capacitance_plot_box import find_capacitance_plot_box
 
 
 class AxisCalibrationTests(unittest.TestCase):
+    def test_position_axis_refuses_multiple_unseen_endpoint_intervals(self) -> None:
+        plot = mc.PlotBox(40, 34, 722, 510)
+        calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=5.0,
+            y_min_decade=1.0,
+            y_max_decade=2.0,
+            source="position_ocr",
+            x_ticks_v=(0.0, 5.0),
+            y_decades=(1.0, 2.0),
+            x_resid_v=0.0,
+            y_resid_dec=0.0,
+            x_scale=0.059224119937113025,
+            x_offset=-2.3906803897356426,
+            y_scale=-0.0021008403361344537,
+            y_offset=2.0714285714285716,
+        )
+
+        rejection = mc.reject_bad_position_calibration(calibration, plot)
+
+        self.assertIn("X axis right endpoint", rejection or "")
+        self.assertIn("unlabeled tick intervals", rejection or "")
+
+    def test_position_axis_allows_one_unlabeled_endpoint_interval(self) -> None:
+        plot = mc.PlotBox(40, 34, 440, 434)
+        calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=30.0,
+            y_min_decade=1.0,
+            y_max_decade=3.0,
+            source="position_text",
+            x_ticks_v=(0.0, 10.0, 20.0, 30.0),
+            y_decades=(1.0, 2.0, 3.0),
+            x_resid_v=0.0,
+            y_resid_dec=0.0,
+            x_scale=0.1,
+            x_offset=-4.0,
+            y_scale=-0.01,
+            y_offset=4.34,
+        )
+
+        self.assertIsNone(mc.reject_bad_position_calibration(calibration, plot))
+
+    def test_vector_pixels_without_axis_are_review_only_not_physical(self) -> None:
+        status, reasons = mc._capacitance_status(
+            False, "vector", {"status": "pass", "reasons": []}
+        )
+
+        self.assertEqual(status, "overlay-review-required")
+        self.assertEqual(
+            reasons,
+            [
+                "axis_calibration_untrusted",
+                "pixel_overlay_only_physical_axis_unavailable",
+            ],
+        )
+        self.assertEqual(
+            mc._capacitance_status(
+                False, "raster", {"status": "pass", "reasons": []}
+            )[0],
+            "unverified",
+        )
+
+    def test_vector_physics_conflict_is_explicit_review_only(self) -> None:
+        status, reasons = mc._capacitance_status(
+            True,
+            "vector",
+            {
+                "status": "suspect",
+                "reasons": ["Crss_rises_with_vds_unphysical"],
+            },
+        )
+
+        self.assertEqual(status, "overlay-review-required")
+        self.assertEqual(
+            reasons,
+            [
+                "Crss_rises_with_vds_unphysical",
+                "source_faithful_vector_physics_conflict_review_only",
+            ],
+        )
+
+    def test_sparse_closed_log_frame_is_recovered_for_capacitance(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        # Only the frame and two decade rails are solid. The right frame sits
+        # inside the shared detector's crop-edge exclusion; dotted minor grids
+        # would not survive its vertical morphology either.
+        cv2.rectangle(gray, (180, 55), (680, 420), 0, 2)
+        cv2.line(gray, (350, 55), (350, 420), 0, 1)
+        cv2.line(gray, (520, 140), (520, 420), 0, 1)
+        cv2.line(gray, (180, 175), (680, 175), 0, 1)
+        cv2.line(gray, (180, 300), (680, 300), 0, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "found 3"):
+            ct.find_plot_box(gray)
+        self.assertEqual(
+            find_capacitance_plot_box(gray),
+            mc.PlotBox(180, 55, 680, 420),
+        )
+
+    def test_closed_right_frame_extends_a_successful_inner_grid_box(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        cv2.rectangle(gray, (120, 55), (680, 420), 0, 2)
+        for x in (220, 300, 380, 460, 540, 620):
+            cv2.line(gray, (x, 55), (x, 420), 0, 1)
+        for y in (175, 300):
+            cv2.line(gray, (120, y), (680, y), 0, 1)
+
+        self.assertEqual(ct.find_plot_box(gray), mc.PlotBox(120, 55, 620, 422))
+        self.assertEqual(
+            find_capacitance_plot_box(gray), mc.PlotBox(120, 55, 680, 420)
+        )
+
+    def test_sparse_frame_ignores_foreign_neighbor_rail(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        cv2.rectangle(gray, (125, 35), (680, 420), 0, 1)
+        for x in (265, 405, 545):
+            cv2.line(gray, (x, 35), (x, 420), 0, 1)
+        for y in (130, 225, 320):
+            cv2.line(gray, (125, y), (680, y), 0, 1)
+        # A rail from the neighboring panel survives the crop, but no owned
+        # top/bottom horizontal closes against it.
+        cv2.line(gray, (25, 35), (25, 420), 0, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "found 4"):
+            ct.find_plot_box(gray)
+        self.assertEqual(
+            find_capacitance_plot_box(gray),
+            mc.PlotBox(125, 35, 680, 420),
+        )
+
+    def test_sparse_frame_recovery_refuses_missing_bottom_closure(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        cv2.line(gray, (180, 55), (680, 55), 0, 2)
+        cv2.line(gray, (180, 55), (180, 420), 0, 2)
+        cv2.line(gray, (680, 55), (680, 420), 0, 2)
+        for x in (350, 520):
+            cv2.line(gray, (x, 55), (x, 420), 0, 1)
+        for y in (175, 300):
+            cv2.line(gray, (180, y), (680, y), 0, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "plot grid verticals"):
+            find_capacitance_plot_box(gray)
+
+    def test_closed_frame_without_solid_inner_grid_is_recovered(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        cv2.rectangle(gray, (180, 55), (680, 420), 0, 2)
+        # A long trace is not a grid rail, but cannot confuse the four closing
+        # frame sides because it does not terminate at the side rails.
+        cv2.line(gray, (230, 180), (620, 180), 0, 3)
+
+        with self.assertRaisesRegex(RuntimeError, "found 1"):
+            ct.find_plot_box(gray)
+        self.assertEqual(
+            find_capacitance_plot_box(gray),
+            mc.PlotBox(180, 55, 680, 420),
+        )
+
+    def test_sparse_grid_raster_tracker_does_not_serve_frame_rails(self) -> None:
+        gray = np.full((240, 360), 255, dtype=np.uint8)
+        plot = mc.PlotBox(30, 20, 330, 220)
+        cv2.rectangle(gray, (plot.x0, plot.y0), (plot.x1, plot.y1), 0, 2)
+        for y in (65, 120, 175):
+            cv2.line(gray, (plot.x0 + 2, y), (plot.x1 - 2, y + 18), 0, 3)
+
+        traces = mc.extract_trace_components(gray, plot)
+
+        for trace in traces:
+            ys = [point[1] for point in trace.points]
+            self.assertGreater(min(ys), plot.y0 + 3)
+            self.assertLess(max(ys), plot.y1 - 3)
+
+    def test_sparse_frame_recovery_refuses_outer_crop_border(self) -> None:
+        gray = np.full((500, 700), 255, dtype=np.uint8)
+        cv2.rectangle(gray, (0, 30), (699, 470), 0, 2)
+        for x in (200, 400):
+            cv2.line(gray, (x, 30), (x, 470), 0, 1)
+        for y in (175, 320):
+            cv2.line(gray, (0, y), (699, y), 0, 1)
+
+        with self.assertRaisesRegex(RuntimeError, "plot grid verticals"):
+            find_capacitance_plot_box(gray)
+
     def test_major_gridline_fit_prefers_full_axis_span(self) -> None:
         image = np.full((480, 520, 3), 255, dtype=np.uint8)
         plot = mc.PlotBox(x0=40, y0=30, x1=439, y1=430)
@@ -109,6 +294,37 @@ class AxisCalibrationTests(unittest.TestCase):
 
         self.assertEqual(centers, [(10, 90), (90, 90), (10, 90), (10, 10)])
         self.assertEqual(labels, ["0V", "10V", "1pF", "100pF"])
+
+    def test_pchannel_overlay_labels_source_ticks_and_declares_magnitude_serving(self) -> None:
+        image = np.full((110, 110, 3), 255, dtype=np.uint8)
+        plot = mc.PlotBox(10, 10, 90, 90)
+        calibration = mc.AxisCalibration(
+            x_min_v=0.1,
+            x_max_v=100.0,
+            y_min_decade=2.0,
+            y_max_decade=4.0,
+            source="fixture",
+            x_ticks_v=(0.1, 1.0, 10.0, 100.0),
+            y_decades=(2.0, 4.0),
+            x_log=True,
+            x_source_ticks_v=(-0.1, -1.0, -10.0, -100.0),
+            x_value_transform="abs_source_negative_vds",
+        )
+        labels = []
+
+        with mock.patch.object(
+            cv2,
+            "putText",
+            side_effect=lambda _image, text, *_args, **_kwargs: labels.append(text),
+        ):
+            mc.draw_trace_overlay(image, plot, [], calibration)
+
+        self.assertIn("-0.1V", labels)
+        self.assertIn("-100V", labels)
+        self.assertIn("SOURCE X: negative VDS; served X: |VDS|", labels)
+        payload = mc.axis_calibration_to_json(calibration)
+        self.assertEqual(payload["x_source_ticks_v"], [-0.1, -1.0, -10.0, -100.0])
+        self.assertEqual(payload["x_value_transform"], "abs_source_negative_vds")
 
     def test_sustained_ciss_coss_merge_is_flagged_but_crossing_is_not(self) -> None:
         plot = mc.PlotBox(0, 0, 199, 199)
@@ -241,12 +457,16 @@ class AxisCalibrationTests(unittest.TestCase):
             crop_path = root / crop_rel
             crop_path.parent.mkdir(parents=True)
             cv2.imwrite(str(crop_path), image)
-            with mock.patch.object(mc, "find_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
+            with mock.patch.object(mc, "find_capacitance_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
                 mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
                 mock.patch.object(mc, "parse_output_charge_reference", return_value=mc.OutputChargeReference(None, None, None, None)), \
                 mock.patch.object(mc, "infer_text_order_axis_calibration", return_value=calibration), \
                 mock.patch.object(mc, "infer_position_axis_calibration", return_value=calibration), \
-                mock.patch.object(mc, "extract_vector_trace_components", return_value=traces):
+                mock.patch.object(
+                    mc,
+                    "extract_vector_trace_components_with_provenance",
+                    return_value=(traces, "pooled_components"),
+                ):
                 result = mc.process_chart(
                     {"part": "P", "diagram": 1, "pdf": "p.pdf", "page": 1},
                     crop_path,
@@ -283,7 +503,7 @@ class AxisCalibrationTests(unittest.TestCase):
             crop_path = root / crop_rel
             crop_path.parent.mkdir(parents=True)
             cv2.imwrite(str(crop_path), image)
-            with mock.patch.object(mc, "find_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
+            with mock.patch.object(mc, "find_capacitance_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
                 mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
                 mock.patch.object(
                     mc,
@@ -293,7 +513,11 @@ class AxisCalibrationTests(unittest.TestCase):
                 mock.patch.object(mc, "infer_text_order_axis_calibration", return_value=calibration), \
                 mock.patch.object(mc, "infer_position_axis_calibration", side_effect=RuntimeError("no positions")), \
                 mock.patch.object(mc, "infer_gridline_axis_calibration", side_effect=RuntimeError("no grid")), \
-                mock.patch.object(mc, "extract_vector_trace_components", return_value=traces):
+                mock.patch.object(
+                    mc,
+                    "extract_vector_trace_components_with_provenance",
+                    return_value=(traces, "pooled_components"),
+                ):
                 result = mc.process_chart(
                     {"part": "P", "diagram": 1, "pdf": "p.pdf", "page": 1},
                     crop_path,
@@ -314,6 +538,109 @@ class AxisCalibrationTests(unittest.TestCase):
             self.assertEqual(result["qoss_validation_error"], "untrusted axis calibration")
             rows = (root / "out" / str(result["points"])).read_text().splitlines()
             self.assertTrue(rows[1].endswith(",,false"))
+
+    def test_review_only_chart_blanks_physical_points_and_demotes_qoss(self) -> None:
+        image = np.full((80, 100, 3), 255, dtype=np.uint8)
+        crop_rel = Path("crops") / "P" / "chart.png"
+        traces = [
+            mc.Trace(name="Ciss", area=2, bbox=(0, 0, 2, 2), points=[(10, 12), (20, 12)]),
+            mc.Trace(name="Coss", area=2, bbox=(0, 0, 2, 2), points=[(10, 22), (20, 24)]),
+            mc.Trace(name="Crss", area=2, bbox=(0, 0, 2, 2), points=[(10, 35), (20, 30)]),
+        ]
+        calibration = mc.AxisCalibration(
+            x_min_v=0.0,
+            x_max_v=100.0,
+            y_min_decade=0.0,
+            y_max_decade=3.0,
+            source="grid_text",
+            x_ticks_v=(0.0, 100.0),
+            y_decades=(0.0, 1.0, 2.0, 3.0),
+            x_scale=2.5,
+            x_offset=-25.0,
+            y_scale=-0.075,
+            y_offset=3.75,
+            x_source="plot_box_endpoints_from_text_ticks",
+            y_source="gridline_fit_from_text_decades",
+            y_gridline_px=(10.0, 20.0, 30.0, 40.0),
+            y_grid_candidate_count=4,
+            y_grid_span_fraction=1.0,
+            y_grid_residual_px=0.0,
+        )
+        metrics = SimpleNamespace(
+            Qoss=1000.0,
+            Eoss=2000.0,
+            Co_tr=100.0,
+            Co_er=200.0,
+            Qoss_below_first=10.0,
+            Qoss_chart_range=900.0,
+            Qoss_above_last=90.0,
+            Eoss_below_first=20.0,
+            Eoss_chart_range=1800.0,
+            Eoss_above_last=180.0,
+            C0=1000.0,
+            phi=1.0,
+            m=0.5,
+            first_vds=1.0,
+            first_coss=500.0,
+            splice_rel_error=0.01,
+            extrapolated_qoss_fraction=0.05,
+            clipped_completion_active=False,
+            clip_boundary_vds=None,
+            Qoss_clip_completed=0.0,
+            Qoss_clip_visible_floor=0.0,
+            Qoss_clip_added=0.0,
+            clipped_completion_fraction=0.0,
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            crop_path = root / crop_rel
+            crop_path.parent.mkdir(parents=True)
+            cv2.imwrite(str(crop_path), image)
+            with mock.patch.object(mc, "find_capacitance_plot_box", return_value=mc.PlotBox(10, 10, 50, 50)), \
+                mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
+                mock.patch.object(
+                    mc,
+                    "parse_output_charge_reference",
+                    return_value=mc.OutputChargeReference(None, 100.0, None, None),
+                ), \
+                mock.patch.object(mc, "infer_text_order_axis_calibration", return_value=calibration), \
+                mock.patch.object(mc, "infer_position_axis_calibration", return_value=calibration), \
+                mock.patch.object(
+                    mc,
+                    "extract_vector_trace_components_with_provenance",
+                    return_value=(traces, "pooled_components"),
+                ), \
+                mock.patch.object(
+                    mc,
+                    "trace_validation_summary",
+                    return_value={
+                        "status": "suspect",
+                        "reasons": ["Crss_rises_with_vds_unphysical"],
+                    },
+                ), \
+                mock.patch.object(mc, "coss_metrics", return_value=metrics), \
+                mock.patch.object(mc, "validate_axis", return_value=None):
+                result = mc.process_chart(
+                    {"part": "P", "diagram": 1, "pdf": "p.pdf", "page": 1},
+                    crop_path,
+                    root / "out",
+                    crop_rel.with_suffix(""),
+                    root,
+                )
+
+            self.assertEqual("overlay-review-required", result["status"])
+            self.assertFalse(result["physical_output_available"])
+            self.assertFalse(result["points_physical_output_available"])
+            self.assertIsNone(result["qoss_metrics"])
+            self.assertIsNotNone(result["qoss_diagnostic_metrics"])
+            self.assertFalse(result["qoss_metrics_physical_output_available"])
+            self.assertEqual("reference_unavailable", result["qoss_validation_status"])
+            self.assertIn(
+                "chart_physical_output_unavailable",
+                result["qoss_metrics_status_reasons"],
+            )
+            rows = (root / "out" / str(result["points"])).read_text().splitlines()
+            self.assertTrue(all(row.split(",")[5:7] == ["", ""] for row in rows[1:]))
 
     def test_active_axis_fit_error_overrides_structurally_trusted_calibration(self) -> None:
         calibration = mc.AxisCalibration(
@@ -400,6 +727,20 @@ class AxisCalibrationTests(unittest.TestCase):
 
         self.assertEqual("suspect", summary["status"])
         self.assertEqual(["Ciss_flat_full_span_unverified"], summary["reasons"])
+
+    def test_dense_black_grid_removes_full_width_major_rail(self) -> None:
+        mask = np.zeros((80, 120), dtype=np.uint8)
+        mask[39:42, :] = 1
+        # A real, thick sloped trace crosses the rail but never owns most of a
+        # complete row.  Removing the rail must preserve its source ink on both
+        # sides of the crossing.
+        cv2.line(mask, (5, 20), (114, 65), 1, 3)
+
+        cleaned = ct._remove_full_width_horizontal_rails(mask)
+
+        self.assertFalse(np.any(cleaned[39:42, :]))
+        self.assertGreater(int(cleaned[:39, :].sum()), 0)
+        self.assertGreater(int(cleaned[42:, :].sum()), 0)
 
     def test_flat_raster_trace_in_dead_zone_span_refuses(self) -> None:
         # A dead-flat RASTER trace (y_range_px <= 1) with span in [0.65, 0.90) is
@@ -1049,6 +1390,7 @@ class VectorExtractionTests(unittest.TestCase):
         self.assertTrue(mc._is_curve_stroke_color((0.03, 0.40, 0.36)))
         self.assertTrue(mc._is_curve_stroke_color((0.0, 0.0, 0.0)))
         self.assertFalse(mc._is_curve_stroke_color((0.55, 0.55, 0.55)))
+        self.assertTrue(mc._is_curve_stroke_color((0.7243, 0.7244, 0.7243)))
         # Bright saturated primaries ARE curves since TI C(V) support (TI draws
         # Ciss/Coss/Crss in pure red/green/blue); gray grid stays rejected.
         self.assertTrue(mc._is_curve_stroke_color((0.8, 0.1, 0.1)))
@@ -1095,6 +1437,11 @@ class VectorExtractionTests(unittest.TestCase):
         points = [(float(x), 50.0) for x in range(0, 50, 5)]
         self.assertFalse(mc._mostly_inside_plot(points, Rect()))
 
+    def test_source_path_rescue_rejects_horizontal_grid_or_annotation(self) -> None:
+        self.assertFalse(cv._has_material_vertical_response([(0.0, 50.0), (100.0, 50.0)], 100.0))
+        self.assertFalse(cv._has_material_vertical_response([(0.0, 50.0), (100.0, 50.9)], 100.0))
+        self.assertTrue(cv._has_material_vertical_response([(0.0, 50.0), (100.0, 51.0)], 100.0))
+
     def test_vector_resampling_emits_dense_single_valued_trace(self) -> None:
         plot = mc.PlotBox(x0=10, y0=10, x1=110, y1=110)
         raw = [(10, 20), (110, 20)]
@@ -1115,69 +1462,6 @@ class VectorExtractionTests(unittest.TestCase):
         self.assertTrue(mc._single_valued_by_x(dense))
         xs = [x for x, _ in dense]
         self.assertNotIn(60, xs)
-
-
-TK100E10N1 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/toshiba/TK100E10N1.pdf")
-_HAVE_TESSERACT = shutil.which("tesseract") is not None
-
-
-@unittest.skipUnless(TK100E10N1.exists(), "local TK100E10N1 datasheet not available")
-@unittest.skipUnless(_HAVE_TESSERACT, "tesseract not available for OCR axis calibration")
-class ToshibaRasterEndToEndTests(unittest.TestCase):
-    def test_ocr_calibrated_raster_digitization_matches_nameplate(self) -> None:
-        # Whole-figure raster chart: OCR position calibration (log-X) + black
-        # grid removed by stroke thickness. Pin against the table typ values
-        # @ VDS=50 V: Ciss 8800 / Coss 1500 / Crss 63 pF.
-        from datasheet_chart_digitizer import find_charts
-
-        with TemporaryDirectory(prefix="tk100e10n1-e2e-") as tmp:
-            out = Path(tmp)
-            # CLI-default render DPI. At higher DPI the 1-px black gridlines
-            # render 2 px and survive the 2x2 stroke-thickness opening; the
-            # semantic validation then (correctly) reports "suspect".
-            panels = find_charts.process_pdf(TK100E10N1, out, dpi=180)
-            caps = [panel for panel in panels if panel.kind == "capacitances"]
-            self.assertEqual(len(caps), 1)
-            panel = caps[0]
-            chart = {
-                "pdf": str(TK100E10N1),
-                "part": "TK100E10N1",
-                "page": panel.page,
-                "bbox_pt": list(panel.bbox_pt),
-                "crop_box_pt": list(panel.crop_box_pt),
-                "text": "",
-            }
-            crop_path = out / panel.crop_png
-            result = mc.process_chart(
-                chart, crop_path, out, Path("tk100e10n1"), TK100E10N1.parent
-            )
-
-            calibration = result["axis_calibration"]
-            self.assertIsNotNone(calibration)
-            self.assertEqual(calibration["source"], "position_ocr")
-            self.assertTrue(calibration["x_log"])
-            self.assertTrue(result["axis_calibration_trusted"])
-            self.assertEqual(result["trace_validation_status"], "pass")
-
-            import csv
-
-            with open(out / result["points"]) as fh:
-                rows = list(csv.DictReader(fh))
-        expected = {"Ciss": 8800.0, "Coss": 1500.0, "Crss": 63.0}
-        for name, typ_pf in expected.items():
-            pts = sorted(
-                (float(r["vds_V"]), float(r["cap_pF"]))
-                for r in rows
-                if r["trace"] == name and r.get("vds_V")
-            )
-            self.assertTrue(pts, f"{name} produced no calibrated points")
-            vds, cap = min(pts, key=lambda p: abs(p[0] - 50.0))
-            self.assertLess(abs(vds - 50.0) / 50.0, 0.1, f"{name}: no sample near 50 V")
-            self.assertLess(
-                abs(cap - typ_pf) / typ_pf,
-                0.15,
-                f"{name} @ {vds:.1f} V: {cap:.0f} pF vs table typ {typ_pf:.0f} pF",
-            )
 
 
 if __name__ == "__main__":

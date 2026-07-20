@@ -16,15 +16,14 @@ def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> flo
         return None
     vals = np.array([float(v) for v, _ in ticks], dtype=float)
     ys_pdf = np.array([float(y) for _, y in ticks], dtype=float)
-    if np.nanmax(vals) <= 0:
-        vals = -vals
     m, b = np.polyfit(ys_pdf, vals, 1)
     y_pdf = rect.y0 + float(y_px) / scale
     return float(m * y_pdf + b)
 
 
 def _parse_numeric_label(text: str) -> float | None:
-    text = text.strip().replace("−", "-").replace("–", "-")
+    text = text.strip().replace("−", "-").replace("–", "-").replace("—", "-")
+    text = re.sub(r"^~(?=\d)", "-", text)
     text = text.replace("O", "0").replace("o", "0")
     if re.search(r"[A-Za-z]", text):
         return None
@@ -253,9 +252,10 @@ def _normalize_y_tick_candidate_runs(
             run = ticks[start:stop]
             vals = np.array([value for value, _y in run], dtype=float)
             ys = np.array([y for _value, y in run], dtype=float)
-            if np.any(np.diff(vals) >= 0):
+            diffs = np.diff(vals)
+            if not (np.all(diffs < 0) or np.all(diffs > 0)):
                 continue
-            value_span = float(vals[0] - vals[-1])
+            value_span = float(abs(vals[0] - vals[-1]))
             if len(run) == 2 and value_span < 4.0:
                 continue
             if len(run) >= 3:

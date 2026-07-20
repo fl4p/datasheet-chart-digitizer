@@ -27,14 +27,74 @@ class ChartClassificationTests(unittest.TestCase):
             ("Drain-source on-state resistance", "RDSon as a function of drain current"),
             ("Transfer Characteristics", "ID=f(VGS) VDS=10 V"),
             ("Output Characteristics", "ID=f(VDS) parameter VGS"),
+            ("Body Diode Transfer Characteristics", "IS=f(VSD)"),
         ]
 
         for title, text in cases:
             with self.subTest(title=title):
                 self.assertNotEqual(find_charts.classify_chart(title, text), "gate_charge")
 
+    def test_gate_charge_test_circuit_is_not_a_data_chart(self) -> None:
+        self.assertEqual(
+            find_charts.classify_chart("Gate Charge Test Circuit & Waveform", ""),
+            "chart",
+        )
+
+    def test_st_vbrdss_temperature_title_classifies_as_breakdown(self) -> None:
+        self.assertEqual(
+            find_charts.classify_chart(
+                "Normalized V(BR)DSS vs temperature", "TJ (°C)"
+            ),
+            "breakdown_voltage",
+        )
+
+    def test_standalone_waveform_definition_remains_separately_audited(self) -> None:
+        self.assertEqual(
+            find_charts.classify_chart("Gate charge waveform definitions", ""),
+            "gate_charge",
+        )
+
+    def test_explicit_characteristics_owns_synthetic_caption_kind(self) -> None:
+        title = "Typical gate charge characteristics"
+        self.assertEqual(
+            find_charts.title_owns_chart_kind(title, 901), "gate_charge"
+        )
+        self.assertIsNone(
+            find_charts.title_owns_chart_kind("Gate charge waveform definitions", 901)
+        )
+
+    def test_qg_axis_fallback_is_gate_charge_only(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        for number, title in (
+            (3, "Typical Transfer Characteristics"),
+            (4, "Typical Capacitance vs. Drain-to-Source Voltage"),
+            (5, "Breakdown Voltage vs. Junction Temperature"),
+            (6, "Body Diode Forward Voltage"),
+        ):
+            with self.subTest(title=title):
+                self.assertIsNone(
+                    find_charts.choose_caption_axis_label_bbox_for_kind(
+                        page,
+                        find_charts.DiagramTitle(
+                            number=number,
+                            title=title,
+                            bbox_pt=(100.0, 200.0, 300.0, 212.0),
+                            line_text=f"Figure {number}. {title}",
+                        ),
+                    )
+                )
+
 
 class CropPanelTests(unittest.TestCase):
+    def test_smaller_overlap_fraction_detects_contained_duplicate(self) -> None:
+        self.assertEqual(
+            find_charts._bbox_overlap_fraction_of_smaller(
+                (0.0, 0.0, 100.0, 100.0),
+                (20.0, 20.0, 80.0, 80.0),
+            ),
+            1.0,
+        )
+
     def test_returns_effective_pdf_box_from_integer_crop(self) -> None:
         page = find_charts.PageText(page_num=1, width_pt=500.0, height_pt=400.0, words=[])
         with TemporaryDirectory() as tmp:
@@ -72,6 +132,42 @@ class TextFallbackTests(unittest.TestCase):
         self.assertEqual(len(deduped), 2)
         self.assertEqual([word.x0 for word in deduped], [100.0, 160.0])
 
+    def test_numbered_caption_drops_recognized_neighbor_after_column_gap(self) -> None:
+        left = [
+            find_charts.Word(text, x0, 100.0, x1, 110.0)
+            for text, x0, x1 in (
+                ("Diagram", 45.0, 84.0),
+                ("15:", 86.0, 101.0),
+                ("Drain-source", 103.0, 162.0),
+                ("breakdown", 164.0, 216.0),
+                ("voltage", 218.0, 253.0),
+                ("Gate", 310.0, 331.0),
+                ("charge", 333.0, 365.0),
+                ("waveforms", 367.0, 418.0),
+            )
+        ]
+        page = self._page(left)
+
+        titles = find_charts.find_diagram_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].title, "Drain-source breakdown voltage")
+        self.assertEqual(find_charts.classify_chart(titles[0].title, ""), "breakdown_voltage")
+
+    def test_large_title_gap_is_preserved_without_two_chart_families(self) -> None:
+        words = [
+            find_charts.Word("Diagram", 45.0, 100.0, 84.0, 110.0),
+            find_charts.Word("15:", 86.0, 100.0, 101.0, 110.0),
+            find_charts.Word("Drain-source", 103.0, 100.0, 162.0, 110.0),
+            find_charts.Word("breakdown", 164.0, 100.0, 216.0, 110.0),
+            find_charts.Word("voltage", 218.0, 100.0, 253.0, 110.0),
+            find_charts.Word("normalized", 310.0, 100.0, 360.0, 110.0),
+        ]
+
+        title = find_charts.find_diagram_titles(self._page(words))[0]
+
+        self.assertEqual(title.title, "Drain-source breakdown voltage normalized")
+
     def test_selects_substantially_more_readable_fallback(self) -> None:
         primary = self._page(
             [find_charts.Word("!", float(i), 0.0, float(i + 1), 1.0) for i in range(20)]
@@ -97,6 +193,10 @@ class TextFallbackTests(unittest.TestCase):
 
 
 class CaptionTitleTests(unittest.TestCase):
+    @staticmethod
+    def _page(words: list[find_charts.Word]) -> find_charts.PageText:
+        return find_charts.PageText(1, 600.0, 800.0, words)
+
     def test_accepts_numbered_transfer_caption(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -214,6 +314,75 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[1].number, 814)
         self.assertEqual(titles[1].title, "Dynamic Input/Output Characteristics")
 
+    def test_extends_numbered_gate_charge_test_circuit_title(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Diagram", 60, 200, 102, 210),
+                find_charts.Word("5:", 106, 200, 118, 210),
+                find_charts.Word("Gate", 122, 200, 150, 210),
+                find_charts.Word("Charge", 155, 200, 196, 210),
+                find_charts.Word("Test", 122, 211, 149, 221),
+                find_charts.Word("Circuit", 154, 211, 193, 221),
+                find_charts.Word("&", 198, 211, 206, 221),
+                find_charts.Word("Waveform", 211, 211, 267, 221),
+            ],
+        )
+
+        titles = find_charts.extend_wrapped_titles(
+            page, find_charts.find_diagram_titles(page)
+        )
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].title, "Gate Charge Test Circuit & Waveform")
+        self.assertEqual(find_charts.classify_chart(titles[0].title, ""), "chart")
+
+    def test_extends_numbered_gate_charge_measurement_title(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Diagram", 60, 200, 102, 210),
+                find_charts.Word("5:", 106, 200, 118, 210),
+                find_charts.Word("Gate", 122, 200, 150, 210),
+                find_charts.Word("Charge", 155, 200, 196, 210),
+                find_charts.Word("Characteristics", 122, 211, 202, 221),
+            ],
+        )
+
+        titles = find_charts.extend_wrapped_titles(
+            page, find_charts.find_diagram_titles(page)
+        )
+
+        self.assertEqual(titles[0].title, "Gate Charge Characteristics")
+        self.assertEqual(
+            find_charts.classify_chart(titles[0].title, ""), "gate_charge"
+        )
+
+    def test_numbered_title_does_not_take_adjacent_column_continuation(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Diagram", 60, 200, 102, 210),
+                find_charts.Word("5:", 106, 200, 118, 210),
+                find_charts.Word("Gate", 122, 200, 150, 210),
+                find_charts.Word("Charge", 155, 200, 196, 210),
+                find_charts.Word("Test", 410, 211, 437, 221),
+                find_charts.Word("Circuit", 442, 211, 481, 221),
+            ],
+        )
+
+        titles = find_charts.extend_wrapped_titles(
+            page, find_charts.find_diagram_titles(page)
+        )
+
+        self.assertEqual(titles[0].title, "Gate Charge")
+
     def test_accepts_wrapped_gate_charge_caption(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -241,6 +410,44 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].number, 13)
         self.assertEqual(titles[0].title, "Gate-source voltage as a function of gate charge; typical values")
 
+    def test_rejects_wrapped_gate_charge_test_circuit_caption(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Fig.", 60, 200, 78, 210),
+                find_charts.Word("13.", 82, 200, 102, 210),
+                find_charts.Word("Gate", 110, 200, 138, 210),
+                find_charts.Word("Charge", 143, 200, 184, 210),
+                find_charts.Word("Test", 110, 211, 137, 221),
+                find_charts.Word("Circuit", 142, 211, 181, 221),
+                find_charts.Word("&", 186, 211, 194, 221),
+                find_charts.Word("Waveform", 199, 211, 255, 221),
+            ],
+        )
+
+        self.assertEqual(find_charts.find_caption_titles(page), [])
+
+    def test_wrapped_gate_charge_measurement_caption_stays_data_bearing(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Fig.", 60, 200, 78, 210),
+                find_charts.Word("13.", 82, 200, 102, 210),
+                find_charts.Word("Gate", 110, 200, 138, 210),
+                find_charts.Word("Charge", 143, 200, 184, 210),
+                find_charts.Word("Characteristics", 110, 211, 190, 221),
+            ],
+        )
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual(len(titles), 1)
+        self.assertEqual(titles[0].title, "Gate Charge Characteristics")
+
     def test_splits_unnumbered_typ_gate_charge_header(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -262,6 +469,68 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertEqual(titles[0].title, "Typ. gate charge")
         self.assertEqual(titles[1].number, 902)
         self.assertEqual(titles[1].title, "Typ. capacitances")
+
+    def test_comma_numbered_two_column_captions_keep_their_figure_owner(self) -> None:
+        page = self._page([
+            find_charts.Word(text, x0, 100.0, x1, 110.0)
+            for text, x0, x1 in (
+                ("Figure", 20, 55), ("3,", 58, 70), ("Typ.", 73, 100),
+                ("capacitances", 104, 180), ("Figure", 330, 365),
+                ("4,", 368, 380), ("Typ.", 383, 410),
+                ("gate", 414, 445), ("charge", 449, 490),
+            )
+        ])
+
+        titles = find_charts.find_caption_titles(page)
+
+        self.assertEqual([(item.number, item.title) for item in titles], [
+            (3, "Typ. capacitances"), (4, "Typ. gate charge"),
+        ])
+
+    def test_ocr_spaced_figure_caption_starts_its_own_panel(self) -> None:
+        page = self._page([
+            find_charts.Word(text, x0, 100, x1, 110)
+            for text, x0, x1 in (
+                ("Figure", 20, 55), ("3.", 58, 70), ("Capacitance", 74, 145),
+                ("Characteristics", 149, 225), ("Fi", 330, 340), ("g", 344, 350),
+                ("u", 354, 360), ("r", 364, 370), ("e", 374, 380),
+                ("4", 384, 390), (".G", 394, 405), ("a", 409, 415),
+                ("te", 419, 430), ("Charge", 434, 475),
+            )
+        ])
+
+        self.assertEqual(
+            [(title.number, title.title) for title in find_charts.find_caption_titles(page)],
+            [(3, "Capacitance Characteristics"), (4, "Gate Charge")],
+        )
+
+    def test_bare_axis_tick_is_not_a_figure_number(self) -> None:
+        page = self._page([
+            find_charts.Word("6000", 20, 100, 50, 110),
+            find_charts.Word("Gate-Source", 55, 100, 120, 110),
+            find_charts.Word("Capacitance", 125, 100, 195, 110),
+        ])
+
+        self.assertEqual(find_charts.find_caption_titles(page), [])
+
+    def test_wrapped_caption_cannot_change_the_explicit_chart_family(self) -> None:
+        page = self._page([
+            find_charts.Word("Fig.", 20, 100, 40, 110),
+            find_charts.Word("15.", 44, 100, 58, 110),
+            find_charts.Word("Gate", 62, 100, 90, 110),
+            find_charts.Word("charge", 94, 100, 135, 110),
+            find_charts.Word("waveform", 139, 100, 190, 110),
+            find_charts.Word("definitions", 194, 100, 250, 110),
+            find_charts.Word("Fig.", 300, 112, 320, 122),
+            find_charts.Word("16.", 324, 112, 338, 122),
+            find_charts.Word("Input", 342, 112, 375, 122),
+            find_charts.Word("capacitances", 379, 112, 450, 122),
+        ])
+
+        title = find_charts.find_caption_titles(page)[0]
+
+        self.assertEqual(title.number, 15)
+        self.assertEqual(title.title, "Gate charge waveform definitions")
 
     def test_splits_paired_typ_gate_charge_and_breakdown_headers(self) -> None:
         page = find_charts.PageText(
@@ -409,6 +678,419 @@ class CaptionTitleTests(unittest.TestCase):
         assert bbox is not None
         self.assertLess(0.5 * (bbox[1] + bbox[3]), title.bbox_pt[1])
 
+    def test_numbered_transfer_caption_leads_plot_with_own_axis_evidence(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[find_charts.Word("VGS(V)", 420.0, 318.0, 450.0, 330.0)],
+        )
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="Typical Transfer Characteristics",
+            bbox_pt=(358.0, 146.0, 527.0, 159.0),
+            line_text="Figure 2: Typical Transfer Characteristics",
+        )
+        below = (336.0, 162.0, 537.0, 308.0)
+
+        bbox = find_charts.choose_caption_panel_bbox(page, title, [below])
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(0.5 * (bbox[1] + bbox[3]), title.bbox_pt[3])
+
+    def test_caption_synthetic_bbox_stops_at_first_own_axis(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("VGS(V)", 420.0, 318.0, 450.0, 330.0),
+                # Same-column neighbor chart below: must not extend the crop.
+                find_charts.Word("VGS(V)", 420.0, 530.0, 450.0, 542.0),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="Typical Transfer Characteristics",
+            bbox_pt=(358.0, 146.0, 527.0, 159.0),
+            line_text="Figure 2: Typical Transfer Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[3], 350.0)
+
+    def test_numbered_breakdown_caption_without_axis_evidence_fails_closed(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        title = find_charts.DiagramTitle(
+            number=10,
+            title="Drain-to-Source Breakdown Voltage",
+            bbox_pt=(350.0, 480.0, 540.0, 492.0),
+            line_text="Fig 10. Drain-to-Source Breakdown Voltage",
+        )
+        above = (350.0, 300.0, 540.0, 470.0)
+        below = (350.0, 500.0, 540.0, 680.0)
+
+        bbox = find_charts.choose_caption_panel_bbox(page, title, [above, below])
+
+        self.assertIsNone(bbox)
+
+    def test_breakdown_synthetic_bbox_uses_region_with_breakdown_evidence(self) -> None:
+        page = find_charts.PageText(
+            1, 600, 800,
+            [
+                find_charts.Word("VGS(th)", 400, 220, 440, 230),
+                find_charts.Word("V(BR)DSS", 400, 420, 455, 430),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            10, "Normalized breakdown voltage vs temperature",
+            (330, 300, 540, 312), "Figure 10.",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(bbox[1], title.bbox_pt[3])
+
+    def test_numbered_breakdown_caption_leads_plot_with_tj_axis_evidence(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("T", 135.0, 282.0, 140.0, 292.0),
+                find_charts.Word("J", 140.0, 287.0, 143.0, 295.0),
+                find_charts.Word("(℃)", 146.0, 282.0, 162.0, 295.0),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            number=7,
+            title="Normalized Breakdown voltage vs.",
+            bbox_pt=(95.0, 115.0, 278.0, 128.0),
+            line_text="Figure 7: Normalized Breakdown voltage vs.",
+        )
+        below = (60.0, 140.0, 283.0, 281.0)
+
+        bbox = find_charts.choose_caption_panel_bbox(page, title, [below])
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(bbox[1], title.bbox_pt[3])
+
+    def test_breakdown_direction_ignores_junction_temperature_inside_caption(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("Junction", 145.0, 115.0, 195.0, 127.0),
+                find_charts.Word("Temperature", 198.0, 115.0, 268.0, 127.0),
+                find_charts.Word("T", 135.0, 282.0, 140.0, 292.0),
+                find_charts.Word("J", 140.0, 287.0, 143.0, 295.0),
+                find_charts.Word("(℃)", 146.0, 282.0, 162.0, 295.0),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            number=7,
+            title="Breakdown voltage versus Junction Temperature",
+            bbox_pt=(95.0, 110.0, 278.0, 130.0),
+            line_text="Figure 7: Breakdown voltage versus Junction Temperature",
+        )
+
+        direction = find_charts.caption_axis_direction(
+            page, title, "breakdown_voltage", find_charts._token_norm
+        )
+
+        self.assertEqual(direction, "below")
+
+    def test_caption_self_token_is_not_axis_direction_evidence(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[find_charts.Word("VGS", 400.0, 146.0, 425.0, 158.0)],
+        )
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="VGS Transfer Characteristics",
+            bbox_pt=(358.0, 140.0, 527.0, 160.0),
+            line_text="Figure 2: VGS Transfer Characteristics",
+        )
+
+        direction = find_charts.caption_axis_direction(
+            page, title, "transfer", find_charts._token_norm
+        )
+
+        self.assertIsNone(direction)
+
+    def test_breakdown_direction_joins_interleaved_split_tj_axis(self) -> None:
+        # Same-row two-column pages can interleave the left chart's words
+        # between the right chart's split T/J glyphs in pdftotext order.
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=612,
+            height_pt=792,
+            words=[
+                find_charts.Word("T", 390.0, 491.0, 395.0, 503.0),
+                find_charts.Word("Case", 120.0, 491.2, 145.0, 503.2),
+                find_charts.Word("J", 396.0, 491.4, 400.0, 503.4),
+                find_charts.Word("(°C)", 404.0, 491.4, 424.0, 503.4),
+                find_charts.Word("Junction", 430.0, 722.0, 475.0, 734.0),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            number=10,
+            title="Drain-to-Source Breakdown Voltage",
+            bbox_pt=(352.0, 507.0, 549.0, 519.0),
+            line_text="Fig 10. Drain-to-Source Breakdown Voltage",
+        )
+
+        direction = find_charts.caption_axis_direction(
+            page, title, "breakdown_voltage", find_charts._token_norm
+        )
+
+        self.assertEqual(direction, "above")
+
+    def test_breakdown_direction_accepts_degree_symbol_ocr_as_five(self) -> None:
+        page = find_charts.PageText(
+            1, 600, 800,
+            [
+                find_charts.Word("TJ", 120, 240, 132, 250),
+                find_charts.Word("Junction", 136, 240, 180, 250),
+                find_charts.Word("Temperature", 184, 240, 250, 250),
+                find_charts.Word("(5C)", 254, 240, 276, 250),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            7, "Breakdown Voltage Variation", (100, 260, 280, 272), "Figure 7"
+        )
+
+        self.assertEqual(
+            find_charts.caption_axis_direction(page, title, "breakdown_voltage", find_charts._token_norm),
+            "above",
+        )
+
+    def test_transfer_condition_token_is_not_axis_direction_evidence(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600,
+            height_pt=800,
+            words=[
+                find_charts.Word("VGS", 410.0, 420.0, 438.0, 432.0),
+                find_charts.Word("=", 442.0, 420.0, 448.0, 432.0),
+                find_charts.Word("0", 452.0, 420.0, 458.0, 432.0),
+            ],
+        )
+        title = find_charts.DiagramTitle(
+            number=2,
+            title="Typical Transfer Characteristics",
+            bbox_pt=(358.0, 240.0, 527.0, 253.0),
+            line_text="Figure 2: Typical Transfer Characteristics",
+        )
+
+        self.assertIsNone(
+            find_charts.caption_axis_direction(
+                page, title, "transfer", find_charts._token_norm
+            )
+        )
+
+    def test_numbered_body_caption_synthetic_bbox_uses_vsd_axis_below(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=595,
+            height_pt=842,
+            words=[find_charts.Word("VSD(V)", 423.0, 539.0, 448.0, 552.0)],
+        )
+        title = find_charts.DiagramTitle(
+            number=4,
+            title="Body Diode Characteristics",
+            bbox_pt=(365.0, 356.0, 517.0, 369.0),
+            line_text="Figure 4: Body Diode Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreaterEqual(bbox[1], title.bbox_pt[3])
+        self.assertLessEqual(bbox[0], 303.0)
+        self.assertLess(bbox[3], 563.0)
+
+    def test_numbered_capacitance_caption_uses_vds_axis_below(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=595,
+            height_pt=842,
+            words=[find_charts.Word("VDS(V)", 420.0, 770.0, 455.0, 783.0)],
+        )
+        title = find_charts.DiagramTitle(
+            number=6,
+            title="Capacitance Characteristics",
+            bbox_pt=(364.0, 563.0, 518.0, 576.0),
+            line_text="Figure 6: Capacitance Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_synthetic_bbox(page, title)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreaterEqual(bbox[1], title.bbox_pt[3])
+
+    def test_spec_table_sections_reject_gate_charge_axis_candidate(self) -> None:
+        words = []
+        x = 10.0
+        for y, text in (
+            (20.0, "Off Characteristics"),
+            (40.0, "On Characteristics"),
+            (60.0, "Dynamic Characteristics"),
+            (80.0, "Total Gate Charge"),
+        ):
+            for token in text.split():
+                words.append(find_charts.Word(token, x, y, x + 30.0, y + 10.0))
+                x += 35.0
+            x = 10.0
+        page = find_charts.PageText(1, 600.0, 800.0, words)
+
+        self.assertTrue(
+            find_charts._bbox_looks_like_spec_table(
+                page, (0.0, 0.0, 500.0, 120.0), own_families=frozenset({"charge"})
+            )
+        )
+
+    def test_switching_and_charge_parameter_rows_reject_axis_candidate(self) -> None:
+        page = self._page([
+            find_charts.Word("Turn-On", 20, 100, 60, 110),
+            find_charts.Word("Rise", 64, 100, 88, 110),
+            find_charts.Word("Time", 92, 100, 120, 110),
+            find_charts.Word("Total", 20, 120, 52, 130),
+            find_charts.Word("Gate", 56, 120, 84, 130),
+            find_charts.Word("Charge", 88, 120, 130, 130),
+        ])
+
+        self.assertTrue(find_charts._bbox_looks_like_spec_table(
+            page, (0.0, 90.0, 150.0, 140.0), own_families=frozenset({"charge"})
+        ))
+
+    def test_capacitance_and_charge_parameter_rows_reject_axis_candidate(self) -> None:
+        page = self._page([
+            find_charts.Word(text, 20, y, 140, y + 10)
+            for text, y in (
+                ("Output Capacitance", 100),
+                ("Reverse Transfer Capacitance", 120),
+                ("Total Gate Charge", 140),
+            )
+        ])
+
+        self.assertTrue(find_charts._bbox_looks_like_spec_table(
+            page, (0.0, 90.0, 160.0, 160.0), own_families=frozenset({"charge"})
+        ))
+
+    def test_caption_row_midpoint_separates_adjacent_plot_columns(self) -> None:
+        page = self._page([])
+        left = find_charts.DiagramTitle(4, "Gate Charge", (120, 500, 220, 510), "Figure 4")
+        right = find_charts.DiagramTitle(5, "Capacitance", (380, 500, 480, 510), "Figure 5")
+
+        bbox = find_charts.bound_caption_bbox_to_caption_row(
+            page, left, (80, 300, 450, 490), [left, right]
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[2], right.bbox_pt[0])
+
+    def test_caption_row_does_not_clip_own_frame_before_neighbor_caption(self) -> None:
+        page = self._page([])
+        left = find_charts.DiagramTitle(15, "Breakdown", (59, 448, 228, 457), "15 Breakdown")
+        right = find_charts.DiagramTitle(16, "Waveforms", (298, 448, 424, 457), "16 Waveforms")
+
+        bbox = find_charts.bound_caption_bbox_to_caption_row(
+            page, left, (93, 499, 290, 754), [left, right]
+        )
+
+        self.assertEqual(bbox, (93, 499, 290, 754))
+
+    def test_superscript_axis_digit_is_not_a_bare_caption_number(self) -> None:
+        line = [
+            find_charts.Word("10²", 20, 100, 35, 110),
+            find_charts.Word("Gate", 40, 100, 65, 110),
+            find_charts.Word("charge", 70, 100, 105, 110),
+        ]
+
+        self.assertEqual(find_charts._caption_starts(line), [])
+
+    def test_plot_above_excludes_previous_same_column_caption(self) -> None:
+        page = self._page([])
+        prior = find_charts.DiagramTitle(9, "Gate Charge", (100, 300, 220, 312), "Figure 9")
+        current = find_charts.DiagramTitle(11, "Capacitance", (100, 520, 220, 532), "Figure 11")
+
+        bbox = find_charts.bound_caption_bbox_to_caption_row(
+            page, current, (80, 290, 260, 515), [prior, current], plot_above=True
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(bbox[1], prior.bbox_pt[3])
+
+    def test_plot_above_ignores_previous_caption_in_neighbor_column(self) -> None:
+        page = self._page([])
+        prior = find_charts.DiagramTitle(15, "Definitions", (50, 286, 300, 299), "Figure 15")
+        current = find_charts.DiagramTitle(16, "Capacitance", (330, 315, 540, 328), "Figure 16")
+
+        bbox = find_charts.bound_caption_bbox_to_caption_row(
+            page, current, (335, 123, 506, 297), [prior, current], plot_above=True
+        )
+
+        self.assertEqual(bbox, (335, 123, 506, 297))
+
+    def test_revision_history_page_is_not_chart_source(self) -> None:
+        page = self._page([
+            find_charts.Word("Revision", 20, 20, 70, 30),
+            find_charts.Word("history", 74, 20, 120, 30),
+            find_charts.Word("Date", 20, 40, 45, 50),
+            find_charts.Word("Revision", 50, 40, 100, 50),
+            find_charts.Word("Changes", 105, 40, 150, 50),
+            find_charts.Word("Figure", 20, 70, 55, 80),
+            find_charts.Word("4.", 60, 70, 70, 80),
+            find_charts.Word("Transfer", 75, 70, 120, 80),
+            find_charts.Word("Characteristics", 125, 70, 200, 80),
+        ])
+
+        self.assertIsNotNone(
+            find_charts.revision_history_region(page.words, find_charts._token_norm)
+        )
+
+    def test_product_summary_rejects_gate_charge_axis_candidate(self) -> None:
+        page = find_charts.PageText(
+            1,
+            600.0,
+            800.0,
+            [
+                find_charts.Word(text, x, y, x + 60.0, y + 10.0)
+                for text, x, y in (
+                    ("Product", 10.0, 10.0),
+                    ("Summary", 75.0, 10.0),
+                    ("VALUE", 200.0, 30.0),
+                    ("UNIT", 270.0, 30.0),
+                    ("Qg", 10.0, 50.0),
+                    ("Gate", 75.0, 50.0),
+                    ("Charge", 140.0, 50.0),
+                    ("21", 200.0, 50.0),
+                    ("nC", 270.0, 50.0),
+                )
+            ],
+        )
+
+        self.assertTrue(
+            find_charts._bbox_looks_like_spec_table(
+                page, (0.0, 0.0, 350.0, 80.0), own_families=frozenset({"charge"})
+            )
+        )
+
     def test_formula_below_caption_prefers_lower_plot_with_larger_gap(self) -> None:
         page = find_charts.PageText(
             page_num=1,
@@ -520,6 +1202,42 @@ class CaptionTitleTests(unittest.TestCase):
         self.assertLessEqual(bbox[1], 132.0)
         self.assertGreaterEqual(bbox[3], 264.0)
 
+    def test_caption_vector_frame_bbox_stays_in_own_column(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=595.22, height_pt=842.0, words=[])
+        title = find_charts.DiagramTitle(
+            number=901,
+            title="Typical Capacitance vs.",
+            bbox_pt=(391.9, 63.5, 486.7, 71.8),
+            line_text="Typical Capacitance vs.",
+        )
+        left_neighbor = (127.8, 94.8, 269.2, 236.5)
+        own_frame = (368.1, 94.4, 509.5, 236.2)
+
+        bbox = find_charts.choose_caption_vector_frame_bbox(
+            page, title, [left_neighbor, own_frame]
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertGreater(bbox[0], 300.0)
+        self.assertLess(bbox[2], 540.0)
+        self.assertLess(bbox[3], 300.0)
+
+    def test_numbered_transfer_caption_does_not_bind_frame_below(self) -> None:
+        page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
+        title = find_charts.DiagramTitle(
+            number=7,
+            title="Typical Transfer Characteristics",
+            bbox_pt=(330.0, 300.0, 500.0, 312.0),
+            line_text="Figure 7. Typical Transfer Characteristics",
+        )
+
+        bbox = find_charts.choose_caption_vector_frame_bbox(
+            page, title, [(330.0, 330.0, 520.0, 520.0)]
+        )
+
+        self.assertIsNone(bbox)
+
     def test_caption_synthetic_bbox_uses_above_plot_for_midpage_figure_caption(self) -> None:
         page = find_charts.PageText(page_num=1, width_pt=600, height_pt=800, words=[])
         title = find_charts.DiagramTitle(
@@ -600,11 +1318,54 @@ class TransferBodyCaptionIntegrationTests(unittest.TestCase):
         self.assertEqual([(panel.page, panel.diagram) for panel in body], [(3, 4)])
         self.assertEqual([(panel.page, panel.diagram) for panel in gate], [(3, 6)])
         self.assertEqual(transfer[0].bbox_pt, (277.902, 53.06, 612.0, 264.06))
-        self.assertEqual(body[0].bbox_pt, (281.211, 267.302, 612.0, 478.302))
+        # The body-diode panel starts below the preceding Figure 2 caption;
+        # retaining that caption would make the crop own text from another plot.
+        self.assertEqual(body[0].bbox_pt, (281.211, 280.932, 612.0, 478.302))
         self.assertEqual(gate[0].bbox_pt, (345.472, 566.032, 554.128, 658.768))
 
 
 class CaptionBboxExpansionGuardTests(unittest.TestCase):
+    def test_two_column_axis_units_clamp_crop_at_midpoint(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=600.0,
+            height_pt=800.0,
+            words=[
+                find_charts.Word("(nC)", 170.0, 590.0, 195.0, 602.0),
+                find_charts.Word("(V)", 430.0, 590.0, 448.0, 602.0),
+            ],
+        )
+        left_title = find_charts.DiagramTitle(
+            number=5,
+            title="Gate Charge Characteristics",
+            bbox_pt=(100.0, 400.0, 250.0, 412.0),
+            line_text="Figure 5: Gate Charge Characteristics",
+        )
+        right_title = find_charts.DiagramTitle(
+            number=6,
+            title="Capacitance Characteristics",
+            bbox_pt=(360.0, 400.0, 520.0, 412.0),
+            line_text="Figure 6: Capacitance Characteristics",
+        )
+
+        self.assertEqual(
+            find_charts._bound_caption_bbox_to_own_column(
+                page, left_title, (20.0, 420.0, 330.0, 620.0)
+            ),
+            (20.0, 420.0, 300.0, 620.0),
+        )
+        self.assertEqual(
+            find_charts._bound_caption_bbox_to_own_column(
+                page, right_title, (270.0, 420.0, 590.0, 620.0)
+            ),
+            (306.0, 420.0, 590.0, 620.0),
+        )
+        self.assertIsNone(
+            find_charts._bound_caption_bbox_to_own_column(
+                page, right_title, (40.0, 420.0, 295.0, 620.0)
+            )
+        )
+
     def test_single_stray_numeral_does_not_suppress_expansion(self) -> None:
         # A lone condition numeral (the "25" split off "Tj = 25 degC") inside
         # the bbox near an edge must not read as "tick labels already present";
@@ -638,6 +1399,45 @@ class CaptionBboxExpansionGuardTests(unittest.TestCase):
         page = find_charts.PageText(page_num=1, width_pt=500.0, height_pt=400.0, words=words)
         bbox = (100.0, 100.0, 300.0, 300.0)
         self.assertEqual(find_charts._expand_caption_bbox_to_axis_labels(page, bbox), bbox)
+
+    def test_bottom_expansion_stops_at_first_aligned_tick_row(self) -> None:
+        page = find_charts.PageText(
+            page_num=1,
+            width_pt=500.0,
+            height_pt=500.0,
+            words=[
+                find_charts.Word("0", 140.0, 304.0, 146.0, 312.0),
+                find_charts.Word("10", 200.0, 304.0, 212.0, 312.0),
+                # A later panel's numeric row is still inside the old broad
+                # 40-point gutter, but must not extend this crop to y=338.
+                find_charts.Word("0", 140.0, 330.0, 146.0, 338.0),
+                find_charts.Word("50", 200.0, 330.0, 212.0, 338.0),
+            ],
+        )
+        bbox = (100.0, 100.0, 300.0, 300.0)
+
+        self.assertEqual(
+            find_charts._expand_caption_bbox_to_axis_labels(page, bbox)[3], 314.0
+        )
+
+    def test_neighbor_single_tick_does_not_pull_crop_across_columns(self) -> None:
+        words = [
+            # Own Y ticks form an aligned run immediately outside the crop.
+            find_charts.Word("130", 280.0, 120.0, 298.0, 128.0),
+            find_charts.Word("120", 280.0, 180.0, 298.0, 188.0),
+            find_charts.Word("110", 280.0, 240.0, 298.0, 248.0),
+            # A terminal tick from the left-hand chart is farther outboard.
+            find_charts.Word("175", 242.0, 240.0, 262.0, 248.0),
+        ]
+        page = find_charts.PageText(
+            page_num=1, width_pt=612.0, height_pt=792.0, words=words
+        )
+
+        out = find_charts._expand_caption_bbox_to_axis_labels(
+            page, (300.0, 100.0, 600.0, 300.0)
+        )
+
+        self.assertEqual(out[0], 278.0)
 
 
 class SpecTableGuardFamilyTests(unittest.TestCase):
@@ -689,6 +1489,10 @@ class ToshibaRasterImagePanelTests(unittest.TestCase):
         self.assertEqual([(panel.page, panel.diagram) for panel in caps], [(6, 88)])
         for got, want in zip(caps[0].bbox_pt, (308.421, 62.692, 537.308, 248.264)):
             self.assertAlmostEqual(got, want, places=2)
+        self.assertIn(
+            (6, 810, "gate_charge"),
+            [(panel.page, panel.diagram, panel.kind) for panel in panels],
+        )
 
 
 if __name__ == "__main__":

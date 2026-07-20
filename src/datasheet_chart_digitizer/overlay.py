@@ -26,13 +26,14 @@ import cv2
 import numpy as np
 
 _FONT = cv2.FONT_HERSHEY_SIMPLEX
+PLOT_FRAME_THICKNESS_PX = 6
 
 
 def draw_plot_frame(
     image: np.ndarray,
     plot,
     color: tuple[int, int, int] = (0, 190, 0),
-    thickness: int = 2,
+    thickness: int = PLOT_FRAME_THICKNESS_PX,
 ) -> np.ndarray:
     """Outline the plot rectangle."""
     cv2.rectangle(

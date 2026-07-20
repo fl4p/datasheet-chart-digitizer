@@ -520,6 +520,103 @@ class GateChargeVplTests(unittest.TestCase):
 
         self.assertIsNone(expanded)
 
+    def test_closed_panel_cell_clips_gate_context_at_all_four_rails(self) -> None:
+        point = estimation.pymupdf.Point
+        page = mock.MagicMock()
+        page.get_drawings.return_value = [
+            {
+                "items": [
+                    ("l", point(50.0, 100.0), point(300.0, 100.0)),
+                    ("l", point(50.0, 300.0), point(300.0, 300.0)),
+                    ("l", point(50.0, 100.0), point(50.0, 300.0)),
+                    ("l", point(300.0, 100.0), point(300.0, 300.0)),
+                    # Neighbour divider and inner plot grid must not replace
+                    # the source-owned enclosing cell.
+                    ("l", point(330.0, 100.0), point(330.0, 300.0)),
+                    ("l", point(80.0, 150.0), point(280.0, 150.0)),
+                ]
+            }
+        ]
+
+        cell = gate._enclosing_panel_cell(
+            page, estimation.pymupdf.Rect(80.0, 110.0, 280.0, 285.0)
+        )
+
+        self.assertEqual(cell, estimation.pymupdf.Rect(50.0, 100.0, 300.0, 300.0))
+
+    def test_incomplete_panel_cell_does_not_clip_gate_context(self) -> None:
+        point = estimation.pymupdf.Point
+        page = mock.MagicMock()
+        page.get_drawings.return_value = [
+            {
+                "items": [
+                    ("l", point(50.0, 100.0), point(300.0, 100.0)),
+                    ("l", point(50.0, 300.0), point(300.0, 300.0)),
+                    ("l", point(50.0, 100.0), point(50.0, 300.0)),
+                ]
+            }
+        ]
+
+        cell = gate._enclosing_panel_cell(
+            page, estimation.pymupdf.Rect(80.0, 110.0, 280.0, 285.0)
+        )
+
+        self.assertIsNone(cell)
+
+    def test_gate_context_stops_after_foreign_caption_and_before_cap_axis(self) -> None:
+        page = mock.MagicMock()
+        page.get_text.return_value = [
+            (120.0, 80.0, 160.0, 90.0, "Figure", 1, 1, 0),
+            (164.0, 80.0, 174.0, 90.0, "2.", 1, 1, 1),
+            (178.0, 80.0, 250.0, 90.0, "Saturation", 1, 1, 2),
+            (310.0, 130.0, 320.0, 210.0, "Capacitance", 2, 1, 0),
+        ]
+
+        clipped = gate._clip_context_at_foreign_text(
+            page,
+            estimation.pymupdf.Rect(100.0, 92.0, 280.0, 250.0),
+            estimation.pymupdf.Rect(54.0, 54.0, 322.0, 302.0),
+            4,
+        )
+
+        self.assertEqual(clipped.y0, 91.0)
+        self.assertEqual(clipped.x1, 295.0)
+
+    def test_own_figure_caption_does_not_clip_gate_context(self) -> None:
+        page = mock.MagicMock()
+        page.get_text.return_value = [
+            (120.0, 80.0, 160.0, 90.0, "Figure", 1, 1, 0),
+            (164.0, 80.0, 174.0, 90.0, "4.", 1, 1, 1),
+            (178.0, 80.0, 240.0, 90.0, "Gate Charge", 1, 1, 2),
+        ]
+        crop = estimation.pymupdf.Rect(54.0, 54.0, 322.0, 302.0)
+
+        clipped = gate._clip_context_at_foreign_text(
+            page,
+            estimation.pymupdf.Rect(100.0, 92.0, 280.0, 250.0),
+            crop,
+            4,
+        )
+
+        self.assertEqual(clipped, crop)
+
+    def test_finder_owned_caption_clips_after_axis_refinement_expands_upward(self) -> None:
+        page = mock.MagicMock()
+        page.get_text.return_value = [
+            (120.0, 80.0, 160.0, 90.0, "Figure", 1, 1, 0),
+            (164.0, 80.0, 174.0, 90.0, "2.", 1, 1, 1),
+        ]
+
+        clipped = gate._clip_context_at_foreign_text(
+            page,
+            estimation.pymupdf.Rect(100.0, 50.0, 280.0, 250.0),
+            estimation.pymupdf.Rect(54.0, 20.0, 322.0, 302.0),
+            4,
+            caption_owner_rect=estimation.pymupdf.Rect(100.0, 92.0, 280.0, 250.0),
+        )
+
+        self.assertEqual(clipped.y0, 91.0)
+
     def test_neighbor_image_count_deduplicates_repeated_placement(self) -> None:
         page = mock.MagicMock()
         placement = estimation.pymupdf.Rect(80.0, 80.0, 220.0, 220.0)

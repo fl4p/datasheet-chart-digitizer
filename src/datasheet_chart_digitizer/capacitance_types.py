@@ -55,6 +55,18 @@ class AxisCalibration:
     # When x_log is set the X axis is logarithmic: x_scale/x_offset map crop
     # pixels to log10(VDS) and x_resid_v is an RMS residual in DECADES.
     x_log: bool = False
+    # Existing capacitance charts use logarithmic pF on Y.  A small TI cohort
+    # uses an arithmetic pF/nF ladder instead; in that case y_scale/y_offset
+    # map pixels directly to pF and y_ticks_pf owns the consumed tick values.
+    y_log: bool = True
+    y_ticks_pf: tuple[float, ...] = ()
+    y_resid_pf: float | None = None
+    # Arithmetic capacitance ladders are first parsed from label centers, then
+    # re-seated on source horizontal grid centers.  Keep both coordinate sets
+    # and the two independent residuals so review can prove that serving uses
+    # the source grid rather than the label glyph boxes.
+    y_tick_label_px: tuple[float, ...] = ()
+    y_label_to_grid_max_px: float | None = None
     x_scale: float | None = None
     x_offset: float | None = None
     y_scale: float | None = None
@@ -65,6 +77,17 @@ class AxisCalibration:
     y_grid_candidate_count: int | None = None
     y_grid_span_fraction: float | None = None
     y_grid_residual_px: float | None = None
+    # P-channel charts can print a strictly-negative VDS tick ladder. Serving
+    # remains the conventional positive |VDS| magnitude, while these fields
+    # preserve the source polarity and explicit transform for review.
+    x_source_ticks_v: tuple[float, ...] = ()
+    x_value_transform: str | None = None
+    x_tick_label_px: tuple[float, ...] = ()
+    x_label_to_grid_max_px: float | None = None
+    x_gridline_px: tuple[float, ...] = ()
+    x_grid_candidate_count: int | None = None
+    x_grid_span_fraction: float | None = None
+    x_grid_residual_px: float | None = None
 
 
 @dataclass(frozen=True)

@@ -61,6 +61,7 @@ from .capacitance_axis import (
 )
 from .capacitance_assignment import select_trace_assignment
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
+from .capacitance_plot_box import find_capacitance_plot_box
 from .capacitance_refs import (
     _anchor_csv_path,
     _extract_reference_vint,
@@ -110,7 +111,6 @@ from .capacitance_traces import (
     _trim_repair_points_on_peer,
     ciss_coss_shared_spans,
     extract_trace_components,
-    find_plot_box,
     repair_merged_ciss_coss_identity,
     trace_semantic_diagnostics,
     trace_validation_summary,
@@ -128,6 +128,8 @@ from .capacitance_types import (
 from .capacitance_validation import (
     _vendor_qoss_curve_path,
     coss_metrics_to_json,
+    partition_qoss_metrics,
+    qoss_metrics_status_reasons,
     qoss_validation_status,
     top_decade_clip_diagnostic,
     vendor_qoss_tail_validation,
@@ -150,7 +152,7 @@ from .capacitance_vector import (
     _sample_cubic,
     _segment_relevant,
     _vector_curve_edges,
-    extract_vector_trace_components,
+    extract_vector_trace_components_with_provenance,
 )
 
 
@@ -167,6 +169,38 @@ def _axis_result_is_trusted(
     )
 
 
+def _capacitance_status(
+    axis_trusted: bool,
+    extraction_method: str,
+    validation: dict[str, object],
+) -> tuple[str, list[str]]:
+    """Separate source-faithful pixel review from trusted physical output."""
+
+    reasons = list(validation["reasons"])
+    if not axis_trusted:
+        reasons.insert(0, "axis_calibration_untrusted")
+    if not reasons:
+        return "ok", reasons
+    pixel_only = (
+        not axis_trusted
+        and extraction_method == "vector"
+        and validation.get("status") == "pass"
+    )
+    if pixel_only:
+        reasons.append("pixel_overlay_only_physical_axis_unavailable")
+        return "overlay-review-required", reasons
+    physical_conflict_only = (
+        axis_trusted
+        and extraction_method == "vector"
+        and bool(reasons)
+        and all(reason.endswith("_rises_with_vds_unphysical") for reason in reasons)
+    )
+    if physical_conflict_only:
+        reasons.append("source_faithful_vector_physics_conflict_review_only")
+        return "overlay-review-required", reasons
+    return "unverified", reasons
+
+
 def process_chart(
     chart: dict[str, object],
     crop_path: Path,
@@ -180,7 +214,7 @@ def process_chart(
         raise RuntimeError(f"could not read crop {crop_path}")
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    plot = find_plot_box(gray)
+    plot = find_capacitance_plot_box(gray)
     anchors = parse_capacitance_anchors(str(chart["part"]), datasheet_root)
     output_ref = parse_output_charge_reference(str(chart["part"]), datasheet_root)
     axis_text_order: AxisCalibration | None = None
@@ -197,7 +231,7 @@ def process_chart(
         axis_attempt_errors["text_order"] = axis_text_order_error
     try:
         axis_calibration = infer_position_axis_calibration(chart, image, plot)
-        rejection = reject_bad_position_calibration(axis_calibration)
+        rejection = reject_bad_position_calibration(axis_calibration, plot)
         if rejection is not None:
             axis_position_error = rejection
             axis_attempt_errors["position"] = rejection
@@ -225,7 +259,7 @@ def process_chart(
         # and run the same position fit; the shared residual gate decides.
         try:
             ocr_calibration = infer_ocr_position_axis_calibration(chart, image, plot)
-            rejection = reject_bad_position_calibration(ocr_calibration)
+            rejection = reject_bad_position_calibration(ocr_calibration, plot)
             if rejection is None:
                 axis_calibration = ocr_calibration
                 axis_position_error = None
@@ -253,8 +287,11 @@ def process_chart(
             "and Qoss validation are disabled"
         )
     extraction_method = "vector"
+    vector_selection_method: str | None = None
     try:
-        traces = extract_vector_trace_components(chart, image, plot)
+        traces, vector_selection_method = (
+            extract_vector_trace_components_with_provenance(chart, image, plot)
+        )
     except Exception as vector_exc:
         extraction_method = "raster"
         traces = extract_trace_components(gray, plot, anchors)
@@ -276,6 +313,19 @@ def process_chart(
         axis_calibration if axis_trusted else None,
         shared_spans,
     )
+    diagnostics = trace_semantic_diagnostics(traces, plot)
+    validation = trace_validation_summary(diagnostics, extraction_method)
+    status, status_reasons = _capacitance_status(
+        axis_trusted, extraction_method, validation
+    )
+    physical_output_available = axis_trusted and validation["status"] == "pass"
+    if vector_selection_method == "source_drawing_rescue":
+        if status == "ok":
+            status = "overlay-review-required"
+        reason = "source_drawing_rescue_axis_center_review_required"
+        if reason not in status_reasons:
+            status_reasons.append(reason)
+        physical_output_available = False
 
     overlay_path = out_dir / "overlays" / rel_stem.with_suffix(".overlay.png")
     points_path = out_dir / "points" / rel_stem.with_suffix(".points.csv")
@@ -316,7 +366,9 @@ def process_chart(
             (int(span["x0_px"]), int(span["x1_px"])) for span in shared_spans
         ]
         for trace in traces:
-            data_points = trace_data.get(trace.name)
+            data_points = (
+                trace_data.get(trace.name) if physical_output_available else None
+            )
             for idx, (x, y) in enumerate(trace.points):
                 vds, cap = data_points[idx] if data_points is not None else ("", "")
                 shared_collapsed = trace.name in {"Ciss", "Coss"} and any(
@@ -335,7 +387,7 @@ def process_chart(
                     ]
                 )
 
-    qoss_metrics: dict[str, float] | None = None
+    qoss_metrics: dict[str, object] | None = None
     qoss_validation_error: str | None = None
     qoss_vendor_tail_validation: dict[str, object] | None = None
     metrics = None
@@ -343,6 +395,8 @@ def process_chart(
     if not axis_trusted and axis_calibration is not None:
         qoss_validation_error = "untrusted axis calibration"
     elif axis_calibration is not None and "Coss" in trace_data and output_ref.vint_v:
+        if output_ref.qoss_pc is None:
+            qoss_validation_error = "Qoss table reference unavailable"
         try:
             vds, coss = arrays_for_trace_data(trace_data["Coss"])
             if coss_metrics is None or validate_axis is None:
@@ -374,13 +428,24 @@ def process_chart(
         except Exception as exc:
             qoss_validation_error = str(exc)
 
-    diagnostics = trace_semantic_diagnostics(traces, plot)
-    validation = trace_validation_summary(diagnostics, extraction_method)
-    status_reasons = list(validation["reasons"])
-    if not axis_trusted:
-        status_reasons.insert(0, "axis_calibration_untrusted")
-    status = "ok" if not status_reasons else "unverified"
-    physical_output_available = axis_trusted and validation["status"] == "pass"
+    qoss_status = qoss_validation_status(
+        metrics,
+        qoss_validation_error,
+        qoss_vendor_tail_validation,
+        table_reference_available=output_ref.qoss_pc is not None,
+    )
+    qoss_metrics_reasons = qoss_metrics_status_reasons(
+        qoss_metrics,
+        qoss_status,
+        chart_physical_output_available=physical_output_available,
+    )
+    qoss_metrics, qoss_diagnostic_metrics, qoss_metrics_available = (
+        partition_qoss_metrics(
+            qoss_metrics,
+            qoss_status,
+            chart_physical_output_available=physical_output_available,
+        )
+    )
     output_charge_reference = output_charge_reference_to_json(output_ref)
     if not physical_output_available:
         # Datasheet reference values may be useful during validation, but they
@@ -396,6 +461,7 @@ def process_chart(
         "points": str(points_path.relative_to(out_dir)),
         "plot_box_px": [plot.x0, plot.y0, plot.x1, plot.y1],
         "extraction_method": extraction_method,
+        "vector_selection_method": vector_selection_method,
         "vector_error": vector_error,
         "axis_calibration": axis_calibration_to_json(axis_calibration) if axis_calibration is not None else None,
         "axis_text_order_calibration": axis_calibration_to_json(axis_text_order) if axis_text_order is not None else None,
@@ -411,12 +477,25 @@ def process_chart(
         "status": status,
         "status_reasons": status_reasons,
         "physical_output_available": physical_output_available,
+        **(
+            {
+                "points_physical_output_available": False,
+                "points_status_reasons": [
+                    "chart_physical_output_unavailable_calibrated_columns_blank"
+                ],
+            }
+            if not physical_output_available
+            else {}
+        ),
         "anchor_diagnostics": anchor_diagnostics,
         "identity_diagnostics": identity_diagnostics,
         "output_charge_reference": output_charge_reference,
         "qoss_metrics": qoss_metrics,
+        "qoss_diagnostic_metrics": qoss_diagnostic_metrics,
+        "qoss_metrics_physical_output_available": qoss_metrics_available,
+        "qoss_metrics_status_reasons": qoss_metrics_reasons,
         "qoss_vendor_tail_validation": qoss_vendor_tail_validation,
-        "qoss_validation_status": qoss_validation_status(metrics, qoss_validation_error, qoss_vendor_tail_validation),
+        "qoss_validation_status": qoss_status,
         "qoss_validation_error": qoss_validation_error,
         "coss_top_decade_clip": coss_clip_diag,
         "trace_validation_status": validation["status"],

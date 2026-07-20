@@ -1,6 +1,7 @@
 # Ciss/Coss/Crss table-anchor parser worklist
 
-**Status:** v1 candidate frozen for review in an isolated worktree; not landed. Review packet:
+**Status:** v1 candidate is independently patch-GREEN in both agent lanes and is not landed.
+Fab's microscopic PSMN2R4/PSMNR70 gate remains required. Review packet:
 `cap-anchor-parser/v1/packet.json`, SHA-256
 `83ba31f570264911ccf7eaec59c86c1f731b051990a15aed7406466d19a07b1d`. The Qoss worktree and
 all earlier gate-charge fixes remain immutable. No commit/push; agents never set
@@ -34,7 +35,7 @@ likely-correct anchors. Absence of column evidence is not evidence that the valu
 
 ### Served-anchor scope refinement
 
-The 37,557 figure above is a row-level discovery count, **not** the production blast radius.
+The 34,534 figure above is a row-level discovery count, **not** the production blast radius.
 `parse_capacitance_anchors` currently emits only rows with a recognized `VDS=...V` condition and
 keeps one selected anchor per symbol. A second audit therefore models the served selection,
 explicit candidate precedence, and conflicts:
@@ -58,9 +59,9 @@ accepts only unsigned `VDS=+N V`; the proposed path accepts signed P-channel con
 their magnitude. Treat those 463 from-null anchors as a visible new-output class, not as corrections
 to a baseline value that never existed. Their chart assignments receive the same full §9 review.
 
-The selected-output audit, not the row-level discovery count, is the §9 expected-delta oracle.
-It is still a design audit rather than an implementation result; production code remains
-unchanged until the Qoss packet settles.
+The selected-output audit, not the row-level discovery count, became the §9 expected-delta
+oracle for the implemented v1 packet. That packet is now frozen and dual-agent patch-GREEN, but
+remains unlanded and Fab-gated; the audit counts below are retained as its causal evidence.
 
 Current review-backlog intersection, mapped through the exact production anchor CSV rather than
 the backlog suffix (not a substitute for the authoritative production run):

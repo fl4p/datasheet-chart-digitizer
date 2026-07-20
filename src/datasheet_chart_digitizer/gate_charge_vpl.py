@@ -9,6 +9,8 @@ from pathlib import Path
 import pymupdf
 from PIL import Image, ImageDraw
 
+from .overlay import PLOT_FRAME_THICKNESS_PX
+
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     __package__ = "datasheet_chart_digitizer"
@@ -144,7 +146,11 @@ def main() -> int:
 
         draw = ImageDraw.Draw(crop)
         draw.rectangle(list(loose_plot_box), outline=(255, 220, 128), width=2)
-        draw.rectangle(list(visual_plot_box), outline=(255, 176, 0), width=3)
+        draw.rectangle(
+            list(visual_plot_box),
+            outline=(255, 176, 0),
+            width=PLOT_FRAME_THICKNESS_PX,
+        )
         if len(curve) >= 2:
             draw.line(curve, fill=(20, 90, 255), width=5, joint="curve")
             for x, y in curve[:: max(1, len(curve) // 35)]:

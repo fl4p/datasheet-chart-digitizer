@@ -10,9 +10,20 @@ from .capacitance_traces import _smooth_points
 from .capacitance_types import PlotBox, Trace, VectorEdge
 from .crop_transform import CropTransform
 
+MIN_EXACT_COLOR_SOURCE_X_SPAN_FRACTION = 0.80
+
 def extract_vector_trace_components(
     chart: dict[str, object], image: np.ndarray, plot: PlotBox
 ) -> list[Trace]:
+    traces, _selection_method = extract_vector_trace_components_with_provenance(
+        chart, image, plot
+    )
+    return traces
+
+
+def extract_vector_trace_components_with_provenance(
+    chart: dict[str, object], image: np.ndarray, plot: PlotBox
+) -> tuple[list[Trace], str]:
     fitz = _load_fitz()
     if fitz is None:
         raise RuntimeError("PyMuPDF is not available")
@@ -68,15 +79,51 @@ def extract_vector_trace_components(
         color = drawing.get("color")
         key = tuple(round(float(c), 2) for c in color[:3]) if isinstance(color, (tuple, list)) else ()
         by_color.setdefault(key, []).append(drawing)
-    per_color_components: list[list[tuple[float, float]]] = []
+    per_color_candidate_groups: list[
+        list[tuple[float, list[tuple[int, int]]]]
+    ] = []
     for group in by_color.values():
         edges = _vector_curve_edges(group, plot_rect)
         if edges:
-            per_color_components.extend(_chain_vector_components(edges))
-    candidates = _build_candidates(per_color_components)
+            group_candidates = _build_candidates(_chain_vector_components(edges))
+            if group_candidates:
+                per_color_candidate_groups.append(group_candidates)
+    candidates = [
+        candidate
+        for group_candidates in per_color_candidate_groups
+        for candidate in group_candidates
+    ]
+    selection_method = "color_components"
     if len(candidates) < 3:
         edges = _vector_curve_edges(drawings, plot_rect)
         candidates = _build_candidates(_chain_vector_components(edges))
+        selection_method = "pooled_components"
+
+    # Rescue complete source paths only after both chaining strategies fail.
+    # Some Onsemi charts draw Ciss and Coss as separate black paths with an
+    # exactly shared endpoint, so pooled chaining turns them into one branched
+    # component. Require exactly three independently full-span, materially
+    # non-horizontal source objects; otherwise retain the fail-closed result.
+    if len(candidates) < 3:
+        candidates_by_drawing: list[
+            list[tuple[float, list[tuple[int, int]]]]
+        ] = []
+        for drawing in drawings:
+            edges = _vector_curve_edges([drawing], plot_rect)
+            components = [
+                component
+                for component in _chain_vector_components(edges)
+                if _has_material_vertical_response(component, plot_rect.height)
+            ]
+            drawing_candidates = _build_candidates(components)
+            # One PDF drawing must prove one complete curve. A drawing that
+            # contains multiple plausible full-span paths is ambiguous and is
+            # not allowed to contribute any candidate to this rescue.
+            candidates_by_drawing.append(drawing_candidates)
+        rescued = _select_exact_source_drawing_rescue(candidates_by_drawing)
+        if rescued:
+            candidates = rescued
+            selection_method = "source_drawing_rescue"
 
     if len(candidates) < 3:
         raise RuntimeError(f"found only {len(candidates)} vector curve candidates")
@@ -86,11 +133,18 @@ def extract_vector_trace_components(
         (max(x for x, _ in points) - min(x for x, _ in points)) / max(1, plot.width)
         for _, points in candidates
     ]
-    if min(span_fractions) < 0.9:
+    if min(span_fractions) < 0.9 and not (
+        selection_method == "color_components"
+        and _short_color_source_span_is_proven(
+            per_color_candidate_groups, span_fractions
+        )
+    ):
         raise RuntimeError(
             "vector candidates do not span full plot: "
             + ", ".join(f"{span:.2f}" for span in sorted(span_fractions))
         )
+    if min(span_fractions) < 0.9:
+        selection_method = "exact_color_components_short_source_span"
     ordered = sorted((points for _, points in candidates), key=_right_edge_y_pixels)
     names = ["Ciss", "Coss", "Crss"]
     traces: list[Trace] = []
@@ -99,7 +153,7 @@ def extract_vector_trace_components(
         ys = [p[1] for p in points]
         bbox_local = (min(xs) - plot.x0, min(ys) - plot.y0, max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
         traces.append(Trace(name=name, area=len(points), bbox=bbox_local, points=points))
-    return traces
+    return traces, selection_method
 
 
 def _load_fitz():
@@ -111,17 +165,25 @@ def _load_fitz():
         return None
 
 
-def _vector_curve_edges(drawings: list[dict[str, object]], plot_rect) -> list[VectorEdge]:
+def _vector_curve_edges(
+    drawings: list[dict[str, object]],
+    plot_rect,
+    *,
+    min_stroke_width: float = 0.8,
+    allow_neutral_gray: bool = False,
+) -> list[VectorEdge]:
     edges: list[VectorEdge] = []
     expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
     for drawing in drawings:
         if drawing.get("type") != "s":
             continue
         color = drawing.get("color")
-        if not _is_curve_stroke_color(color):
+        if not _is_curve_stroke_color(color) and not (
+            allow_neutral_gray and _is_neutral_gray_stroke(color)
+        ):
             continue
         width = float(drawing.get("width") or 0.0)
-        if width < 0.8 or width > 2.2:
+        if width < min_stroke_width or width > 2.2:
             continue
         for item in drawing.get("items", []):
             kind = item[0]
@@ -203,16 +265,37 @@ def _is_curve_stroke_color(color: object) -> bool:
     rgb = [float(c) for c in color[:3]]
     if sum(rgb) < 0.15:
         return True
+    # Renesas and similar vector datasheets use the same dark neutral ink for
+    # curves and grids.  Stroke width and boundary/full-span checks downstream
+    # reject their thin gridlines and frame; color alone must not discard the
+    # 1 pt curve before those structural guards can run.
+    if max(rgb) < 0.22:
+        return True
     # Strongly saturated strokes are curves regardless of brightness: TI draws
     # Ciss/Coss/Crss in pure red/green/blue, which the darkness cap below would
     # reject. Gridlines are always near-gray (max-min ~ 0), so saturation alone
     # separates them.
     if max(rgb) - min(rgb) > 0.5:
         return True
+    # TI also uses a neutral light-gray stroke for Crss.  Its plot grid is much
+    # thinner and is rejected by the width/orthogonality gates downstream;
+    # admitting this bounded neutral tone preserves the actual full-span curve.
+    if max(rgb) - min(rgb) < 0.03 and 0.68 <= sum(rgb) / 3 <= 0.80:
+        return True
     # Some datasheets draw capacitance curves in a dark teal with solid/dashed
     # style classes. Gray gridlines have very low saturation; accept saturated
     # dark colors as curve strokes while rejecting gray axes/grid.
     return max(rgb) < 0.65 and (max(rgb) - min(rgb)) > 0.12
+
+
+def _is_neutral_gray_stroke(color: object) -> bool:
+    """Recognize a neutral gray only for a caller's panel-local rescue path."""
+
+    if not isinstance(color, tuple) or len(color) < 3:
+        return False
+    rgb = [float(channel) for channel in color[:3]]
+    mean = sum(rgb) / 3
+    return 0.22 <= mean <= 0.80 and max(rgb) - min(rgb) <= 0.03
 
 
 def _sample_cubic(
@@ -330,6 +413,49 @@ def _mostly_inside_plot(points: list[tuple[float, float]], plot_rect) -> bool:
         return False
     x_span = max(x for x, _ in inside_points) - min(x for x, _ in inside_points)
     return x_span >= plot_rect.width * 0.55
+
+
+def _has_material_vertical_response(
+    points: list[tuple[float, float]], plot_height: float
+) -> bool:
+    """Reject a full-width grid or flat annotation from path-isolation rescue."""
+
+    if not points or plot_height <= 0:
+        return False
+    ys = [point[1] for point in points]
+    return max(ys) - min(ys) >= plot_height * 0.01
+
+
+def _select_exact_source_drawing_rescue(
+    candidates_by_drawing: list[list[tuple[float, list[tuple[int, int]]]]],
+) -> list[tuple[float, list[tuple[int, int]]]]:
+    """Return exactly three candidates proven by three unambiguous drawings."""
+
+    proven = [candidates[0] for candidates in candidates_by_drawing if len(candidates) == 1]
+    return proven if len(proven) == 3 else []
+
+
+def _exact_color_source_ownership(
+    candidate_groups: list[list[tuple[float, list[tuple[int, int]]]]],
+) -> bool:
+    """Require exactly one complete candidate from each of three colors."""
+
+    return len(candidate_groups) == 3 and all(
+        len(group) == 1 for group in candidate_groups
+    )
+
+
+def _short_color_source_span_is_proven(
+    candidate_groups: list[list[tuple[float, list[tuple[int, int]]]]],
+    span_fractions: list[float],
+) -> bool:
+    """Admit a short printed trace only with three exact color owners."""
+
+    return (
+        _exact_color_source_ownership(candidate_groups)
+        and len(span_fractions) == 3
+        and min(span_fractions) >= MIN_EXACT_COLOR_SOURCE_X_SPAN_FRACTION
+    )
 
 
 def _path_length(points: list[tuple[float, float]]) -> float:

@@ -18,7 +18,7 @@ def draw_trace_overlay(
     shared_spans: list[dict[str, object]] | None = None,
 ) -> np.ndarray:
     overlay = image.copy()
-    draw_plot_frame(overlay, plot, color=(0, 180, 255), thickness=2)
+    draw_plot_frame(overlay, plot, color=(0, 180, 255))
 
     for trace in traces:
         color = TRACE_COLORS_BGR[trace.name]
@@ -51,9 +51,14 @@ def draw_trace_overlay(
     _draw_shared_ciss_coss_spans(overlay, traces, shared_spans or [])
 
     if calibration is not None:
+        source_x_ticks = (
+            calibration.x_source_ticks_v
+            if calibration.x_source_ticks_v
+            else calibration.x_ticks_v
+        )
         x_ticks = [
-            (calibration_x_of_v(calibration, plot, float(value)), float(value))
-            for value in calibration.x_ticks_v
+            (calibration_x_of_v(calibration, plot, float(value)), float(source_value))
+            for value, source_value in zip(calibration.x_ticks_v, source_x_ticks)
         ]
         y_ticks = [
             (
@@ -74,6 +79,17 @@ def draw_trace_overlay(
             unit_x="V",
             unit_y="pF",
         )
+        if calibration.x_value_transform == "abs_source_negative_vds":
+            cv2.putText(
+                overlay,
+                "SOURCE X: negative VDS; served X: |VDS|",
+                (max(5, plot.x0), max(18, plot.y0 - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (130, 0, 130),
+                1,
+                lineType=cv2.LINE_AA,
+            )
     return overlay
 
 
@@ -125,7 +141,7 @@ def draw_axis_debug_overlay(
     title: str,
 ) -> np.ndarray:
     overlay = image.copy()
-    cv2.rectangle(overlay, (plot.x0, plot.y0), (plot.x1, plot.y1), (0, 180, 255), 3)
+    draw_plot_frame(overlay, plot, color=(0, 180, 255))
 
     font = cv2.FONT_HERSHEY_SIMPLEX
     cv2.putText(
@@ -142,13 +158,15 @@ def draw_axis_debug_overlay(
         f"axis={calibration.source} x={calibration.x_source or 'n/a'} "
         f"y={calibration.y_source or 'n/a'} "
         f"x_resid={_fmt_optional(calibration.x_resid_v)} "
-        f"y_resid={_fmt_optional(calibration.y_resid_dec)}"
+        f"y_resid={_fmt_optional(calibration.y_resid_dec if calibration.y_log else calibration.y_resid_pf)}"
     )
     subtitle2 = (
         f"grid_n={calibration.y_grid_candidate_count if calibration.y_grid_candidate_count is not None else 'n/a'} "
         f"grid_span={_fmt_optional(calibration.y_grid_span_fraction)} "
         f"grid_resid_px={_fmt_optional(calibration.y_grid_residual_px)}"
     )
+    if calibration.x_value_transform is not None:
+        subtitle2 += f" x_transform={calibration.x_value_transform}"
     cv2.putText(
         overlay,
         subtitle1[:140],
@@ -170,14 +188,19 @@ def draw_axis_debug_overlay(
         lineType=cv2.LINE_AA,
     )
 
-    for tick in calibration.x_ticks_v:
+    source_x_ticks = (
+        calibration.x_source_ticks_v
+        if calibration.x_source_ticks_v
+        else calibration.x_ticks_v
+    )
+    for tick, source_tick in zip(calibration.x_ticks_v, source_x_ticks):
         x = int(round(calibration_x_of_v(calibration, plot, float(tick))))
         if plot.x0 - 3 <= x <= plot.x1 + 3:
             cv2.line(overlay, (x, plot.y0), (x, plot.y1), (255, 230, 0), 3, lineType=cv2.LINE_AA)
             cv2.circle(overlay, (x, plot.y1), 8, (255, 230, 0), -1, lineType=cv2.LINE_AA)
             cv2.putText(
                 overlay,
-                f"{tick:g}",
+                f"{source_tick:g}",
                 (x - 16, min(image.shape[0] - 6, plot.y1 + 32)),
                 font,
                 0.70,
@@ -190,9 +213,10 @@ def draw_axis_debug_overlay(
         if plot.y0 - 3 <= y <= plot.y1 + 3:
             cv2.line(overlay, (plot.x0, y), (plot.x1, y), (255, 0, 255), 3, lineType=cv2.LINE_AA)
             cv2.circle(overlay, (plot.x0, y), 8, (255, 0, 255), -1, lineType=cv2.LINE_AA)
+            label = _axis_debug_y_label(calibration, float(exponent))
             cv2.putText(
                 overlay,
-                f"10^{int(round(exponent))}",
+                label,
                 (max(2, plot.x0 - 82), y + 8),
                 font,
                 0.70,
@@ -213,8 +237,30 @@ def draw_axis_debug_overlay(
                 thickness=2,
                 line_type=cv2.LINE_AA,
             )
+    for x_raw in calibration.x_gridline_px:
+        x = int(round(x_raw))
+        if plot.x0 - 3 <= x <= plot.x1 + 3:
+            cv2.line(overlay, (x, plot.y0), (x, plot.y1), (160, 160, 0), 1, lineType=cv2.LINE_AA)
+            cv2.drawMarker(
+                overlay,
+                (x, plot.y1 - 14),
+                (160, 160, 0),
+                markerType=cv2.MARKER_TILTED_CROSS,
+                markerSize=16,
+                thickness=2,
+                line_type=cv2.LINE_AA,
+            )
     return overlay
 
 
 def _fmt_optional(value: float | None) -> str:
     return "n/a" if value is None else f"{value:.4g}"
+
+
+def _axis_debug_y_label(calibration: AxisCalibration, exponent: float) -> str:
+    """Keep established decade labels while showing dense log ticks physically."""
+
+    nearest_integer = round(exponent)
+    if calibration.y_log and abs(exponent - nearest_integer) < 1e-9:
+        return f"10^{int(nearest_integer)}"
+    return f"{10.0 ** exponent:g}pF"

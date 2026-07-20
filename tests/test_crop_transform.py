@@ -186,7 +186,9 @@ class FreshFinderCropTransformEndToEnd(unittest.TestCase):
 
     def test_real_extraction_calibration_strata(self) -> None:
         expected = {
-            "BSC014N04LS": ("raster", "position_text"),
+            # Three complete black source paths share their low-VDS endpoint;
+            # path-isolation rescue preserves them instead of grid-riding.
+            "BSC014N04LS": ("vector", "position_text"),
             "BSC016N06NS": ("vector", "position_text"),
             "IAUCN08S5L160T": ("vector", "position_text"),
         }

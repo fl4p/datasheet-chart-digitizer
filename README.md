@@ -2,7 +2,8 @@
 
 Standalone datasheet chart digitizer.
 
-The `dsdig` CLI currently wires five MOSFET chart plugins:
+The `dsdig annotate` workflow currently detects and overlays these MOSFET chart
+families:
 
 1. Capacitance plots (`Ciss`, `Coss`, and `Crss` versus `VDS`).
 2. Gate-charge plots for Miller plateau voltage (`Vpl`) extraction.
@@ -20,11 +21,9 @@ The `dsdig` CLI currently wires five MOSFET chart plugins:
 5. Saturation transfer plots (`Id` versus `Vgs` at multiple junction
    temperatures), with optional anchor-based temperature-coefficient fitting
    whose output requires human review before curation or use.
-
-Two additional chart-native digitizers are available through the Python API
-but are not yet wired into `dsdig`: body-diode forward voltage
-(`diode_forward_voltage.digitize_pdf`) and normalized `RDS(on)` versus
-temperature (`rdson_temperature.digitize_pdf`).
+6. Body-diode forward-voltage plots (`Is` versus `Vsd`).
+7. On-resistance plots: absolute `RDS(on)` versus drain current and normalized
+   `RDS(on)` versus junction temperature.
 
 The core pieces are kept generic so other datasheet chart types can be added
 as plugins.
@@ -67,7 +66,18 @@ dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 dsdig digitize-transfer work/charts/charts.json --out work/transfer
+dsdig annotate /path/to/datasheet.pdf --out /path/to/datasheet-with-curves.pdf
 ```
+
+`annotate` is the single-PDF review workflow: it detects every currently supported chart,
+runs the corresponding digitizer, writes all crops/overlays plus
+`annotated_pdf_manifest.json` under a sibling `*-artifacts` directory, and places accepted
+digitized curves back inside a copy of the original PDF. Use `--work-dir` to choose a different
+artifact directory and `--dpi 220` (the default) to control render resolution. Panels that an
+extractor refuses remain explicit in the manifest and are not painted into the output PDF.
+Only explicit accepted statuses (`ok`, `pass`, and `verified`) are painted by default. Add
+`--include-review-required` when preparing a human-review sheet that should also show overlays
+marked `overlay-review-required`; fail-closed statuses still remain excluded.
 
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
 package-owned experimental `GateChargeResult` records the selected panel, Vpl
@@ -176,8 +186,8 @@ the legacy estimator remains a separate consumer change.
 
 The repository name is intentionally generic. Planned plugins include Qoss(VDS),
 SOA, thermal-impedance, efficiency, and magnetics curves. Body-diode forward
-voltage and normalized `RDS(on)`-temperature extraction already exist as direct
-Python APIs; CLI integration remains future work.
+voltage and both supported `RDS(on)` chart families are included in the
+single-PDF `annotate` workflow.
 The existing MOSFET capacitance digitizer is the first production-quality
 plugin and acts as the reference implementation for extraction, calibration,
 overlays, and validation status reporting. The Vpl digitizer is a

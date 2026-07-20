@@ -33,6 +33,11 @@ gate** — guards and crosshair-centering alone do NOT prove fidelity.
 - Confirm the **correct panel** was selected. A broad caption ("Gate Charge") can override a
   locally-correct panel ID — verify the **axes match the claimed chart type**. A body-diode
   I-V, a transfer curve, a gate-charge curve, and an RDS(on)-vs-T curve all look different.
+- Confirm the panel is a **device-specific, data-bearing characteristic**, not a test-circuit
+  schematic, definition diagram, or idealized example waveform. Captions such as “Gate Charge
+  Test Circuit & Waveform” can include a generic VGS-vs-charge sketch with a Miller plateau;
+  its chart-like axes do not make it measured extraction evidence. Reject such panels even when
+  their quantity names resemble a supported chart.
 - Confirm the figure title / conditions box (VDS, ID, VGS, Tj, f) is consistent with the
   claimed quantity.
 
@@ -258,6 +263,14 @@ does **not** bound collateral behavior.
   driver. Record the exact command, corpus-list SHA-256, extractor source SHA-256, dependency
   lock/environment identity, output-manifest SHA-256, row count, exception count, and
   `no_result` count.
+- **Calibrate the production call path, not a stricter helper that production bypasses.** A
+  helper-only test does not certify the extractor when the real finder still calls a legacy or
+  parallel implementation. Exercise the public/production entry point on every load-bearing
+  known-good and known-bad fixture, and remove or explicitly reconcile duplicated policies.
+- **A skipped load-bearing corpus fixture is missing evidence, never a pass.** Acceptance commands
+  must set the required corpus/data environment and report skips. If a real-PDF regression test
+  is skipped because its source root is unset or its PDF is absent, the affected gate remains
+  UNVERIFIED until that exact fixture runs.
 - **Use a same-environment back-to-back A/B to establish causality:** same host, interpreter,
   virtual environment, dependency versions, DPI/OCR settings, and corpus. Put each source
   revision in an isolated detached worktree and pin `PYTHONPATH`/cwd to that worktree. Never

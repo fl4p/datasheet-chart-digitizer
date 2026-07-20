@@ -1,4 +1,9 @@
-# Worklist — 23 wrong-VALUE dsdig extractions (priority re-digitization)
+# Historical input audit — 23 wrong-VALUE dsdig extractions
+
+**Status:** superseded as an active queue.  These findings drove the Class A/B/C/D/EFG,
+retro-axis, finder, and later collateral packets in `dsdig-verify-backlog`; use those
+hash-locked packets and current item states for implementation/review.  This file remains
+only as the original defect inventory and must not be read as 23 still-open tasks.
 
 From the 4-agent review sweep of 475 overlays. These are the RED items where the extractor
 **produced a value that is wrong** (as opposed to honest fail-closed refusals or over-rejections).

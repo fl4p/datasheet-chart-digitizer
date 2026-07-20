@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import math
 import re
-import shutil
-import subprocess
-import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -18,6 +16,8 @@ from .capacitance_traces import _interp_y
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
 from .capacitance_vector import _load_fitz
 from .crop_transform import CropTransform
+from .numeric_axis import AxisTick, fit_axis_ticks
+from .region_ocr import ocr_words_in_rect
 
 def infer_text_order_axis_calibration(chart: dict[str, object]) -> AxisCalibration:
     text = str(chart.get("text") or "")
@@ -81,24 +81,64 @@ def _fit_position_calibration(page_like, transform: CropTransform, plot_rect, so
     y_scale = float(pos_cal.my) / transform.scale_y
     y_offset = float(pos_cal.my) * transform.y0_pt + float(pos_cal.by)
     x_ticks = tuple(float(v) for v, _ in pos_cal.x_ticks)
-    y_decades = tuple(float(e) for e, _ in pos_cal.y_decades)
+    x_tick_label_px = tuple(
+        float(transform.to_px(pixel, plot_rect.y1)[0])
+        for _value, pixel in pos_cal.x_ticks
+    )
+    y_log = bool(getattr(pos_cal, "y_log", True))
+    y_coordinates = tuple(float(e) for e, _ in pos_cal.y_decades)
+    if y_log:
+        y_ticks_pf: tuple[float, ...] = ()
+        y_decades = y_coordinates
+        y_min_decade = min(y_decades)
+        y_max_decade = max(y_decades)
+        y_resid_dec: float | None = float(pos_cal.y_resid)
+        y_resid_pf: float | None = None
+    else:
+        y_ticks_pf = tuple(sorted(set(y_coordinates)))
+        y_tick_label_px = tuple(
+            float(transform.to_px(plot_rect.x0, pixel)[1])
+            for _value, pixel in pos_cal.y_decades
+        )
+        positive_ticks = [value for value in y_ticks_pf if value > 0.0]
+        if len(positive_ticks) < 3:
+            raise RuntimeError("linear Y calibration needs >=3 positive capacitance ticks")
+        top_pf = float(pos_cal.my * plot_rect.y0 + pos_cal.by)
+        bottom_pf = float(pos_cal.my * plot_rect.y1 + pos_cal.by)
+        frame_positive = [value for value in (top_pf, bottom_pf) if value > 0.0]
+        y_min_decade = math.log10(min(positive_ticks))
+        y_max_decade = math.log10(max(positive_ticks + frame_positive))
+        y_decades = tuple(math.log10(value) for value in positive_ticks)
+        y_resid_dec = None
+        y_resid_pf = float(pos_cal.y_resid)
+    if y_log:
+        y_tick_label_px = ()
     return AxisCalibration(
         x_min_v=min(x_ticks),
         x_max_v=max(x_ticks),
-        y_min_decade=min(y_decades),
-        y_max_decade=max(y_decades),
+        y_min_decade=y_min_decade,
+        y_max_decade=y_max_decade,
         source=source,
         x_ticks_v=x_ticks,
         y_decades=tuple(sorted(set(y_decades))),
         x_log=bool(getattr(pos_cal, "x_log", False)),
+        y_log=y_log,
+        y_ticks_pf=y_ticks_pf,
         x_resid_v=float(pos_cal.x_resid),
-        y_resid_dec=float(pos_cal.y_resid),
+        y_resid_dec=y_resid_dec,
+        y_resid_pf=y_resid_pf,
+        y_tick_label_px=y_tick_label_px,
         x_scale=x_scale,
         x_offset=x_offset,
         y_scale=y_scale,
         y_offset=y_offset,
         x_source=source,
         y_source=source,
+        x_source_ticks_v=tuple(
+            float(value) for value in getattr(pos_cal, "x_source_ticks", ())
+        ),
+        x_value_transform=getattr(pos_cal, "x_value_transform", None),
+        x_tick_label_px=x_tick_label_px,
     )
 
 
@@ -111,7 +151,10 @@ def infer_position_axis_calibration(
     transform, plot_rect = _plot_rect_pt(chart, image, plot)
     doc = fitz.open(Path(str(chart["pdf"])))
     page = doc[int(chart["page"]) - 1]
-    return _fit_position_calibration(page, transform, plot_rect, "position_text")
+    calibration = _fit_position_calibration(page, transform, plot_rect, "position_text")
+    return _seat_linear_y_ticks_on_grid(
+        calibration, image, plot, page=page, transform=transform
+    )
 
 
 class _OcrWordsPage:
@@ -124,64 +167,12 @@ class _OcrWordsPage:
         return list(self._words)
 
 
-def _normalize_ocr_token(text: str) -> str:
-    # Tesseract reads decimal points as commas on some rasters; tick parsing
-    # downstream expects '.' and bare digits.
-    return text.strip().strip("|:;").replace(",", ".")
-
-
 def _ocr_words_in_rect(
     chart: dict[str, object], clip_rect, dpi: float = 400.0
 ) -> list[tuple[float, float, float, float, str]]:
-    """OCR a page region with tesseract; word boxes returned in page pt."""
-    exe = shutil.which("tesseract")
-    if exe is None:
-        raise RuntimeError("tesseract binary not found; cannot OCR raster axis labels")
-    fitz = _load_fitz()
-    if fitz is None:
-        raise RuntimeError("PyMuPDF is not available")
-    doc = fitz.open(Path(str(chart["pdf"])))
-    page = doc[int(chart["page"]) - 1]
-    clip = fitz.Rect(clip_rect) & page.rect
-    if clip.is_empty:
-        raise RuntimeError("OCR clip rect is empty")
-    scale = dpi / 72.0
-    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
-    with tempfile.TemporaryDirectory() as tmp:
-        png = Path(tmp) / "ocr-region.png"
-        pix.save(str(png))
-        # --psm 11 (sparse text): tick labels are isolated words, not a block.
-        proc = subprocess.run(
-            [exe, str(png), "stdout", "--psm", "11", "tsv"],
-            capture_output=True,
-            text=True,
-            timeout=120,
-        )
-    if proc.returncode != 0:
-        raise RuntimeError(f"tesseract failed: {proc.stderr.strip()[:200]}")
-    lines = proc.stdout.splitlines()
-    if not lines:
-        raise RuntimeError("tesseract returned no TSV output")
-    header = lines[0].split("\t")
-    col = {name: i for i, name in enumerate(header)}
-    words: list[tuple[float, float, float, float, str]] = []
-    for row in lines[1:]:
-        cells = row.split("\t")
-        if len(cells) != len(header):
-            continue
-        text = _normalize_ocr_token(cells[col["text"]])
-        try:
-            conf = float(cells[col["conf"]])
-        except (KeyError, ValueError):
-            continue
-        if not text or conf < 30.0:
-            continue
-        x0 = clip.x0 + float(cells[col["left"]]) / scale
-        y0 = clip.y0 + float(cells[col["top"]]) / scale
-        x1 = x0 + float(cells[col["width"]]) / scale
-        y1 = y0 + float(cells[col["height"]]) / scale
-        words.append((x0, y0, x1, y1, text))
-    return words
+    return ocr_words_in_rect(
+        str(chart["pdf"]), int(chart["page"]), clip_rect, dpi=dpi, psm=11
+    )
 
 
 def infer_ocr_position_axis_calibration(
@@ -210,24 +201,121 @@ def infer_ocr_position_axis_calibration(
     words = _ocr_words_in_rect(chart, clip)
     if not words:
         raise RuntimeError("OCR found no words in the axis label bands")
-    return _fit_position_calibration(_OcrWordsPage(words), transform, plot_rect, "position_ocr")
+    calibration = _fit_position_calibration(
+        _OcrWordsPage(words), transform, plot_rect, "position_ocr"
+    )
+    doc = fitz.open(Path(str(chart["pdf"])))
+    page = doc[int(chart["page"]) - 1]
+    calibration = _seat_linear_y_ticks_on_grid(
+        calibration, image, plot, page=page, transform=transform
+    )
+    return _seat_signed_log_x_ticks_on_grid(calibration, image, plot)
 
 
-def reject_bad_position_calibration(calibration: AxisCalibration) -> str | None:
+def _endpoint_tick_coverage_error(
+    tick_pixels: list[float], start: float, end: float, axis_name: str
+) -> str | None:
+    """Reject fits that serve multiple unseen intervals beyond labeled ticks."""
+
+    pixels = sorted(set(float(pixel) for pixel in tick_pixels))
+    if len(pixels) < 2:
+        return f"{axis_name} endpoint coverage needs >=2 distinct tick centers"
+    left_step = pixels[1] - pixels[0]
+    right_step = pixels[-1] - pixels[-2]
+    if left_step <= 0 or right_step <= 0:
+        return f"{axis_name} tick centers are not strictly increasing"
+    endpoint_intervals = (
+        max(0.0, (pixels[0] - start) / left_step),
+        max(0.0, (end - pixels[-1]) / right_step),
+    )
+    side, unseen = max(
+        (("left", endpoint_intervals[0]), ("right", endpoint_intervals[1])),
+        key=lambda item: item[1],
+    )
+    if unseen > 1.25:
+        return (
+            f"{axis_name} {side} endpoint leaves {unseen:.2f} unlabeled "
+            "tick intervals; maximum is one"
+        )
+    return None
+
+
+def reject_bad_position_calibration(
+    calibration: AxisCalibration, plot: PlotBox | None = None
+) -> str | None:
     if calibration.x_log:
         # Log-X fits carry their residual in decades, like the Y axis.
         if calibration.x_resid_v is not None and calibration.x_resid_v > 0.05:
             return f"position x residual {calibration.x_resid_v:.4g} decades exceeds 0.05"
-        if calibration.y_resid_dec is not None and calibration.y_resid_dec > 0.05:
-            return f"position y residual {calibration.y_resid_dec:.4g} decades exceeds 0.05"
-        return None
-    x_span = abs(calibration.x_max_v - calibration.x_min_v)
-    max_x_resid = max(0.5, 0.02 * x_span)
-    if calibration.x_resid_v is not None and calibration.x_resid_v > max_x_resid:
-        return f"position x residual {calibration.x_resid_v:.4g} V exceeds {max_x_resid:.4g} V"
-    if calibration.y_resid_dec is not None and calibration.y_resid_dec > 0.05:
-        return f"position y residual {calibration.y_resid_dec:.4g} decades exceeds 0.05"
-    return None
+        residual_error = None
+    else:
+        x_span = abs(calibration.x_max_v - calibration.x_min_v)
+        max_x_resid = max(0.5, 0.02 * x_span)
+        residual_error = None
+        if calibration.x_resid_v is not None and calibration.x_resid_v > max_x_resid:
+            residual_error = (
+                f"position x residual {calibration.x_resid_v:.4g} V "
+                f"exceeds {max_x_resid:.4g} V"
+            )
+    if residual_error is None:
+        if calibration.y_log:
+            if calibration.y_resid_dec is not None and calibration.y_resid_dec > 0.05:
+                residual_error = (
+                    f"position y residual {calibration.y_resid_dec:.4g} decades "
+                    "exceeds 0.05"
+                )
+        else:
+            y_span_pf = max(calibration.y_ticks_pf, default=0.0) - min(
+                calibration.y_ticks_pf, default=0.0
+            )
+            max_y_resid_pf = max(1e-6, 0.02 * y_span_pf)
+            if (
+                calibration.y_resid_pf is None
+                or calibration.y_resid_pf > max_y_resid_pf
+            ):
+                value = calibration.y_resid_pf
+                rendered = "missing" if value is None else f"{value:.4g} pF"
+                residual_error = (
+                    f"position linear-y residual {rendered} exceeds "
+                    f"{max_y_resid_pf:.4g} pF"
+                )
+    if residual_error is not None or plot is None:
+        return residual_error
+
+    if (
+        calibration.x_scale is None
+        or calibration.x_offset is None
+        or calibration.y_scale is None
+        or calibration.y_offset is None
+        or calibration.x_scale == 0
+        or calibration.y_scale == 0
+    ):
+        return "position calibration lacks invertible axis coefficients"
+    x_values = [
+        math.log10(value) if calibration.x_log else value
+        for value in calibration.x_ticks_v
+        if not calibration.x_log or value > 0
+    ]
+    x_pixels = [
+        (value - calibration.x_offset) / calibration.x_scale
+        for value in x_values
+    ]
+    x_coverage_error = _endpoint_tick_coverage_error(
+        x_pixels, plot.x0, plot.x1, "X axis"
+    )
+    if x_coverage_error is not None:
+        return x_coverage_error
+    if calibration.y_log:
+        y_pixels = [
+            (value - calibration.y_offset) / calibration.y_scale
+            for value in calibration.y_decades
+        ]
+    else:
+        y_pixels = [
+            (value - calibration.y_offset) / calibration.y_scale
+            for value in calibration.y_ticks_pf
+        ]
+    return _endpoint_tick_coverage_error(y_pixels, plot.y0, plot.y1, "Y axis")
 
 
 def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray, plot: PlotBox) -> AxisCalibration:
@@ -278,7 +366,9 @@ def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: 
     return _major_horizontal_gridline_fit(image, plot, count).centers
 
 
-def _major_horizontal_gridline_fit(image: np.ndarray, plot: PlotBox, count: int) -> GridlineFit:
+def _horizontal_gridline_candidates(image: np.ndarray, plot: PlotBox) -> list[float]:
+    """Return source horizontal-line centers crossing most of the plot width."""
+
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(80, gray.shape[1] // 5), 1))
@@ -310,7 +400,252 @@ def _major_horizontal_gridline_fit(image: np.ndarray, plot: PlotBox, count: int)
     for center_y, intervals in by_y:
         if _interval_coverage_fraction(intervals, plot.x0, plot.x1) >= 0.65:
             candidates.append(center_y)
-    candidates = sorted(candidates)
+    return sorted(candidates)
+
+
+def _vertical_gridline_candidates(image: np.ndarray, plot: PlotBox) -> list[float]:
+    """Return source vertical-line centers by reusing the horizontal detector."""
+
+    transposed = np.transpose(image, (1, 0, 2)) if image.ndim == 3 else image.T
+    transposed_plot = PlotBox(plot.y0, plot.x0, plot.y1, plot.x1)
+    return _horizontal_gridline_candidates(transposed, transposed_plot)
+
+
+_SIGNED_LOG_X_LABEL_GRID_MAX_PX = 6.0
+_SIGNED_LOG_X_FIT_GRID_MAX_PX = 1.0
+
+
+def _seat_signed_log_x_ticks_on_grid(
+    calibration: AxisCalibration, image: np.ndarray, plot: PlotBox
+) -> AxisCalibration:
+    """Refit signed raster VDS magnitudes at observed source grid centers.
+
+    Toshiba P-channel figures print negative VDS ticks whose OCR glyph centers
+    sit several pixels right of the vertical source rails.  OCR establishes
+    tick identity; serving uses the unique nearby rail, with the signed source
+    values and absolute-value transform retained explicitly for review.
+    """
+
+    if calibration.x_value_transform != "abs_source_negative_vds":
+        return calibration
+    values = calibration.x_ticks_v
+    source_values = calibration.x_source_ticks_v
+    label_pixels = calibration.x_tick_label_px
+    if not calibration.x_log:
+        raise RuntimeError("signed VDS magnitude grid seating requires a log X axis")
+    if len(values) < 3 or len(label_pixels) != len(values):
+        raise RuntimeError("signed log X grid seating lacks one label center per tick")
+    if len(source_values) != len(values) or not all(value < 0.0 for value in source_values):
+        raise RuntimeError("signed log X grid seating lacks all-negative source ticks")
+    log_values = np.log10(np.asarray(values, dtype=float))
+    log_steps = np.diff(log_values)
+    if np.any(log_steps <= 0.0) or np.max(np.abs(log_steps - np.median(log_steps))) > 0.05:
+        raise RuntimeError("signed log X ticks do not form a regular logarithmic ladder")
+
+    candidates = _vertical_gridline_candidates(image, plot)
+    assignments: list[tuple[float, float, float]] = []
+    used: set[float] = set()
+    for value, label_pixel in zip(values, label_pixels):
+        owned = [
+            pixel
+            for pixel in candidates
+            if pixel not in used
+            and abs(pixel - label_pixel) <= _SIGNED_LOG_X_LABEL_GRID_MAX_PX
+        ]
+        if len(owned) != 1:
+            raise RuntimeError(
+                "signed log X tick does not own exactly one source gridline within "
+                f"{_SIGNED_LOG_X_LABEL_GRID_MAX_PX:g} px"
+            )
+        grid_pixel = owned[0]
+        used.add(grid_pixel)
+        assignments.append((value, label_pixel, grid_pixel))
+
+    grid_pixels = np.asarray([item[2] for item in assignments], dtype=float)
+    if np.any(np.diff(grid_pixels) <= 0.0):
+        raise RuntimeError("signed log X source grid centers do not follow tick-value order")
+    axis = fit_axis_ticks(
+        [
+            AxisTick(f"{value:g}", value, grid_pixel)
+            for value, _label_pixel, grid_pixel in assignments
+        ],
+        "capacitance signed log X grid",
+        model="log10",
+    )
+    inverse_errors = [
+        abs((math.log10(value) - axis.b) / axis.m - grid_pixel)
+        for value, _label_pixel, grid_pixel in assignments
+    ]
+    max_inverse_error = max(inverse_errors, default=float("inf"))
+    if max_inverse_error > _SIGNED_LOG_X_FIT_GRID_MAX_PX:
+        raise RuntimeError(
+            "signed log X fit misses a source grid center by "
+            f"{max_inverse_error:.3f} px; maximum is "
+            f"{_SIGNED_LOG_X_FIT_GRID_MAX_PX:g} px"
+        )
+    value_residual_dec = float(
+        np.sqrt(
+            np.mean(
+                [
+                    (axis.m * grid_pixel + axis.b - math.log10(value)) ** 2
+                    for value, _label_pixel, grid_pixel in assignments
+                ]
+            )
+        )
+    )
+    return replace(
+        calibration,
+        x_resid_v=value_residual_dec,
+        x_scale=float(axis.m),
+        x_offset=float(axis.b),
+        x_source=f"{calibration.x_source}_grid_seated",
+        x_gridline_px=tuple(float(item[2]) for item in assignments),
+        x_grid_candidate_count=len(candidates),
+        x_grid_span_fraction=float(
+            (max(grid_pixels) - min(grid_pixels)) / max(1, plot.width - 1)
+        ),
+        x_grid_residual_px=float(max_inverse_error),
+        x_label_to_grid_max_px=max(
+            abs(label_pixel - grid_pixel)
+            for _value, label_pixel, grid_pixel in assignments
+        ),
+    )
+
+
+_LINEAR_Y_LABEL_GRID_MAX_PX = 3.0
+_LINEAR_Y_FIT_GRID_MAX_PX = 1.0
+
+
+def _vector_horizontal_gridline_candidates(
+    page, transform: CropTransform, plot: PlotBox
+) -> list[float]:
+    """Return full-width horizontal source strokes in crop-pixel coordinates."""
+
+    positions: list[float] = []
+    for drawing in page.get_drawings():
+        if drawing.get("type") not in {"s", "fs"}:
+            continue
+        for item in drawing.get("items", []):
+            if item[0] != "l":
+                continue
+            x0, y0 = transform.to_px(float(item[1].x), float(item[1].y))
+            x1, y1 = transform.to_px(float(item[2].x), float(item[2].y))
+            if abs(y1 - y0) > 1.0:
+                continue
+            if min(x0, x1) > plot.x0 + 3.0 or max(x0, x1) < plot.x1 - 3.0:
+                continue
+            center = (y0 + y1) / 2.0
+            if plot.y0 - 3.0 <= center <= plot.y1 + 3.0:
+                positions.append(center)
+
+    merged: list[float] = []
+    for position in sorted(positions):
+        if merged and position - merged[-1] <= 1.0:
+            merged[-1] = (merged[-1] + position) / 2.0
+        else:
+            merged.append(position)
+    return merged
+
+
+def _seat_linear_y_ticks_on_grid(
+    calibration: AxisCalibration,
+    image: np.ndarray,
+    plot: PlotBox,
+    *,
+    page=None,
+    transform: CropTransform | None = None,
+) -> AxisCalibration:
+    """Refit an arithmetic capacitance ladder at observed source grid centers."""
+
+    if calibration.y_log:
+        return calibration
+    values = calibration.y_ticks_pf
+    label_pixels = calibration.y_tick_label_px
+    if len(values) < 4 or len(label_pixels) != len(values):
+        raise RuntimeError("linear Y grid seating lacks one label center per tick")
+
+    candidates = (
+        _vector_horizontal_gridline_candidates(page, transform, plot)
+        if page is not None and transform is not None
+        else []
+    )
+    if len(candidates) < len(values):
+        candidates = _horizontal_gridline_candidates(image, plot)
+
+    assignments: list[tuple[float, float, float]] = []
+    used: set[float] = set()
+    for value, label_pixel in zip(values, label_pixels):
+        owned = [
+            pixel
+            for pixel in candidates
+            if pixel not in used
+            and abs(pixel - label_pixel) <= _LINEAR_Y_LABEL_GRID_MAX_PX
+        ]
+        if len(owned) != 1:
+            raise RuntimeError(
+                "linear Y tick does not own exactly one source gridline within "
+                f"{_LINEAR_Y_LABEL_GRID_MAX_PX:g} px"
+            )
+        grid_pixel = owned[0]
+        used.add(grid_pixel)
+        assignments.append((value, label_pixel, grid_pixel))
+
+    grid_pixels = np.asarray([item[2] for item in assignments], dtype=float)
+    if np.any(np.diff(grid_pixels) >= 0.0):
+        raise RuntimeError("linear Y source grid centers do not follow tick-value order")
+    axis = fit_axis_ticks(
+        [
+            AxisTick(f"{value:g}", value, grid_pixel)
+            for value, _label_pixel, grid_pixel in assignments
+        ],
+        "capacitance linear Y grid",
+        model="linear",
+    )
+    inverse_errors = [
+        abs((value - axis.b) / axis.m - grid_pixel)
+        for value, _label_pixel, grid_pixel in assignments
+    ]
+    max_inverse_error = max(inverse_errors, default=float("inf"))
+    if max_inverse_error > _LINEAR_Y_FIT_GRID_MAX_PX:
+        raise RuntimeError(
+            "linear Y fit misses a source grid center by "
+            f"{max_inverse_error:.3f} px; maximum is {_LINEAR_Y_FIT_GRID_MAX_PX:g} px"
+        )
+    value_residual_pf = float(
+        np.sqrt(
+            np.mean(
+                [
+                    (axis.m * grid_pixel + axis.b - value) ** 2
+                    for value, _label_pixel, grid_pixel in assignments
+                ]
+            )
+        )
+    )
+    frame_values = [axis.value(float(plot.y0)), axis.value(float(plot.y1))]
+    positive_frame_values = [value for value in frame_values if value > 0.0]
+    return replace(
+        calibration,
+        y_min_decade=math.log10(min(value for value in values if value > 0.0)),
+        y_max_decade=math.log10(max(list(values) + positive_frame_values)),
+        y_resid_pf=value_residual_pf,
+        y_scale=float(axis.m),
+        y_offset=float(axis.b),
+        y_source=f"{calibration.y_source}_grid_seated",
+        y_gridline_px=tuple(float(item[2]) for item in assignments),
+        y_grid_candidate_count=len(candidates),
+        y_grid_span_fraction=float(
+            (max(grid_pixels) - min(grid_pixels)) / max(1, plot.height - 1)
+        ),
+        y_grid_residual_px=float(max_inverse_error),
+        y_label_to_grid_max_px=max(
+            abs(label_pixel - grid_pixel)
+            for _value, label_pixel, grid_pixel in assignments
+        ),
+    )
+
+
+def _major_horizontal_gridline_fit(image: np.ndarray, plot: PlotBox, count: int) -> GridlineFit:
+    candidates = _horizontal_gridline_candidates(image, plot)
     if len(candidates) < count:
         raise RuntimeError(f"found only {len(candidates)} horizontal gridline candidates")
 
@@ -467,14 +802,16 @@ def calibration_x_of_v(calibration: AxisCalibration, plot: PlotBox, vds: float) 
 
 def calibration_log_c_of_y(calibration: AxisCalibration, plot: PlotBox, y: float) -> float:
     if calibration.y_scale is not None and calibration.y_offset is not None:
-        return float(calibration.y_scale * y + calibration.y_offset)
+        value = float(calibration.y_scale * y + calibration.y_offset)
+        return value if calibration.y_log else float(math.log10(max(value, 1e-12)))
     y_norm = _clip01((plot.y1 - y) / max(1, plot.height - 1))
     return float(calibration.y_min_decade + y_norm * (calibration.y_max_decade - calibration.y_min_decade))
 
 
 def calibration_y_of_log_c(calibration: AxisCalibration, plot: PlotBox, log_c: float) -> float:
     if calibration.y_scale is not None and calibration.y_offset is not None and abs(calibration.y_scale) > 1e-12:
-        return float((log_c - calibration.y_offset) / calibration.y_scale)
+        value = log_c if calibration.y_log else 10.0 ** log_c
+        return float((value - calibration.y_offset) / calibration.y_scale)
     y_norm = (log_c - calibration.y_min_decade) / max(1e-12, calibration.y_max_decade - calibration.y_min_decade)
     return float(plot.y1 - _clip01(y_norm) * max(1, plot.height - 1))
 
@@ -493,7 +830,7 @@ def arrays_for_trace_data(data_points: list[tuple[float, float]]) -> tuple[np.nd
 
 
 def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
-    return {
+    payload = {
         "source": calibration.source,
         "x_source": calibration.x_source,
         "y_source": calibration.y_source,
@@ -503,9 +840,14 @@ def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
         "y_max_decade": calibration.y_max_decade,
         "x_ticks_v": list(calibration.x_ticks_v),
         "y_decades": list(calibration.y_decades),
+        "y_log": calibration.y_log,
+        "y_ticks_pf": list(calibration.y_ticks_pf),
         "x_log": calibration.x_log,
         "x_resid_v": calibration.x_resid_v,
         "y_resid_dec": calibration.y_resid_dec,
+        "y_resid_pf": calibration.y_resid_pf,
+        "y_tick_label_px": list(calibration.y_tick_label_px),
+        "y_label_to_grid_max_px": calibration.y_label_to_grid_max_px,
         "x_scale": calibration.x_scale,
         "x_offset": calibration.x_offset,
         "y_scale": calibration.y_scale,
@@ -515,6 +857,22 @@ def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
         "y_grid_span_fraction": calibration.y_grid_span_fraction,
         "y_grid_residual_px": calibration.y_grid_residual_px,
     }
+    if calibration.x_source_ticks_v:
+        payload["x_source_ticks_v"] = list(calibration.x_source_ticks_v)
+    if calibration.x_value_transform is not None:
+        payload["x_value_transform"] = calibration.x_value_transform
+    if calibration.x_gridline_px:
+        payload.update(
+            {
+                "x_tick_label_px": list(calibration.x_tick_label_px),
+                "x_label_to_grid_max_px": calibration.x_label_to_grid_max_px,
+                "x_gridline_px": list(calibration.x_gridline_px),
+                "x_grid_candidate_count": calibration.x_grid_candidate_count,
+                "x_grid_span_fraction": calibration.x_grid_span_fraction,
+                "x_grid_residual_px": calibration.x_grid_residual_px,
+            }
+        )
+    return payload
 
 
 def calibration_delta_to_json(

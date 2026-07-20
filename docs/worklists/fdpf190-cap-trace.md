@@ -1,7 +1,10 @@
 # FDPF190N15A capacitance trace-fidelity worklist
 
-**Status:** v1 packet `8ef03035bc3d...` is withdrawn: its frozen test snapshot
-did not reproduce the dependency-integrated suite. The replacement v2 packet is
+**Status:** v1 packet `8ef03035bc3d...` is withdrawn.  Replacement v2 packet
+`8c1a6ad9217f...` is independently patch-GREEN in both agent lanes, but all
+three recovered chart items remain UNVERIFIED pending exact tick-center
+assertions; FDPF190/FDPF390 also retain a near-axis-top item gate.  The clipped
+Qoss contract is handled separately by `cap-qoss-clip-contract.md`.  V2 is
 integration-tested **on top of** cap-anchor parser v1, because
 recovering a chart can expose a legacy condition-as-anchor reference that the parser fix is
 responsible for refusing. Do not mix this trace fix into that parser packet, commit, push, or
@@ -84,3 +87,12 @@ full box, the unchanged vector extractor returns source-faithful Ciss/Coss/Crss 
 - Acceptance requires trusted axes, source-faithful Ciss/Coss/Crss, no false shared spans, no
   contract leak, dual independent agent GREEN, and Fab's microscopic gate. Agents never set
   `human_verified`.
+
+## 4. Terminal item gate
+
+Patch-GREEN does not make the three recovered items consumable. Closure requires an artifact
+that asserts every consumed tick crosshair is at the observed printed tick center; a microscopic
+source-stroke completeness check resolving `near_axis_top` for FDPF190N15A and FDPF390N15A; and
+the explicit clipped-Qoss refusal contract from `cap-qoss-clip-contract.md`. Fab must give the
+terminal item verdict after those artifacts are frozen. Until then FDP039N08B-F102,
+FDPF190N15A, and FDPF390N15A remain UNVERIFIED.

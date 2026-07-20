@@ -1,7 +1,9 @@
 # Capacitance Qoss clipped-chart contract worklist
 
-**Status:** design/diagnosis only. Build on the cap-anchor parser plus
-closed-bottom-frame candidate. Do not mix this into either frozen packet,
+**Status:** v1 packet `f260324bee3e...` is independently patch-GREEN in both
+agent lanes and is not landed.  It builds on cap-anchor plus closed-bottom-frame
+v2.  FDPF190's clipped-Qoss blocker is resolved, but the chart item remains
+UNVERIFIED for its separate near-axis-top and exact tick-center gates.  Do not
 commit, push, or set `human_verified`.
 
 ## Defect
@@ -44,4 +46,3 @@ curve may remain available while Qoss is refused.
   accepted Qoss item is RED unless independently source-verified.
 - FDPF190N15A must keep its recovered vector C(V) points while its clipped Qoss
   result fails closed.
-

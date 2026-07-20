@@ -1,8 +1,9 @@
 # Recovery-v2 worklist — DI280 real-Vpl recovery (bounded)
 
-**Status:** proposed / scope-challenge stage. v1 (vpl-range, e667696f) is IMMUTABLE and remains
-the baseline. Authors: opus (this worklist) + codex-ee-8ae6 (probe evidence). No commit/push;
-agent review never sets `human_verified`.
+**Status:** v1 packet `4c11abbfb9d9...` is frozen and independently GREEN in both
+agent lanes: exactly native + `.gs` recovered, 302 rows byte-identical, raster
+variant still refused.  `human_verified` is not set and the patch is not landed;
+vpl-range v1 remains the immutable baseline.  No commit/push without Fab.
 
 ## 1. Goal & hard scope boundary
 

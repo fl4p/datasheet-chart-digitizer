@@ -61,7 +61,7 @@ class BodyDiodeFinderUnitTests(unittest.TestCase):
             "body_diode",
         )
 
-    def test_body_diode_caption_requires_plot_above(self):
+    def test_body_diode_caption_prefers_above_but_accepts_adjacent_plot_below(self):
         page = _page(("Figure 4. Body Diode Forward Voltage", 300.0, 300.0))
         title = find_caption_titles(page)[0]
         above = (290.0, 100.0, 540.0, 275.0)
@@ -71,9 +71,12 @@ class BodyDiodeFinderUnitTests(unittest.TestCase):
         self.assertIsNotNone(selected)
         assert selected is not None
         self.assertLess(selected[3], title.bbox_pt[1])
-        self.assertIsNone(choose_caption_panel_bbox(page, title, [below]))
+        self.assertIsNotNone(choose_caption_panel_bbox(page, title, [below]))
+        self.assertIsNone(
+            choose_caption_panel_bbox(page, title, [(290.0, 360.0, 540.0, 535.0)])
+        )
 
-    def test_qg_axis_fallback_is_suppressed_only_for_body_diode(self):
+    def test_qg_axis_fallback_is_owned_only_by_gate_charge(self):
         page = _page(
             ("Qg Gate Charge nC", 250.0, 250.0),
             ("Figure 4. Body Diode Forward Voltage", 300.0, 300.0),
@@ -84,12 +87,11 @@ class BodyDiodeFinderUnitTests(unittest.TestCase):
 
         self.assertIsNotNone(choose_caption_axis_label_bbox(page, body))
         self.assertIsNone(choose_caption_axis_label_bbox_for_kind(page, body))
-        for title in (gate, breakdown):
-            with self.subTest(kind=classify_chart(title.title, "")):
-                self.assertEqual(
-                    choose_caption_axis_label_bbox_for_kind(page, title),
-                    choose_caption_axis_label_bbox(page, title),
-                )
+        self.assertEqual(
+            choose_caption_axis_label_bbox_for_kind(page, gate),
+            choose_caption_axis_label_bbox(page, gate),
+        )
+        self.assertIsNone(choose_caption_axis_label_bbox_for_kind(page, breakdown))
 
 
 class BodyDiodeFinderCorpusTests(unittest.TestCase):

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import pymupdf
 
 from datasheet_chart_digitizer.capacitance_types import PlotBox
 from datasheet_chart_digitizer.diode_forward_voltage import (
@@ -14,10 +15,15 @@ from datasheet_chart_digitizer.diode_forward_voltage import (
     _anchor_linear_axis_to_plot_frame,
     _draw_overlay,
     _expanded_grid_search_box,
+    _full_span_grid_lines,
+    _join_vector_path_records,
     _join_vector_paths,
     _normalize_numeric_text,
     _physical_plot_hint,
+    _prefer_strong_plot_edges,
     _snap_axis_to_grid,
+    _source_bound_top_exit_curve,
+    _temperatures,
     calibrate_panel,
     digitize_pdf,
 )
@@ -26,6 +32,11 @@ from datasheet_chart_digitizer.numeric_axis import AxisTick, NumericAxis, fit_nu
 
 
 class NumericAxisTests(unittest.TestCase):
+    def test_temperature_parser_does_not_read_current_as_celsius(self):
+        text = "T = -55°C C T = 25°C C 1 Current T = 125°C C"
+
+        self.assertEqual(_temperatures(text), [-55.0, 25.0, 125.0])
+
     def test_overlay_crosshairs_are_centered_on_axis_tick_intersections(self):
         x_axis = NumericAxis(
             "linear", 0.01, 0.0, (AxisTick("0", 0.0, 10), AxisTick("1", 1.0, 90)), 0.0, ()
@@ -48,6 +59,40 @@ class NumericAxisTests(unittest.TestCase):
         centers = [call.args[1] for call in marker.call_args_list]
         self.assertEqual(centers, [(10, 90), (90, 90), (10, 10), (10, 90)])
         self.assertEqual(overlay.shape, (133, 100, 3))
+
+    def test_reversed_axis_overlay_uses_source_axis_units(self):
+        x_axis = NumericAxis(
+            "linear", 0.625, 0.0, (AxisTick("0", 0.0, 10), AxisTick("50", 50.0, 90)), 0.0, ()
+        )
+        y_axis = NumericAxis(
+            "linear", -0.00875, 1.1875,
+            (AxisTick("1.1", 1.1, 10), AxisTick("0.4", 0.4, 90)),
+            0.0,
+            (),
+        )
+        plot = PlotBox(10, 10, 90, 90)
+        calibration = PanelCalibration(plot, x_axis, y_axis, plot, "synthetic")
+        panel = ChartPanel(
+            "sample.pdf", "sample", 1, 12, "Reverse diode", "body_diode",
+            (0, 0, 1, 1), (0, 0, 1, 1), "crop.png", "", "", [],
+        )
+
+        with patch(
+            "datasheet_chart_digitizer.diode_forward_voltage.cv2.imread",
+            return_value=np.full((100, 100, 3), 255, dtype=np.uint8),
+        ), patch(
+            "datasheet_chart_digitizer.diode_forward_voltage.draw_axis_ticks"
+        ) as draw_ticks, patch(
+            "datasheet_chart_digitizer.diode_forward_voltage.cv2.putText"
+        ) as put_text:
+            _draw_overlay(Path("crop.png"), calibration, [], panel)
+
+        self.assertEqual(draw_ticks.call_args.kwargs["unit_x"], " A")
+        self.assertEqual(draw_ticks.call_args.kwargs["unit_y"], " V")
+        self.assertIn(
+            "AXES: VSD (V) versus IF/IS (A)",
+            [call.args[1] for call in put_text.call_args_list],
+        )
 
     def test_structured_exponents_decode_but_raw_run_refuses(self):
         explicit = fit_numeric_axis(
@@ -159,6 +204,36 @@ class NumericAxisTests(unittest.TestCase):
         )
         self.assertEqual(expanded, PlotBox(4, 0, 96, 99))
 
+    def test_thick_projection_rail_center_is_not_replaced_by_outer_hint_edge(self):
+        counts = np.zeros(100, dtype=int)
+        counts[31:36] = 80
+
+        self.assertEqual(
+            _prefer_strong_plot_edges([33, 77], counts, (31, 90), 50),
+            [33, 77],
+        )
+
+    def test_strong_hint_edge_is_kept_when_projection_misses_its_rail(self):
+        counts = np.zeros(100, dtype=int)
+        counts[31] = 80
+
+        self.assertEqual(
+            _prefer_strong_plot_edges([77], counts, (31, 90), 50),
+            [31, 77],
+        )
+
+    def test_projection_halo_centers_a_frame_that_crosses_the_hint_edge(self):
+        gray = np.full((100, 100), 255, dtype=np.uint8)
+        gray[10:91, 30:33] = 0
+
+        vertical, _ = _full_span_grid_lines(
+            gray,
+            PlotBox(31, 10, 90, 90),
+            PlotBox(31, 10, 90, 90),
+        )
+
+        self.assertEqual(vertical, (31.0,))
+
     def test_unsnapped_linear_labels_anchor_to_verified_plot_frame(self):
         axis = fit_numeric_axis(
             [("0.3", 28), ("0.4", 102), ("0.5", 176), ("1.0", 534)],
@@ -197,6 +272,25 @@ class NumericAxisTests(unittest.TestCase):
         )
         self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (46, 111, 176, 241))
 
+    def test_log_frame_edge_disambiguates_adjacent_point_nine_minor(self):
+        axis = fit_numeric_axis(
+            [("10", 31.7), ("1", 110.0), ("0.1", 188.3), ("0.01", 266.7),
+             ("0.001", 345.0), ("0.0001", 423.3)],
+            "TI dense log majors",
+        )
+        snapped = _snap_axis_to_grid(
+            axis,
+            (29.0, 34.0, 109.0, 112.0, 187.0, 191.0, 265.0, 269.0,
+             344.0, 347.0, 423.0),
+            "TI dense log majors",
+            True,
+        )
+
+        self.assertEqual(
+            tuple(tick.pixel for tick in snapped.ticks),
+            (29.0, 109.0, 187.0, 265.0, 344.0, 423.0),
+        )
+
     def test_log_endpoint_can_use_unique_line_just_outside_tight_interior_tolerance(self):
         axis = fit_numeric_axis(
             [("100", 20), ("10", 60), ("1", 96)],
@@ -204,6 +298,196 @@ class NumericAxisTests(unittest.TestCase):
         )
         snapped = _snap_axis_to_grid(axis, (20.0, 60.0, 102.0), "log endpoint", True)
         self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), (20.0, 60.0, 102.0))
+
+    def test_linear_endpoint_sequence_ignores_nearer_spurious_interior_line(self):
+        axis = fit_numeric_axis(
+            [("2", 133.5), ("3", 253.0), ("4", 375.2), ("5", 495.7), ("6", 616.8)],
+            "linear majors",
+        )
+        snapped = _snap_axis_to_grid(
+            axis,
+            (131.0, 252.0, 373.0, 374.5, 494.0, 615.0),
+            "linear majors",
+            True,
+        )
+        self.assertEqual(snapped.model, "linear")
+        self.assertEqual(
+            tuple(tick.pixel for tick in snapped.ticks),
+            (131.0, 252.0, 373.0, 494.0, 615.0),
+        )
+
+    def test_linear_endpoint_sequence_refuses_equal_interior_choices(self):
+        axis = fit_numeric_axis(
+            [("2", 133.5), ("3", 253.0), ("4", 375.2), ("5", 495.7), ("6", 616.8)],
+            "linear ambiguity",
+        )
+        with self.assertRaisesRegex(RuntimeError, "ambiguous full-span grid binding"):
+            _snap_axis_to_grid(
+                axis,
+                (131.0, 252.0, 372.5, 373.5, 494.0, 615.0),
+                "linear ambiguity",
+                True,
+            )
+
+    def test_linear_sequence_accepts_bounded_thick_frame_quantization(self):
+        axis = fit_numeric_axis(
+            [
+                ("-50", 30.99), ("-25", 100.45), ("0", 175.35),
+                ("25", 241.91), ("50", 311.55), ("75", 382.23),
+                ("100", 451.21), ("125", 522.76), ("150", 592.40),
+                ("175", 662.72),
+            ],
+            "thick-frame linear majors",
+        )
+        rails = (31.0, 103.0, 172.0, 242.0, 312.0, 381.0, 450.0, 520.0, 590.0, 660.0)
+
+        snapped = _snap_axis_to_grid(
+            axis, rails, "thick-frame linear majors", True
+        )
+
+        self.assertEqual(tuple(tick.pixel for tick in snapped.ticks), rails)
+        self.assertAlmostEqual(snapped.residual_px, 0.6485448887, places=6)
+
+    def test_linear_sequence_still_refuses_rail_beyond_bounded_quantization(self):
+        axis = fit_numeric_axis(
+            [
+                ("-50", 30.99), ("-25", 100.45), ("0", 175.35),
+                ("25", 241.91), ("50", 311.55), ("75", 382.23),
+                ("100", 451.21), ("125", 522.76), ("150", 592.40),
+                ("175", 662.72),
+            ],
+            "bad thick-frame linear majors",
+        )
+        rails = (31.0, 104.0, 172.0, 242.0, 312.0, 381.0, 450.0, 520.0, 590.0, 660.0)
+
+        with self.assertRaisesRegex(
+            RuntimeError, "full-span grid residual exceeds"
+        ):
+            _snap_axis_to_grid(
+                axis, rails, "bad thick-frame linear majors", True
+            )
+
+    def test_linear_sequence_refuses_sparse_bounded_displacement(self):
+        axis = fit_numeric_axis(
+            [("0", 0), ("1", 30), ("2", 60), ("3", 90)],
+            "sparse displaced linear majors",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "full-span grid residual exceeds"
+        ):
+            _snap_axis_to_grid(
+                axis,
+                (0.0, 32.2, 60.0, 90.0),
+                "sparse displaced linear majors",
+                True,
+            )
+
+    def test_linear_sequence_refuses_one_displaced_rail_in_dense_ladder(self):
+        axis = fit_numeric_axis(
+            [(str(value), value * 10) for value in range(10)],
+            "dense displaced linear majors",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError, "full-span grid residual exceeds"
+        ):
+            _snap_axis_to_grid(
+                axis,
+                (0.0, 10.0, 20.0, 32.2, 40.0, 50.0, 60.0, 70.0, 80.0, 90.0),
+                "dense displaced linear majors",
+                True,
+            )
+
+
+class VectorPathJoiningTests(unittest.TestCase):
+    def test_global_pairing_joins_interleaved_split_curves_by_endpoint(self):
+        records = [
+            ([(0.0, 30.0), (5.0, 20.0)], (), 1.0),
+            ([(0.0, 50.0), (5.0, 40.0)], (), 1.0),
+            ([(0.0, 70.0), (5.0, 60.0)], (), 1.0),
+            ([(5.0, 60.0), (10.0, 55.0)], (), 1.0),
+            ([(5.0, 20.0), (10.0, 15.0)], (), 1.0),
+            ([(5.0, 40.0), (10.0, 35.0)], (), 1.0),
+        ]
+
+        groups = _join_vector_path_records(records, plot_height=100.0)
+
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(
+            [(points[0], points[-1]) for points, _ in groups],
+            [
+                ((0.0, 30.0), (10.0, 15.0)),
+                ((0.0, 50.0), (10.0, 35.0)),
+                ((0.0, 70.0), (10.0, 55.0)),
+            ],
+        )
+
+    def test_ambiguous_equidistant_endpoint_remains_unjoined(self):
+        records = [
+            ([(0.0, 20.0), (5.0, 10.0)], (), 1.0),
+            ([(0.0, 22.0), (5.0, 12.0)], (), 1.0),
+            ([(5.0, 11.0), (10.0, 5.0)], (), 1.0),
+        ]
+
+        self.assertEqual(
+            len(_join_vector_path_records(records, plot_height=100.0)),
+            3,
+        )
+
+    def test_dash_or_stroke_width_mismatch_remains_unjoined(self):
+        records = [
+            ([(0.0, 20.0), (5.0, 10.0)], (), 1.0),
+            ([(5.0, 10.0), (10.0, 5.0)], (2.0, 2.0), 1.0),
+            ([(0.0, 40.0), (5.0, 30.0)], (), 0.5),
+            ([(5.0, 30.0), (10.0, 25.0)], (), 1.0),
+        ]
+
+        self.assertEqual(
+            len(_join_vector_path_records(records, plot_height=100.0)),
+            4,
+        )
+
+    def test_three_label_curve_can_exit_labeled_top_without_extrapolation(self):
+        rect = pymupdf.Rect(0.0, 0.0, 100.0, 100.0)
+        curve = [(1.0, 80.0), (25.0, 55.0), (51.0, -0.5)]
+
+        self.assertTrue(
+            _source_bound_top_exit_curve(
+                curve,
+                rect,
+                expected_curve_count=3,
+            )
+        )
+        self.assertFalse(
+            _source_bound_top_exit_curve(
+                curve,
+                rect,
+                expected_curve_count=2,
+            )
+        )
+
+    def test_short_interior_fragment_is_not_a_source_bound_exit(self):
+        rect = pymupdf.Rect(0.0, 0.0, 100.0, 100.0)
+        fragment = [(25.0, 75.0), (45.0, 50.0), (65.0, 25.0)]
+
+        self.assertFalse(
+            _source_bound_top_exit_curve(
+                fragment,
+                rect,
+                expected_curve_count=3,
+            )
+        )
+
+    def test_top_touching_curve_without_left_frame_start_is_rejected(self):
+        rect = pymupdf.Rect(0.0, 0.0, 100.0, 100.0)
+        fragment = [(20.0, 80.0), (50.0, 35.0), (80.0, -0.5)]
+
+        self.assertFalse(
+            _source_bound_top_exit_curve(
+                fragment,
+                rect,
+                expected_curve_count=3,
+            )
+        )
 
 
 class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
@@ -229,12 +513,12 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
             (
                 "onsemi/FDA032N08.pdf",
                 "Body Diode Forward Voltage",
-                PlotBox(189, 88, 670, 424),
+                PlotBox(189, 54, 670, 390),
                 "linear",
                 "log10",
                 (1, 10, 100, 400),
                 (189, 349, 509, 670),
-                (88, 166, 296, 424),
+                (54, 132, 262, 390),
             ),
             (
                 "diodes/DMTH83M2SPSWQ-13.pdf",
@@ -316,6 +600,128 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
                         self.assertGreaterEqual(sum(100 <= value for value in currents), 40)
                     else:
                         self.assertGreaterEqual(sum(0 <= value < 5 for value in currents), 50)
+
+    def test_st_thin_strokes_with_reversed_axes_digitize_three_curves(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = self.datasheets / "st/ST8L65N044M9.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("source_axes_current_x_voltage_y", result["diagnostics"])
+        self.assertEqual(result["x_axis"]["model"], "linear")
+        self.assertEqual(result["y_axis"]["model"], "linear")
+        self.assertEqual(
+            tuple(curve["temperature_c"] for curve in result["curves"]),
+            (-55.0, 25.0, 150.0),
+        )
+        for curve in result["curves"]:
+            self.assertGreaterEqual(len(curve["points"]), 330)
+            self.assertLessEqual(curve["points"][0][1], 5.3)
+            self.assertGreaterEqual(curve["points"][-1][1], 48.9)
+
+    def test_ti_gray_temperature_curve_is_admitted_by_panel_width_and_span(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = self.datasheets / "ti/CSD17573Q5B.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(
+            tuple(curve["temperature_c"] for curve in result["curves"]),
+            (25.0, 125.0),
+        )
+        self.assertEqual(
+            tuple(len(curve["points_px"]) for curve in result["curves"]),
+            (378, 378),
+        )
+        by_temperature = {
+            curve["temperature_c"]: curve for curve in result["curves"]
+        }
+        for index in range(0, 378, 40):
+            self.assertGreater(
+                by_temperature[25.0]["points"][index][0],
+                by_temperature[125.0]["points"][index][0],
+            )
+
+    def test_st_split_half_curves_recover_three_source_bound_branches(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = self.datasheets / "st/STP38N65M5.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
+
+        self.assertEqual(
+            tuple(curve["temperature_c"] for curve in result["curves"]),
+            (-50.0, 25.0, 150.0),
+        )
+        self.assertIn(
+            "source_curve_exits_labeled_voltage_range_without_extrapolation",
+            result["diagnostics"],
+        )
+        by_temperature = {
+            curve["temperature_c"]: curve for curve in result["curves"]
+        }
+        cold_current = [point[1] for point in by_temperature[-50.0]["points"]]
+        self.assertGreater(max(cold_current), 5.0)
+        self.assertLess(max(cold_current), 6.0)
+        self.assertLessEqual(
+            max(point[0] for point in by_temperature[-50.0]["points"]),
+            1.201,
+        )
+        for temperature in (25.0, 150.0):
+            self.assertGreaterEqual(
+                max(point[1] for point in by_temperature[temperature]["points"]),
+                9.9,
+            )
+
+    def test_infineon_typical_and_maximum_curves_bind_by_legend_dash_style(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = self.datasheets / "infineon/ISC024N08NM7.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
+
+        self.assertEqual(
+            [(curve["temperature_c"], curve["curve_role"]) for curve in result["curves"]],
+            [(25.0, "typical"), (25.0, "maximum"), (175.0, "typical"), (175.0, "maximum")],
+        )
+        self.assertIn(
+            "temperature_and_limit_identity_bound_by_source_legend_style",
+            result["diagnostics"],
+        )
+        self.assertTrue(all(len(curve["points_px"]) >= 500 for curve in result["curves"]))
+
+    def test_legacy_two_temperature_infineon_uses_stable_order_assignment(self):
+        if self.datasheets is None:
+            self.skipTest("DSDIG_DATASHEET_ROOT is not set")
+        pdf = self.datasheets / "infineon/IPP024N08NF2S.pdf"
+        if not pdf.exists():
+            self.skipTest(f"missing local corpus PDF: {pdf}")
+        with tempfile.TemporaryDirectory() as tmp:
+            result = digitize_pdf(pdf, Path(tmp), dpi=180)[0]
+
+        self.assertEqual(
+            [(curve["temperature_c"], curve.get("curve_role")) for curve in result["curves"]],
+            [(25.0, None), (175.0, None)],
+        )
+        self.assertIn(
+            "temperature_identity_stable_over_low_mid_shared_current",
+            result["diagnostics"],
+        )
 
     def test_onsemi_outer_decades_and_plot_bottom_bind_to_physical_lines(self):
         if self.datasheets is None:

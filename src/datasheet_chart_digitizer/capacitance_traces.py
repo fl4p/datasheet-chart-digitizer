@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-
+from .capacitance_grid_mask import _remove_full_width_horizontal_rails
 from .capacitance_types import CapAnchor, PlotBox, Trace
 from .capacitance_validation import UNPHYSICAL_VALUE_RISE_FRACTION, value_rise_fraction
 
@@ -240,7 +240,6 @@ def _trace_y_range(trace: Trace) -> int:
 
 def _renamed_trace(trace: Trace, name: str) -> Trace:
     return Trace(name=name, area=trace.area, bbox=trace.bbox, points=trace.points)
-
 def find_plot_box(gray: np.ndarray) -> PlotBox:
     height, width = gray.shape
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
@@ -304,11 +303,12 @@ def extract_trace_components(
     # check below fails loudly rather than returning grid lines as data.
     if float(dark.mean()) > 0.10:
         dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-        margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
-        dark[:margin, :] = 0
-        dark[-margin:, :] = 0
-        dark[:, :margin] = 0
-        dark[:, -margin:] = 0
+        dark = _remove_full_width_horizontal_rails(dark)
+    margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
+    dark[:margin, :] = 0
+    dark[-margin:, :] = 0
+    dark[:, :margin] = 0
+    dark[:, -margin:] = 0
     mask = _trace_fragment_mask(dark, plot)
     centers_by_x = [_cluster_column_runs(mask[:, x]) for x in range(mask.shape[1])]
 

@@ -16,6 +16,13 @@ from .capacitance_types import AxisCalibration, OutputChargeReference
 # medians).  Calibrated: 24 good PASS charts top out at +0.011, while the SOA
 # (NCE2010E, +0.221) and Zth (FDD6612A, +0.097) leaks sit far above 0.05.
 UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
+QOSS_SERVABLE_STATUSES = frozenset(
+    {
+        "pass",
+        "pass_vendor_qoss_curve_tail",
+        "clipped_chart_completed",
+    }
+)
 
 
 def value_rise_fraction(points: list[tuple[int, int]], plot_height: int) -> float:
@@ -67,6 +74,8 @@ def qoss_validation_status(
     metrics: object | None,
     validation_error: str | None,
     vendor_tail_validation: dict[str, object] | None = None,
+    *,
+    table_reference_available: bool | None = None,
 ) -> str | None:
     if metrics is None:
         return None
@@ -74,13 +83,61 @@ def qoss_validation_status(
         return "pass_vendor_qoss_curve_tail"
     if float(metrics.extrapolated_qoss_fraction) > 0.20:
         return "unreliable_extrapolation"
+    if validation_error == "Qoss table reference unavailable":
+        return (
+            "chart_clipped_reference_unavailable"
+            if bool(metrics.clipped_completion_active)
+            else "reference_unavailable"
+        )
     if bool(metrics.clipped_completion_active):
         if validation_error is not None:
-            return "chart_clipped_table_authoritative"
+            return (
+                "chart_clipped_table_authoritative"
+                if table_reference_available
+                else "chart_clipped_reference_unavailable"
+            )
         return "clipped_chart_completed"
     if validation_error is None:
         return "pass"
     return "graph_table_inconsistent"
+
+
+def partition_qoss_metrics(
+    metrics: dict[str, object] | None,
+    validation_status: str | None,
+    *,
+    chart_physical_output_available: bool,
+) -> tuple[dict[str, object] | None, dict[str, object] | None, bool]:
+    """Separate served Qoss scalars from explicitly diagnostic-only metrics."""
+
+    available = bool(
+        metrics is not None
+        and chart_physical_output_available
+        and validation_status in QOSS_SERVABLE_STATUSES
+    )
+    if available:
+        return metrics, None, True
+    return None, metrics, False
+
+
+def qoss_metrics_status_reasons(
+    metrics: dict[str, object] | None,
+    validation_status: str | None,
+    *,
+    chart_physical_output_available: bool,
+) -> list[str]:
+    """Explain every reason the derived Qoss bundle is not consumer-safe."""
+
+    reasons: list[str] = []
+    if metrics is None:
+        reasons.append("qoss_metrics_unavailable")
+    elif validation_status not in QOSS_SERVABLE_STATUSES:
+        reasons.append(
+            f"qoss_validation_status:{validation_status or 'unavailable'}"
+        )
+    if not chart_physical_output_available:
+        reasons.append("chart_physical_output_unavailable")
+    return reasons
 
 
 def vendor_qoss_tail_validation(
@@ -170,4 +227,3 @@ def top_decade_clip_diagnostic(
         "low_v_limit_v": low_v_limit,
         "near_axis_top": max_low_v_coss >= axis_top_pf * 0.70,
     }
-

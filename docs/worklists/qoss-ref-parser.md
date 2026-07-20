@@ -1,8 +1,9 @@
 # Qoss (table-reference) condition-as-value parser worklist — bounded
 
-**Status:** proposed / scope-challenge stage. Read-only evidence by codex-ee-8ae6; worklist by
-opus. box-v3 (6f0c7bf4), vpl-range-v1 (e667696f), recovery-v2 (6ed7b8a9) remain immutable. No
-commit/push; agents never set `human_verified`.
+**Status:** v1 packet `022b71a52084...` is frozen and independently GREEN in both
+agent lanes; `human_verified` is not set and the patch is not landed.  The design
+below is retained as the acceptance rationale.  box-v3, vpl-range-v1, and
+recovery-v2 remain immutable; no commit/push without Fab.
 
 ## 1. Bug & evidence
 
@@ -14,10 +15,12 @@ rows it consumes a **condition number as the value**. PSMNR70 example:
 - Graph integration = **60338 pC ≈ 60.3 nC**, which agrees with the true table **62 nC** (~2.7 %),
   NOT the false 15 nC. So the graph is right; the parsed table-reference is wrong.
 
-**Scope (codex read-only scan):** the misparse hits **390 unique parts / 1,152 duplicated CSV
+**Discovery seed (codex read-only scan):** the VDS-equality symptom hits **390 unique parts / 1,152 duplicated CSV
 rows** (AO 173, TI 119, NXP 81, Infineon 10, onsemi 4, panjit 2, Toshiba 1). Detection
 criterion: `parsed qoss_pc == row VDS-condition × 1000` while a **distinct numeric value column
-exists before the unit**. This is a high-leverage shared-reference repair, not a one-off.
+exists before the unit**. This was a subset/calibration seed, not the final expected-delta set:
+the root fix always parses evidenced value columns and also corrects Co(er)/Co(tr), from-null,
+and non-VDS condition captures.
 
 ## 2. Fix direction (agreed) + my challenges
 
@@ -60,12 +63,17 @@ temperature conditions — column-aware, not "skip N condition numbers."
 
 Shared reference parser → full **§9** reference-parser corpus A/B (not just the 390):
 - Full-corpus same-host sequential-solo A/B, baseline = current head reference output.
-- **Expected delta set = the 390 predicate-matching parts** (each: condition → real value, OR →
-  fail-closed if no value column). **ANY row OUTSIDE the predicate that moves = over-fire**, gets
-  an item verdict.
+- **Expected delta set = the frozen pre-change all-condition-token/value-column audit.** The 390
+  VDS-equality parts are a required subset, not a cap. Every moved selected row must have exact
+  source-column proof; any move outside that frozen audit is over-fire and gets an item verdict.
 - **Trace/curve bytes MUST be unchanged** — this is a table-reference parser change, not a
   C(V) trace/integrator change. Assert curve_px/integration bytes identical corpus-wide.
 - Report per-vendor before/after counts, exception + no_result counts.
+
+The frozen v1 result is 10,225 rows / 0 exceptions with 1,351 changed selected
+`output_charge_reference` records and zero anchor/CSV/trace changes: Qoss 938
+(442 numeric corrections, 483 from-null, 13 to-null), Co(er) 398, Co(tr) 117,
+and Vint 87.  These counts supersede the 390-part discovery seed.
 
 ## 4. Required fixtures (acceptance gated on ALL)
 
@@ -86,7 +94,7 @@ Shared reference parser → full **§9** reference-parser corpus A/B (not just t
 
 ## 5. Acceptance gate
 
-Lands only when: §9 A/B shows exactly the predicate-matched set moved (condition→value or
-fail-closed), zero out-of-predicate rows moved, all trace/curve bytes unchanged; all 6 fixtures
+Lands only when: §9 A/B shows exactly the frozen source-proven audit set moved
+(condition→value or fail-closed), zero out-of-audit rows moved, all trace/curve bytes unchanged; all 6 fixtures
 pass; CHALLENGE-4 shared-helper audit reported (fixed or scoped-out with counts); dual-lane
 agent-GREEN; Fab human gate. `human_verified` never set by agents. Prior fixes immutable.

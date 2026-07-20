@@ -1,12 +1,9 @@
 #!/usr/bin/env python3
 """Find chart panels in datasheet PDFs.
-
 This pass deliberately stops at "find all charts and emit crops + metadata";
 chart-specific trace digitizers build on top of this index.
 """
-
 from __future__ import annotations
-
 import argparse
 import csv
 import json
@@ -19,24 +16,67 @@ import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable
-
 import cv2
 import pymupdf
 from PIL import Image
-
 try:
+    from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
+    from .finder_caption_geometry import (
+        bbox_iou as _bbox_iou,
+        bbox_evidences_breakdown,
+        bbox_overlap_fraction_of_smaller as _bbox_overlap_fraction_of_smaller,
+        bbox_looks_like_spec_table,
+        bound_caption_bbox_to_caption_row,
+        bound_caption_bbox_to_own_column as _bound_caption_bbox_to_own_column,
+        caption_axis_direction,
+        caption_continuation as _caption_continuation,
+        caption_leads_nearer_grid, compact_formula_caption_direction, breakdown_symbol_caption_direction,
+        caption_leading_plot_bbox,
+        caption_image_panel_bbox as _caption_image_panel_bbox,
+        caption_vector_frame_bbox as _caption_vector_frame_bbox,
+        expand_breakdown_bbox_to_axis_label, expand_numbered_dual_y_gate_bbox,
+        expand_caption_bbox_to_axis_labels as _expand_caption_bbox,
+        extend_wrapped_caption_titles, detached_numbered_caption_title,
+        frame_bound_short_caption_segments,
+        grid_rows_belong_to_same_panel, grid_rule_widths_are_compatible,
+        numbered_breakdown_vector_frame_bbox as _numbered_breakdown_vector_frame_bbox, page_image_rects as _page_image_rects,
+        revision_history_region, synthetic_bbox_has_plot_evidence,
+        page_vector_plot_frames as _page_vector_plot_frames,
+        trim_adjacent_chart_caption,
+        words_in_bbox,
+    )
 except ImportError:  # pragma: no cover - direct script compatibility
+    from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
-
-
+    from finder_caption_geometry import (
+        bbox_iou as _bbox_iou,
+        bbox_evidences_breakdown,
+        bbox_overlap_fraction_of_smaller as _bbox_overlap_fraction_of_smaller,
+        bbox_looks_like_spec_table,
+        bound_caption_bbox_to_caption_row,
+        bound_caption_bbox_to_own_column as _bound_caption_bbox_to_own_column,
+        caption_axis_direction,
+        caption_continuation as _caption_continuation,
+        caption_leads_nearer_grid, compact_formula_caption_direction, breakdown_symbol_caption_direction,
+        caption_leading_plot_bbox,
+        caption_image_panel_bbox as _caption_image_panel_bbox,
+        caption_vector_frame_bbox as _caption_vector_frame_bbox,
+        expand_breakdown_bbox_to_axis_label, expand_numbered_dual_y_gate_bbox,
+        expand_caption_bbox_to_axis_labels as _expand_caption_bbox,
+        extend_wrapped_caption_titles, detached_numbered_caption_title,
+        frame_bound_short_caption_segments,
+        grid_rows_belong_to_same_panel, grid_rule_widths_are_compatible,
+        numbered_breakdown_vector_frame_bbox as _numbered_breakdown_vector_frame_bbox, page_image_rects as _page_image_rects,
+        revision_history_region, synthetic_bbox_has_plot_evidence,
+        page_vector_plot_frames as _page_vector_plot_frames,
+        trim_adjacent_chart_caption,
+        words_in_bbox,
+    )
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
 # Figure numbers: Toshiba "Fig. 8.8", TI "Figure 4-5." (section-hyphenated).
-FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:[.\-]\d+)?)[\.:]?\s*(.*)$", re.IGNORECASE)
-COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:[.\-]\d+)?)[\.:\\-]?\s*(.*)$", re.IGNORECASE)
-CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
-
-
+FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:[.\-]\d+)?)[\.,:]?\s*(.*)$", re.IGNORECASE)
+COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:[.\-]\d+)?)[\.,:\-]?\s*(.*)$", re.IGNORECASE)
 @dataclass(frozen=True)
 class Word:
     text: str
@@ -44,8 +84,6 @@ class Word:
     y0: float
     x1: float
     y1: float
-
-
 @dataclass(frozen=True)
 class PageText:
     page_num: int
@@ -53,16 +91,12 @@ class PageText:
     height_pt: float
     words: list[Word]
     text_source: str = "pdftotext"
-
-
 @dataclass(frozen=True)
 class DiagramTitle:
     number: int
     title: str
     bbox_pt: tuple[float, float, float, float]
     line_text: str
-
-
 @dataclass
 class ChartPanel:
     pdf: str
@@ -78,17 +112,13 @@ class ChartPanel:
     formula: str
     mentions: list[str]
     text_source: str = "pdftotext"
-
-
 def run_text_bbox(pdf: Path) -> list[PageText]:
-    proc = subprocess.run(
-        ["pdftotext", "-bbox-layout", str(pdf), "-"],
-        check=True,
-        text=True,
-        stdout=subprocess.PIPE,
-    )
-    xml_text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", proc.stdout)
-    root = ET.fromstring(xml_text)
+    try:
+        proc = subprocess.run(["pdftotext", "-bbox-layout", str(pdf), "-"], check=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if not proc.stdout.strip(): raise ValueError("pdftotext -bbox-layout returned empty output")
+        root = ET.fromstring(re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", " ", proc.stdout))
+    except (OSError, subprocess.CalledProcessError, ET.ParseError, ValueError):
+        return _run_pymupdf_text(pdf, "pymupdf_bbox_fallback")
     primary_pages: list[PageText] = []
     for page_idx, page_el in enumerate(root.iterfind(".//{*}page"), start=1):
         words: list[Word] = []
@@ -113,6 +143,7 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
                 words=words,
             )
         )
+    if not primary_pages or not any(page.words for page in primary_pages): return _run_pymupdf_text(pdf, "pymupdf_bbox_fallback")
     if not any(_page_text_looks_corrupt(page) for page in primary_pages):
         return primary_pages
     try:
@@ -124,11 +155,8 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
         _select_page_text(page, fallback_by_number.get(page.page_num))
         for page in primary_pages
     ]
-
-
 def _tesseract_tsv(page_png: Path, timeout: float = 20.0) -> str | None:
     """Return sparse-layout OCR TSV, degrading cleanly when OCR is unavailable."""
-
     executable = shutil.which("tesseract")
     if executable is None:
         return None
@@ -144,8 +172,6 @@ def _tesseract_tsv(page_png: Path, timeout: float = 20.0) -> str | None:
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         return None
     return completed.stdout
-
-
 def _page_text_from_tesseract_tsv(
     tsv: str,
     *,
@@ -156,7 +182,6 @@ def _page_text_from_tesseract_tsv(
     height_px: int,
 ) -> PageText:
     """Map word-level Tesseract pixel boxes into PDF-point coordinates."""
-
     words: list[Word] = []
     for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
         text = (row.get("text") or "").strip()
@@ -190,8 +215,6 @@ def _page_text_from_tesseract_tsv(
         words=words,
         text_source="tesseract_fallback",
     )
-
-
 def run_tesseract_page_text(
     pdf: Path,
     *,
@@ -228,8 +251,7 @@ def run_tesseract_page_text(
             )
     return pages
 
-
-def _run_pymupdf_text(pdf: Path) -> list[PageText]:
+def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[PageText]:
     pages: list[PageText] = []
     with pymupdf.open(pdf) as doc:
         for page_idx, page in enumerate(doc, start=1):
@@ -250,11 +272,12 @@ def _run_pymupdf_text(pdf: Path) -> list[PageText]:
                     width_pt=float(page.rect.width),
                     height_pt=float(page.rect.height),
                     words=_dedupe_overprinted_words(words),
-                    text_source="pymupdf_fallback",
+                    text_source=text_source,
                 )
             )
+    if not pages or not any(page.words for page in pages):
+        raise RuntimeError(f"both bbox text paths returned no words for {pdf}")
     return pages
-
 
 def _dedupe_overprinted_words(words: list[Word]) -> list[Word]:
     """Collapse near-identical glyph layers emitted as repeated words."""
@@ -287,14 +310,11 @@ def _dedupe_overprinted_words(words: list[Word]) -> list[Word]:
         buckets.setdefault((word.text, gx, gy), []).append(word)
     return out
 
-
 def _readable_word_count(page: PageText) -> int:
     return sum(bool(re.search(r"[A-Za-z]{2}", word.text)) for word in page.words)
 
-
 def _page_text_looks_corrupt(page: PageText) -> bool:
     return len(page.words) >= 20 and _readable_word_count(page) / len(page.words) < 0.12
-
 
 def _select_page_text(primary: PageText, fallback: PageText | None) -> PageText:
     """Use PyMuPDF only when it clearly repairs a corrupted text layer."""
@@ -310,7 +330,6 @@ def _select_page_text(primary: PageText, fallback: PageText | None) -> PageText:
     ):
         return fallback
     return primary
-
 
 def group_words_into_lines(words: Iterable[Word]) -> list[list[Word]]:
     lines: list[list[Word]] = []
@@ -328,10 +347,8 @@ def group_words_into_lines(words: Iterable[Word]) -> list[list[Word]]:
     lines.sort(key=lambda line: (min(w.y0 for w in line), min(w.x0 for w in line)))
     return lines
 
-
 def line_text(line: list[Word]) -> str:
     return " ".join(w.text for w in line)
-
 
 def line_bbox(line: list[Word]) -> tuple[float, float, float, float]:
     return (
@@ -369,7 +386,9 @@ def find_diagram_titles(page: PageText) -> list[DiagramTitle]:
             continue
         starts.append(len(line))
         for start, end in zip(starts, starts[1:]):
-            segment = line[start:end]
+            segment = trim_adjacent_chart_caption(
+                line[start:end], page.width_pt, classify_chart
+            )
             text = line_text(segment)
             match = DIAGRAM_RE.match(text)
             if not match:
@@ -390,7 +409,10 @@ def _caption_starts(line: list[Word]) -> list[int]:
     starts: list[int] = []
     for idx, word in enumerate(line):
         token = word.text.strip()
-        lower = token.lower().rstrip(".:")
+        if is_spaced_figure_start([item.text for item in line], idx):
+            starts.append(idx)
+            continue
+        lower = token.lower().rstrip(".:,")
         compact_match = COMPACT_FIGURE_RE.match(token)
         if compact_match:
             tail = compact_match.group(2).lower() + " " + " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
@@ -411,12 +433,12 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
         if lower in {"figure", "fig"} and idx + 1 < len(line):
-            if re.match(r"^\d+(?:[.\-]\d+)?[\.:]?$", line[idx + 1].text):
+            if re.match(r"^\d+(?:[.\-]\d+)?[\.,:]?$", line[idx + 1].text):
                 starts.append(idx)
             continue
 
         if lower in {"typ", "typical", "typicaly", "typycal"}:
-            if idx > 0 and re.match(r"^\d+(?:\.\d+)?[\.:]?$", line[idx - 1].text.strip()):
+            if idx > 0 and re.match(r"^\d+(?:\.\d+)?[\.,:]?$", line[idx - 1].text.strip()):
                 continue
             tail = " ".join(w.text for w in line[idx : idx + 5]).lower()
             if any(phrase in tail for phrase in ("gate", "capacitance", "breakdown", "transfer")):
@@ -442,7 +464,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
 
-        if not token.isdigit() or idx + 1 >= len(line):
+        if not re.fullmatch(r"[0-9]+", token) or int(token) > 50 or idx + 1 >= len(line):
             continue
         tail = " ".join(w.text for w in line[idx + 1 : idx + 5]).lower()
         if any(
@@ -454,6 +476,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
 
 
 def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
+    text = repair_spaced_caption_text(text)
     match = FIGURE_RE.match(text)
     if match:
         return int(re.sub(r"[.\-]", "", match.group(1))), match.group(2).strip()
@@ -464,57 +487,50 @@ def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
             title = title[1:].strip()
         return int(re.sub(r"[.\-]", "", match.group(1))), title
     parts = text.split(maxsplit=1)
-    if len(parts) == 2 and parts[0].isdigit():
+    if len(parts) == 2 and re.fullmatch(r"[0-9]+", parts[0]) and int(parts[0]) <= 50:
         return int(parts[0]), parts[1].strip()
     if re.match(r"(?i)^gate\s+charge\b", text):
         return None, text.strip()
     if re.match(r"(?i)^Typ(?:ical|ycal)?\.?\s+", text):
         return None, text.strip()
     return None
-
-
-def _caption_continuation(lines: list[list[Word]], line_idx: int, segment: list[Word]) -> str:
-    """Return a short wrapped caption continuation below a title segment."""
-    if line_idx + 1 >= len(lines):
-        return ""
-    sx0, sy0, sx1, sy1 = line_bbox(segment)
-    segment_width = sx1 - sx0
-    continuation: list[str] = []
-    for next_line in lines[line_idx + 1 : line_idx + 3]:
-        nx0, ny0, nx1, _ = line_bbox(next_line)
-        if ny0 - sy1 > 18:
-            break
-        overlap = _overlap_1d(sx0, sx1, nx0, nx1)
-        if overlap < max(8.0, min(segment_width, nx1 - nx0) * 0.25):
-            continue
-        text = line_text(next_line)
-        if not re.search(r"[A-Za-z]", text):
-            continue
-        continuation.append(text)
-    return " ".join(continuation).strip()
-
-
 def find_caption_titles(page: PageText) -> list[DiagramTitle]:
     """Find non-Diagram chart captions used by many gate-charge plots."""
     titles: list[DiagramTitle] = []
     lines = group_words_into_lines(page.words)
+    claimed_title_lines: set[int] = set()
     for line_idx, line in enumerate(lines):
+        if line_idx in claimed_title_lines:
+            continue
         starts = _caption_starts(line)
         if not starts:
             continue
         starts.append(len(line))
         for start, end in zip(starts, starts[1:]):
-            segment = line[start:end]
+            segment = trim_adjacent_chart_caption(
+                line[start:end], page.width_pt, classify_chart
+            )
             text = line_text(segment)
             parsed = _parse_caption_text(text)
             if parsed is None:
                 continue
             parsed_number, title = parsed
             number = parsed_number if parsed_number is not None else 900 + len(titles) + 1
+            detached_bbox = None
+            detached_line_idx = None
+            if not title:
+                detached = detached_numbered_caption_title(
+                    page, lines, line_idx, segment
+                )
+                if detached is not None:
+                    title, detached_bbox, detached_line_idx = detached
             title_for_classification = title
-            if classify_chart(title_for_classification, "") != "gate_charge" and "gate" in title_for_classification.lower():
+            title_tail = title_for_classification.lower().rstrip(" .:")
+            if detached_bbox is None and ("gate" in title_tail or title_tail.endswith((" vs", " versus"))):
                 continuation = _caption_continuation(lines, line_idx, segment)
-                if continuation:
+                initial_kind = classify_chart(title, "")
+                continued_kind = classify_chart(f"{title} {continuation}", "")
+                if continuation and (initial_kind == "chart" or continued_kind in {initial_kind, "chart"}):
                     title_for_classification = f"{title_for_classification} {continuation}".strip()
             # Caption-style pages cover a narrow set of chart families that do
             # not use the Infineon ``Diagram N`` convention.  Do not admit all
@@ -524,17 +540,18 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 "gate_charge",
                 "breakdown_voltage",
                 "body_diode",
-                "transfer",
-                "capacitances",
+                "transfer", "capacitances", "rds_on",
             }:
                 continue
             title = title_for_classification
+            if detached_line_idx is not None:
+                claimed_title_lines.add(detached_line_idx)
             titles.append(
                 DiagramTitle(
                     number=number,
                     title=title,
-                    bbox_pt=line_bbox(segment),
-                    line_text=text,
+                    bbox_pt=detached_bbox or line_bbox(segment),
+                    line_text=(f"{text} {title}" if detached_bbox else text),
                 )
             )
     titles.sort(key=lambda t: (t.bbox_pt[1], t.bbox_pt[0], t.number))
@@ -543,37 +560,9 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
 
 def extend_wrapped_titles(page: PageText, titles: list[DiagramTitle]) -> list[DiagramTitle]:
     """Add short continuation text from the title band when a title wraps."""
-    if not titles:
-        return titles
-    lines = group_words_into_lines(page.words)
-    out: list[DiagramTitle] = []
-    for title in titles:
-        tx0, ty0, tx1, ty1 = title.bbox_pt
-        continuation: list[str] = []
-        for line in lines:
-            if any(word.text.lower() == "diagram" for word in line):
-                continue
-            lx0, ly0, lx1, ly1 = line_bbox(line)
-            line_cx = (lx0 + lx1) / 2
-            if ly0 <= ty1 or ly0 > ty1 + 22:
-                continue
-            if tx0 - 10 <= line_cx <= tx1 + 80:
-                text = line_text(line)
-                # Reject tick labels and large formula captions.
-                if not re.search(r"[A-Za-z]", text):
-                    continue
-                if "=" in text or "[" in text:
-                    continue
-                continuation.append(text)
-        if continuation:
-            title = DiagramTitle(
-                number=title.number,
-                title=f"{title.title} {' '.join(continuation)}".strip(),
-                bbox_pt=title.bbox_pt,
-                line_text=f"{title.line_text} {' '.join(continuation)}".strip(),
-            )
-        out.append(title)
-    return out
+    return extend_wrapped_caption_titles(
+        page, titles, group_words_into_lines(page.words)
+    )
 
 
 def render_page(pdf: Path, page_num: int, dpi: int, tmpdir: Path) -> Path:
@@ -780,7 +769,9 @@ def infer_grid_regions_from_h_rules(
             gc = (gx0 + gx1) / 2
             gw = gx1 - gx0
             overlap = _overlap_1d(bx0, bx1, gx0, gx1)
-            if abs(bc - gc) <= page.width_pt * 0.08 and overlap >= min(bw, gw) * 0.55:
+            if (abs(bc - gc) <= page.width_pt * 0.08
+                    and overlap >= min(bw, gw) * 0.55
+                    and grid_rule_widths_are_compatible(bw, gw)):
                 group.append(box)
                 break
         else:
@@ -794,7 +785,13 @@ def infer_grid_regions_from_h_rules(
             center_y = (box[1] + box[3]) / 2
             if chunks:
                 prev_center_y = (chunks[-1][-1][1] + chunks[-1][-1][3]) / 2
-                if center_y - prev_center_y <= 28:
+                if grid_rows_belong_to_same_panel(
+                    page.words,
+                    prev_center_y,
+                    center_y,
+                    min(box[0], chunks[-1][-1][0]),
+                    max(box[2], chunks[-1][-1][2]),
+                ):
                     chunks[-1].append(box)
                     continue
             chunks.append([box])
@@ -811,21 +808,16 @@ def infer_grid_regions_from_h_rules(
             regions.append((x0, y0, x1, y1))
     regions.sort(key=lambda b: (b[1], b[0]))
     return regions
-
-
 def _caption_prefers_plot_above(title: DiagramTitle) -> bool:
     text = title.line_text.strip()
     return bool(FIGURE_RE.match(text) or COMPACT_FIGURE_RE.match(text) or re.match(r"^\d+[\.:]?\s+", text))
-
-
 def _caption_requires_plot_above(title: DiagramTitle) -> bool:
-    """Return whether a numbered caption unambiguously owns the plot above."""
-    return _caption_prefers_plot_above(title) and classify_chart(title.title, "") in {
-        "body_diode",
-        "transfer",
-    }
-
-
+    """Default numbered captions above; own-axis evidence may reverse it."""
+    normalized = re.sub(r"\s+", " ", title.title.lower()).strip()
+    kind = classify_chart(title.title, "")
+    compact = compact_formula_chart_kind(title.title)
+    above = bool(compact and re.match(r"(?i)^fig(?:ure)?\.?\s*\d+[.\-]\d+", title.line_text.strip())) or compact is None and (kind in {"body_diode", "transfer"} or "gate charge waveform definitions" in normalized or normalized == "dynamic input/output characteristics")
+    return _caption_prefers_plot_above(title) and above
 def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitle) -> bool:
     tx0, ty0, tx1, _ = title.bbox_pt
     for line in group_words_into_lines(page.words):
@@ -838,8 +830,6 @@ def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitl
         if _overlap_1d(tx0, tx1, lx0, lx1) >= min(tx1 - tx0, lx1 - lx0) * 0.20:
             return True
     return False
-
-
 def _has_gate_charge_formula_below_caption(page: PageText, title: DiagramTitle) -> bool:
     tx0, ty0, tx1, ty1 = title.bbox_pt
     for line in group_words_into_lines(page.words):
@@ -852,8 +842,6 @@ def _has_gate_charge_formula_below_caption(page: PageText, title: DiagramTitle) 
         if "fqg" in normalized or "fqgate" in normalized or "vgsfq" in normalized or "vgefq" in normalized:
             return True
     return False
-
-
 def choose_caption_panel_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -885,14 +873,44 @@ def choose_caption_panel_bbox(
     plot_width_candidates = [item for item in candidates if item[2][2] - item[2][0] <= page.width_pt * 0.62]
     if plot_width_candidates:
         candidates = plot_width_candidates
-
+    kind = classify_chart(title.title, "")
+    semantic_candidates = []
+    if kind == "breakdown_voltage":
+        for item in candidates:
+            if bbox_evidences_breakdown(page.words, item[2], _token_norm):
+                semantic_candidates.append(item)
+        if semantic_candidates:
+            candidates = semantic_candidates
     requires_plot_above = _caption_requires_plot_above(title)
-    if requires_plot_above or (
+    evidenced_direction = ("above" if _caption_requires_plot_above(title) else compact_formula_caption_direction(candidates, title)) if compact_formula_chart_kind(title.title) is not None else (None if semantic_candidates else (
+        breakdown_symbol_caption_direction(candidates, title) or caption_axis_direction(page, title, kind, _token_norm)))
+    if kind not in {"gate_charge", "breakdown_voltage"} and evidenced_direction is None and not requires_plot_above and caption_leads_nearer_grid(candidates, ty0, ty1):
+        evidenced_direction = "below"
+    if (
+        kind == "breakdown_voltage"
+        and not semantic_candidates
+        and evidenced_direction is None
+        and len(candidates) > 1
+    ):
+        # A breakdown caption between two same-column grids is ambiguous
+        # without its own temperature/breakdown axis evidence.  Nearest-grid
+        # selection would silently bind a neighboring transfer/gate plot.
+        return None
+    if evidenced_direction is not None or requires_plot_above or (
         _caption_prefers_plot_above(title) and _has_gate_charge_axis_label_above_caption(page, title)
     ):
+        below = [item for item in candidates if item[2][1] >= ty1]
         above = [item for item in candidates if item[2][3] <= ty0]
-        if above:
+        if evidenced_direction == "below" and below:
+            candidates = below
+        elif evidenced_direction == "above" and above:
             candidates = above
+        elif evidenced_direction is not None:
+            return None
+        elif above:
+            candidates = above
+        elif requires_plot_above and len(below) == 1 and below[0][1] <= 36.0:
+            candidates = below
         elif requires_plot_above:
             # A numbered body-diode or transfer caption describes the plot
             # above it.  A plausible grid below is a neighboring chart, not a
@@ -920,7 +938,6 @@ def choose_caption_panel_bbox(
         min(page.height_pt, y1 + pad_y),
     )
 
-
 def _is_gate_charge_axis_label(text: str, *, ocr_tolerant: bool = False) -> bool:
     normalized = text.lower().replace("‑", "-").replace("–", "-").replace("_", " ")
     normalized = re.sub(r"\s+", " ", normalized)
@@ -934,10 +951,8 @@ def _is_gate_charge_axis_label(text: str, *, ocr_tolerant: bool = False) -> bool
     has_charge_unit = "charge" in normalized or "nc" in normalized
     return (has_qg or has_ocr_qg) and has_charge_unit
 
-
 def _token_norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower().replace("‑", "-").replace("–", "-"))
-
 
 def _is_qg_token_pair(line: list[Word], idx: int, *, ocr_tolerant: bool = False) -> bool:
     token = _token_norm(line[idx].text)
@@ -1041,13 +1056,10 @@ def choose_caption_axis_label_bbox_for_kind(
     page: PageText,
     title: DiagramTitle,
 ) -> tuple[float, float, float, float] | None:
-    """Preserve legacy caption fallback except for body-diode captions.
-
-    The fallback searches specifically for a Qg axis and can therefore bind a
-    body-diode caption to a neighboring gate-charge chart.  Other chart kinds
-    retain the prior behavior byte-for-byte.
+    """Use the Qg-axis fallback only for a gate-charge caption.
+    Other families would replace their local grid with a neighboring Qg plot.
     """
-    if classify_chart(title.title, "") == "body_diode":
+    if classify_chart(title.title, "") != "gate_charge":
         return None
     return choose_caption_axis_label_bbox(page, title)
 
@@ -1106,16 +1118,28 @@ def choose_axis_label_synthetic_bbox(
     if y1 - y0 < 105.0 or x1 - x0 < 130.0:
         return None
     return (x0, y0, x1, y1)
-
-
 def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[float, float, float, float] | None:
     """Fallback from a gate-charge caption/header when plot rules are absent."""
+    evidenced_bbox = caption_leading_plot_bbox(
+        page, title, classify_chart(title.title, ""), _token_norm
+    )
+    if evidenced_bbox is not None:
+        return evidenced_bbox
     tx0, ty0, tx1, ty1 = title.bbox_pt
     tcx = 0.5 * (tx0 + tx1)
     title_width = tx1 - tx0
-    half_width = min(max(170.0, title_width * 0.80), page.width_pt * 0.40)
+    half_width = min(max(90.0, title_width * 0.80), page.width_pt * 0.22) if compact_formula_chart_kind(title.title) is not None else min(max(170.0, title_width * 0.80), page.width_pt * 0.40)
     x0 = max(0.0, tcx - half_width)
     x1 = min(page.width_pt, tcx + half_width)
+    if classify_chart(title.title, "") == "breakdown_voltage":
+        options = (
+            (x0, max(0.0, ty0 - 215.0), x1, max(0.0, ty0 - 4.0)),
+            (x0, min(page.height_pt, ty1 + 4.0), x1, min(page.height_pt, ty1 + 239.0)),
+        )
+        for option in options:
+            if bbox_evidences_breakdown(page.words, option, _token_norm):
+                return option
+        return None
     if _caption_requires_plot_above(title) or (
         _caption_prefers_plot_above(title) and ty0 > page.height_pt * 0.40
     ):
@@ -1130,131 +1154,14 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
     if y1 - y0 < 105.0:
         return None
     return (x0, y0, x1, y1)
-
-
 _AXIS_NUM_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
-
-
-def _page_image_rects(pdf: Path, page_num: int) -> list[tuple[float, float, float, float]]:
-    """Figure-sized embedded-image rects on a page, in pt.
-
-    Some vendors (Toshiba) render each chart -- gridlines, traces AND tick
-    labels -- as one embedded raster image with no text objects. The image
-    rect is then the authoritative panel bbox: exact, and label-complete.
-    """
-    try:
-        with pymupdf.open(pdf) as doc:
-            infos = doc[page_num - 1].get_image_info()
-    except Exception:
-        return []
-    rects: list[tuple[float, float, float, float]] = []
-    for info in infos:
-        x0, y0, x1, y1 = (float(v) for v in info.get("bbox", (0.0, 0.0, 0.0, 0.0)))
-        if x1 - x0 >= 90.0 and y1 - y0 >= 90.0:
-            rects.append((x0, y0, x1, y1))
-    return rects
-
-
-def _caption_image_panel_bbox(
-    image_rects: list[tuple[float, float, float, float]],
-    title: DiagramTitle,
-    bbox: tuple[float, float, float, float] | None,
-) -> tuple[float, float, float, float] | None:
-    """Bind a caption to the embedded image directly above it, if any."""
-    tx0, ty0, tx1, _ = title.bbox_pt
-    tcx = (tx0 + tx1) / 2
-    best: tuple[float, tuple[float, float, float, float]] | None = None
-    for rect in image_rects:
-        x0, y0, x1, y1 = rect
-        if not (x0 <= tcx <= x1):
-            continue
-        gap = ty0 - y1  # caption sits just below the image bottom
-        if not (-10.0 <= gap <= 70.0):
-            continue
-        if bbox is not None:
-            # A rule-derived bbox must actually be (mostly) inside this image,
-            # else the image belongs to a different figure.
-            ix0, iy0 = max(bbox[0], x0), max(bbox[1], y0)
-            ix1, iy1 = min(bbox[2], x1), min(bbox[3], y1)
-            inter = max(0.0, ix1 - ix0) * max(0.0, iy1 - iy0)
-            area = max(1e-9, (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]))
-            if inter / area < 0.6:
-                continue
-        if best is None or gap < best[0]:
-            best = (gap, rect)
-    return best[1] if best else None
-
-
-def _expand_caption_bbox_to_axis_labels(
-    page: PageText, bbox: tuple[float, float, float, float]
-) -> tuple[float, float, float, float]:
-    """Grow a caption-bound grid bbox to take in its numeric axis-label gutters.
-
-    Grid regions inferred from h-rules stop at the plot frame (or earlier, when
-    an in-plot legend box interrupts the rule chunking), so the tick labels
-    left of and below the plot fall outside the crop and position-based axis
-    calibration finds nothing. Extend to nearby numeric words only, bounded so
-    a neighboring chart is never swallowed.
-    """
-    x0, y0, x1, y1 = bbox
-    cy_lo, cy_hi = y0 - 4.0, y1 + 4.0
-
-    def _numeric(w: Word) -> bool:
-        return bool(_AXIS_NUM_RE.fullmatch(w.text.strip()))
-
-    # Only expand a side whose labels are actually MISSING from the bbox --
-    # panels that already include their label gutters (Infineon caption pages)
-    # must keep byte-identical crops, or pinned CropTransform strata shift.
-    # "Has labels" requires a tick-like RUN (>=2 numerals in the gutter band):
-    # a single stray condition numeral (a "25" split off "Tj = 25 degC") must
-    # not suppress the expansion, or the crop stays clipped and calibration
-    # starves.
-    has_left_labels = 2 <= sum(
-        1
-        for w in page.words
-        if w.x0 >= x0 and w.x1 <= x1
-        and _numeric(w) and w.x0 <= x0 + 40.0 and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
+def choose_caption_vector_frame_bbox(page: PageText, title: DiagramTitle, frames):
+    return _caption_vector_frame_bbox(
+        page, title, frames, numbered_caption=_caption_prefers_plot_above(title)
     )
-    has_bottom_labels = 2 <= sum(
-        1
-        for w in page.words
-        if w.y0 >= y0 and w.y1 <= y1
-        and _numeric(w) and w.y1 >= y1 - 30.0 and x0 <= (w.x0 + w.x1) / 2 <= x1
-    )
-    new_x0, new_y1 = x0, y1
-    if not has_left_labels:
-        left = [
-            w for w in page.words
-            if w.x1 <= x0 and x0 - w.x1 < 46.0
-            and cy_lo <= (w.y0 + w.y1) / 2 <= cy_hi
-            and _numeric(w)
-        ]
-        if left:
-            new_x0 = min(w.x0 for w in left) - 2.0
-    if not has_bottom_labels:
-        bottom = [
-            w for w in page.words
-            if w.y0 >= y1 - 2.0 and w.y0 - y1 < 40.0
-            and x0 - 4.0 <= (w.x0 + w.x1) / 2 <= x1 + 4.0
-            and _numeric(w)
-        ]
-        if bottom:
-            new_y1 = max(w.y1 for w in bottom) + 2.0
-    return (max(0.0, new_x0), y0, x1, min(page.height_pt, new_y1))
-
-
-_SPEC_TABLE_MARKERS = {
-    "min", "typ", "max", "typical", "unit", "units", "parameter", "symbol",
-    "conditions", "value",
-}
-# Parameter families as they appear in spec-table row names. A chart panel's
-# axis text concerns one or two of these; a spec table lists most of them.
-_SPEC_TABLE_FAMILIES = {
-    "leakage", "threshold", "capacitance", "charge", "resistance",
-    "transconductance", "recovery",
-}
-
-
+def _expand_caption_bbox_to_axis_labels(page: PageText, bbox, kind="capacitances"):
+    expanded = _expand_caption_bbox(page, bbox, _AXIS_NUM_RE, kind)
+    return expand_breakdown_bbox_to_axis_label(page.words, expanded, _token_norm) if kind == "breakdown_voltage" else expanded
 def _bbox_looks_like_spec_table(
     page: PageText,
     bbox: tuple[float, float, float, float],
@@ -1274,32 +1181,7 @@ def _bbox_looks_like_spec_table(
     on a legitimate chart and must not count toward the table signal, else a
     real chart with a few condition callouts (RDS(on), Vth, ...) trips it.
     """
-    tokens = {_token_norm(w.text) for w in words_in_bbox(page.words, bbox)}
-    if len(_SPEC_TABLE_MARKERS & tokens) >= 3:
-        return True
-    return len((_SPEC_TABLE_FAMILIES - own_families) & tokens) >= 4
-
-
-def words_in_bbox(words: list[Word], bbox: tuple[float, float, float, float]) -> list[Word]:
-    x0, y0, x1, y1 = bbox
-    selected = []
-    for word in words:
-        cx = (word.x0 + word.x1) / 2
-        cy = (word.y0 + word.y1) / 2
-        if x0 <= cx <= x1 and y0 <= cy <= y1:
-            selected.append(word)
-    return selected
-
-
-def _bbox_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
-    ax0, ay0, ax1, ay1 = a
-    bx0, by0, bx1, by1 = b
-    inter = _overlap_1d(ax0, ax1, bx0, bx1) * _overlap_1d(ay0, ay1, by0, by1)
-    if inter <= 0:
-        return 0.0
-    area_a = max(0.0, ax1 - ax0) * max(0.0, ay1 - ay0)
-    area_b = max(0.0, bx1 - bx0) * max(0.0, by1 - by0)
-    return inter / max(1e-9, area_a + area_b - inter)
+    return bbox_looks_like_spec_table(page.words, bbox, own_families, _token_norm)
 
 
 def _append_panel(
@@ -1322,11 +1204,11 @@ def _append_panel(
             or w.text in {"Ciss", "Coss", "Crss"}
         }
     )
-    kind_from_title = classify_chart(title.title, "")
-    if title.number < 900 and kind_from_title != "chart":
+    kind_from_title = title_owns_chart_kind(title.title, title.number)
+    if kind_from_title is not None:
         # An explicit numbered caption/diagram title is stronger evidence than
         # the panel text, which can bleed in from an adjacent chart when a
-        # caption binds across columns (TI two-column figure pages).
+        # caption binds across columns.
         kind = kind_from_title
     else:
         kind = classify_chart(title.title, text)
@@ -1348,53 +1230,6 @@ def _append_panel(
             mentions=mentions,
             text_source=page.text_source,
         )
-    )
-
-
-def classify_chart(title: str, text: str) -> str:
-    normalized_title = title.lower().replace("‑", "-").replace("–", "-")
-    normalized_title = re.sub(r"[-_/]+", " ", normalized_title)
-    normalized_title = re.sub(r"\s+", " ", normalized_title)
-    if _is_body_diode_chart_text(normalized_title):
-        # A strong caption must not be reclassified by text leaking from an
-        # adjacent panel into a conservative synthetic crop.
-        return "body_diode"
-
-    haystack = f"{title} {text}".lower().replace("‑", "-").replace("–", "-")
-    haystack = re.sub(r"[-_/]+", " ", haystack)
-    haystack = re.sub(r"\s+", " ", haystack)
-    if any(word in haystack for word in CAPACITANCE_WORDS):
-        return "capacitances"
-    if "gate charge" in haystack:
-        return "gate_charge"
-    if "dynamic input output" in haystack:
-        return "gate_charge"
-    if "safe operating" in haystack:
-        return "safe_operating_area"
-    if "thermal impedance" in haystack or "zth" in haystack:
-        return "thermal_impedance"
-    if _is_body_diode_chart_text(haystack):
-        return "body_diode"
-    if "breakdown voltage" in haystack:
-        return "breakdown_voltage"
-    if "transfer characteristics" in haystack:
-        return "transfer"
-    if "output characteristics" in haystack:
-        return "output"
-    if "on resistance" in haystack or "rds" in haystack:
-        return "rds_on"
-    return "chart"
-
-
-def _is_body_diode_chart_text(text: str) -> bool:
-    if "recovery" in text or "test circuit" in text:
-        return False
-    has_diode_context = "diode" in text or "source drain" in text or "drain source" in text
-    return has_diode_context and (
-        "forward characteristics" in text
-        or "diode forward" in text
-        or "forward voltage" in text
-        or "body diode characteristics" in text
     )
 
 
@@ -1451,8 +1286,6 @@ def crop_panel(
 
 def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
     return process_page_texts(pdf, out_dir, dpi, run_text_bbox(pdf))
-
-
 def process_page_texts(
     pdf: Path,
     out_dir: Path,
@@ -1460,16 +1293,40 @@ def process_page_texts(
     pages: list[PageText],
 ) -> list[ChartPanel]:
     """Run normal panel discovery against an injected page-text source."""
-
     panels: list[ChartPanel] = []
     with tempfile.TemporaryDirectory(prefix="chart-pages-") as tmp:
         tmpdir = Path(tmp)
         for page in pages:
-            titles = find_diagram_titles(page)
+            revision_bbox = revision_history_region(page.words, _token_norm)
+            titles = extend_wrapped_titles(page, find_diagram_titles(page))
             caption_titles = find_caption_titles(page)
             axis_label_spans = gate_charge_axis_label_spans(page)
+            page_vector_frames: list[tuple[float, float, float, float]] | None = None
+            recovered_numbers: set[int] = set()
+            if revision_bbox is not None:
+                rx0, ry0, rx1, ry1 = revision_bbox
+
+                def outside_revision(title: DiagramTitle) -> bool:
+                    tx0, ty0, tx1, ty1 = title.bbox_pt
+                    tcx, tcy = 0.5 * (tx0 + tx1), 0.5 * (ty0 + ty1)
+                    return not (rx0 <= tcx <= rx1 and ry0 <= tcy <= ry1)
+                titles = [title for title in titles if outside_revision(title)]
+                caption_titles = [
+                    title for title in caption_titles if outside_revision(title)
+                ]
+                axis_label_spans = [
+                    bbox for bbox in axis_label_spans
+                    if not (rx0 <= 0.5 * (bbox[0] + bbox[2]) <= rx1 and ry0 <= 0.5 * (bbox[1] + bbox[3]) <= ry1)
+                ]
             if not titles and not caption_titles and not axis_label_spans:
-                continue
+                page_vector_frames = _page_vector_plot_frames(pdf, page.page_num, page)
+                recovered = frame_bound_short_caption_segments(
+                    page, group_words_into_lines(page.words), page_vector_frames,
+                    classify_chart, is_spec_table_header_title,
+                )
+                caption_titles = [DiagramTitle(901 + index, text, bbox, text) for index, (text, bbox) in enumerate(recovered)]
+                recovered_numbers = {title.number for title in caption_titles}
+                if not caption_titles: continue
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
             with Image.open(page_png) as rendered:
                 width_px, height_px = rendered.size
@@ -1477,17 +1334,29 @@ def process_page_texts(
             v_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in v_rules_px]
             h_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in h_rules_px]
             grid_regions = infer_grid_regions_from_h_rules(page, h_rules_pt)
-
             lines = group_words_into_lines(page.words)
             for title in titles:
                 bbox = choose_panel_bbox(page, title, titles, v_rules_pt, h_rules_pt)
                 if bbox is None:
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
-
             page_image_rects: list[tuple[float, float, float, float]] | None = None
             for title in caption_titles:
-                bbox = choose_caption_panel_bbox(page, title, grid_regions)
+                if is_spec_table_header_title(title.title) or is_marketing_feature_title(title.title): continue
+                kind = classify_chart(title.title, "")
+                direction = caption_axis_direction(page, title, kind, _token_norm)
+                if kind == "rds_on" and direction is None and rdson_formula_direction(title.title) is None and title.number not in recovered_numbers: continue
+                use_breakdown_frame = kind == "breakdown_voltage" and title.number < 900
+                if use_breakdown_frame and page_vector_frames is None: page_vector_frames = _page_vector_plot_frames(pdf, page.page_num, page)
+                bbox = _numbered_breakdown_vector_frame_bbox(page, title, page_vector_frames or []) if use_breakdown_frame else None
+                if bbox is None and title.number not in recovered_numbers: bbox = choose_caption_panel_bbox(page, title, grid_regions)
+                if bbox is None and title.number >= 900:
+                    if page_vector_frames is None:
+                        page_vector_frames = _page_vector_plot_frames(pdf, page.page_num, page)
+                    bbox = _caption_vector_frame_bbox(
+                        page, title, page_vector_frames, numbered_caption=False,
+                        tight=title.number in recovered_numbers,
+                    )
                 axis_label_bbox = choose_caption_axis_label_bbox_for_kind(page, title)
                 if bbox is None:
                     bbox = axis_label_bbox
@@ -1499,38 +1368,55 @@ def process_page_texts(
                     and _bbox_iou(bbox, axis_label_bbox) < 0.25
                 ):
                     bbox = axis_label_bbox
-                if bbox is None:
-                    continue
-                if classify_chart(title.title, "") == "capacitances":
+                if bbox is None: continue
+                bbox = expand_numbered_dual_y_gate_bbox(page, title, bbox)
+                if kind == "capacitances":
                     # Scoped to capacitance captions so gate-charge crops (and
                     # the Vpl parity corpus built on them) stay byte-identical.
                     if page_image_rects is None:
                         page_image_rects = _page_image_rects(pdf, page.page_num)
                     image_bbox = _caption_image_panel_bbox(page_image_rects, title, bbox)
+                    if image_bbox is None and title.number < 900:
+                        image_bbox = _caption_image_panel_bbox(page_image_rects, title, None)
                     if image_bbox is not None:
-                        # Whole-figure raster (Toshiba): the image rect is the
-                        # exact, label-complete panel; rule-derived bboxes clip
-                        # the tick labels off.
+                        # A whole-figure raster is the exact label-complete panel.
                         bbox = image_bbox
-                    else:
-                        bbox = _expand_caption_bbox_to_axis_labels(page, bbox)
+                if kind in {"capacitances", "breakdown_voltage", "body_diode", "rds_on", "transfer"}:
+                    bbox = _expand_caption_bbox_to_axis_labels(page, bbox, kind)
+                preserve_left = caption_leading_plot_bbox(page, title, kind, _token_norm) == bbox or (kind in {"transfer", "body_diode"} and direction is not None)
+                bbox = _bound_caption_bbox_to_own_column(
+                    page, title, bbox,
+                    preserve_evidenced_left_gutter=preserve_left,
+                )
+                bbox = bound_caption_bbox_to_caption_row(
+                    page, title, bbox, caption_titles,
+                    0.5 * (bbox[1] + bbox[3]) < 0.5 * (title.bbox_pt[1] + title.bbox_pt[3]),
+                ) if bbox else None
+                if bbox is None:
+                    continue
+                if _bbox_looks_like_spec_table(page, bbox): continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox)
-
             for axis_idx, axis_label_bbox in enumerate(axis_label_spans, start=1):
                 bbox = choose_axis_label_grid_bbox(page, axis_label_bbox, grid_regions)
                 if bbox is None:
-                    bbox = choose_axis_label_synthetic_bbox(page, axis_label_bbox)
+                    candidate = choose_axis_label_synthetic_bbox(page, axis_label_bbox)
+                    if candidate is not None and synthetic_bbox_has_plot_evidence(
+                        page, pdf, page.page_num, candidate, grids=grid_regions,
+                        horizontal_rules=h_rules_pt, vertical_rules=v_rules_pt,
+                    ):
+                        bbox = candidate
                 if bbox is None:
                     continue
-                if _bbox_looks_like_spec_table(page, bbox, own_families=frozenset({"charge"})):
-                    # A ruled spec table both satisfies the >=4-h-rule grid test
-                    # and contains "QG ... Gate charge ... (nC)" rows, so the
-                    # axis-label heuristic would synthesize a phantom chart
-                    # panel over it (seen on TI CSD19531KCS pages 1 and 3).
+                if _bbox_looks_like_spec_table(page, bbox):
                     continue
-                if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
+                if any(
+                    panel.page == page.page_num and (
+                        _bbox_iou(panel.bbox_pt, bbox) > 0.45
+                        or _bbox_overlap_fraction_of_smaller(panel.bbox_pt, bbox) >= 0.60
+                    ) for panel in panels
+                ):
                     continue
                 title = DiagramTitle(
                     number=950 + axis_idx,
@@ -1583,13 +1469,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dpi", type=int, default=180, help="Render DPI for panel crops/detection")
     return parser.parse_args()
 
-
 def main() -> None:
     args = parse_args()
     pdfs = args.pdfs or default_sample_pdfs()
     if not pdfs:
         raise SystemExit("no PDFs provided")
-
     all_panels: list[ChartPanel] = []
     errors: list[dict[str, str]] = []
     for pdf in pdfs:
@@ -1611,7 +1495,5 @@ def main() -> None:
     print(f"wrote {args.out / 'charts.json'}")
     if errors:
         print(f"wrote {args.out / 'scan_errors.json'} with {len(errors)} errors")
-
-
 if __name__ == "__main__":
     main()

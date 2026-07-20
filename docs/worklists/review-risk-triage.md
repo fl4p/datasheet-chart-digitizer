@@ -1,5 +1,8 @@
 # Review-queue de-prioritization filter — worklist
 
+**Status:** optional future display-queue work. It is not part of the current extractor closure,
+does not authorize auto-acceptance, and must not block a frozen fix packet.
+
 **Goal.** Stop putting **very-low-risk charts that are near-duplicates of ones a human already
 verified** in front of the reviewer. This is a **display/queue filter only**: a hidden chart is NOT
 verified, NOT consumable, never gets `human_verified` — it is simply de-prioritized to a lower-
@@ -45,7 +48,12 @@ Anything else → shown, risk-sorted. Hiding requires all positive signals; abse
   pinned dep versions [pymupdf, opencv, tesseract, pillow, poppler] + render DPI + OCR model id)`.
   A change to *any* of these — not just the dsdig code — re-keys the class (§5). This is the direct
   fix for the fact that raster extraction is dep/DPI/OCR-sensitive **without** a code change (the
-  `dsdig-gate-collateral-env-drift` finding).
+  `dsdig-gate-collateral-env-drift` finding). `dsdig code version` means the content hashes of the
+  extractor and every loaded local dependency, not a branch name, package version, or commit that
+  omits dirty working-tree bytes; the dependency-lock content hash is part of the closure too.
+- **Exact item identity:** key records by source path + chart type + page + diagram/panel identity.
+  A manufacturer/part key is insufficient because one part can contain several independently
+  reviewed charts and even several candidate panels of the same chart type.
 
 ## 3. Exemplar set = human-verified GREENs only
 
@@ -72,7 +80,9 @@ envelope test).
   single lottery.
 - **Stratified sample-back with a per-class floor:** ≥ 1 hidden chart sampled into the queue **per
   fingerprint-class per round** (not a flat global 5% that starves small classes), plus a global
-  rate on top. Marginal classes (just over k) get eyeball coverage.
+  rate on top. Marginal classes (just over k) get eyeball coverage. Persist the PRNG algorithm,
+  seed, exact eligible set, sampled-back set, and still-hidden set for each round so an audit can
+  reproduce what the reviewer did and did not see.
 - **Toolchain-closure re-surface (load-bearing):** on any change to the closure hash (§2) touching a
   class — dsdig code, a dep bump, a DPI change, an OCR swap — **un-hide that class** until the
   reviewer re-verifies a few exemplars at the new closure.
@@ -92,7 +102,8 @@ envelope test).
 
 The queue is a **view** that orders/omits by priority; hidden charts remain `pending/unverified` and
 are spot-openable. Per batch it reports `deprioritized: N (sampled back: M; classes: C)` so the
-reviewer sees the scope. Nothing is deleted, marked verified, or moved to a "done" state.
+reviewer sees the scope. The report also records the exact item identities and sampling provenance
+from §5. Nothing is deleted, marked verified, or moved to a "done" state.
 
 ## 8. Build / acceptance
 

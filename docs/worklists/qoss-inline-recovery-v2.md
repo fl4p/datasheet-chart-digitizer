@@ -1,7 +1,8 @@
 # Qoss inline min/typ/max recovery v2 worklist
 
-**Status:** design/audit only. Qoss reference-parser v1 is immutable while its second agent lane
-and Fab gate remain pending. Do not implement, commit, push, or set `human_verified` yet.
+**Status:** design/audit only. Qoss reference-parser v1 is now independently
+GREEN in both agent lanes but remains unlanded/Fab-gated; treat its frozen packet
+as immutable. Do not implement, commit, push, or set `human_verified` yet.
 
 ## 1. Bounded coverage gap
 

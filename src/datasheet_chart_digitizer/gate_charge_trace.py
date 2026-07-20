@@ -133,7 +133,12 @@ def _candidate_masks(mask: np.ndarray) -> list[np.ndarray]:
     return out
 
 
-def _trace_gate_curve(crop: Image.Image, plot_box: tuple[int, int, int, int]) -> list[tuple[int, int]]:
+def _trace_gate_curve(
+    crop: Image.Image,
+    plot_box: tuple[int, int, int, int],
+    *,
+    gray_threshold: int = 115,
+) -> list[tuple[int, int]]:
     rgb = np.asarray(crop.convert("RGB"))
     x0, y0, x1, y1 = plot_box
     roi = rgb[y0 : y1 + 1, x0 : x1 + 1]
@@ -142,7 +147,7 @@ def _trace_gate_curve(crop: Image.Image, plot_box: tuple[int, int, int, int]) ->
 
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
     hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
-    dark = gray < 115
+    dark = gray < gray_threshold
     colored = (hsv[:, :, 1] > 45) & (hsv[:, :, 2] < 245)
     mask = ((dark | colored).astype(np.uint8)) * 255
 

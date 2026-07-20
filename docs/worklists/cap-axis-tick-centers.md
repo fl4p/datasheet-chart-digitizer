@@ -1,7 +1,19 @@
 # Capacitance actual-artifact tick-centering worklist
 
-**Status:** isolated implementation and full-corpus acceptance in progress. Do
-not alter the frozen dependency packets, commit, push, or set `human_verified`.
+**Status:** isolated implementation reviewed, but final freeze is blocked on
+reproducibility and the prerequisite point contract.  Two solo full-corpus runs
+both produced 455 selected results / 345 byte-identical errors, zero raw-trace-shape
+changes, and 1,840 passing tick assertions, but their selected manifests were not
+byte-identical.  Four rows moved: served `2N7002-13P` consumed a different x-endpoint
+tick (while status/physical availability and point artifact stayed stable), and three
+already-refused rows changed OCR failure provenance.  Treat this as a reproducibility
+failure until the OCR evidence/selector is deterministic; do not freeze whichever run
+looks preferable.  Before final freeze, rebase the candidate on
+`cap-fail-closed-contract.md`: its current
+baseline has 102 pre-existing unverified-point leaks, and calibration changes
+incidentally seal only 38.  Do not hide that separate contract defect inside
+this data-moving slice.  Do not alter frozen dependency packets, commit, push,
+or set `human_verified`.
 
 ## Defect
 
@@ -16,6 +28,13 @@ A second, distinct defect class exists: on HSCTW40N120G2VAG the label and fit
 agree within 0.04 px at the 200 V tick, but the tick/grid is around x=868–871
 while `plot.x1=840`. Its roughly 31 px overflow is plot-box/tick-run ownership,
 not least-squares residual. These classes must not share a cosmetic fix.
+
+The first full run also exposes safe fail-closed outcomes that are part of this
+patch's causal review, not automatic regressions: 35 formerly served charts become
+unverified (32 endpoint-undercoverage, one foreign/out-of-box tick, one conflicting
+duplicate semantic label, and one wrong-panel/missing-X-label case).  Every one must
+receive source review and emit blank calibrated point cells.  A refusal that merely
+changes status while leaving a physical curve ingestible is RED.
 
 ## Required direction
 
@@ -68,6 +87,18 @@ not least-squares residual. These classes must not share a cosmetic fix.
 - Full frozen 800-chart same-environment A/B. This is data-moving: compare every
   served C(V) point/value, calibration, tick-evidence, overlay, and physical
   scalar. Prove each movement reduces residual to printed grid truth.
+- Freeze and review the complete downgrade set.  Current pre-freeze counts are 35
+  `ok -> unverified`, 73 trusted-axis downgrades, 257 selected calibrations moving,
+  zero raw-pixel trace/shape changes, and 184 trusted rows carrying 1,840 passing
+  observed/mapping/render/ownership assertions.  Treat these as expected only after
+  byte-identical repetition and per-item source review.
+- Require two sequential solo authoritative runs to match byte-for-byte, including
+  accepted tick evidence and refusal provenance.  The current v8/v9 mismatch on
+  `2N7002-13P`, `IXTA18P10T`, `NTMFS5C426NLT1G`, and
+  `SUD50N03-06AP-E3-HXY` is a blocker, not an allowed OCR exception.
 - Re-run the mandatory microscopic intersection gate on PSMN2R4-30YLD,
   PSMNR70-30YLH, PSMN5R3-25MLD, and PSMN6R1-25MLD. Any moved human-reviewed
   crossing artifact requires Fab re-verification; agent GREEN is insufficient.
+- Keep the patch verdict separate from item verdicts.  The tick-center patch may
+  resolve the exact-center blocker on FDP039/FDPF190/FDPF390 while those items remain
+  UNVERIFIED for near-axis-top or other independent blockers.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -15,10 +16,12 @@ from PIL import Image
 from .find_charts import (
     ChartPanel,
     PageText,
+    Word,
     process_page_texts,
     process_pdf,
     run_tesseract_page_text,
 )
+from .region_ocr import ocr_words_in_rect
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -47,6 +50,11 @@ TERMINAL_FLAT_MAX_Y_RANGE_PX = 2
 TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION = 0.03
 TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION = 0.03
 MAX_CURVE_LEFT_GAP_FRACTION = 0.05
+PANEL_CELL_ALIGNMENT_TOLERANCE_PT = 2.5
+PANEL_CELL_CONTAINMENT_TOLERANCE_PT = 3.0
+PANEL_CELL_MAX_AREA_MULTIPLIER = 4.0
+DUAL_Y_AXIS_OCR_DPI = 800.0
+DUAL_Y_LIGHT_TRACE_THRESHOLD = 190
 
 
 @dataclass(frozen=True)
@@ -95,6 +103,7 @@ def digitize_gate_charge(
     *,
     dpi: int = 220,
     finder_dpi: int = 120,
+    _errors: list[dict[str, object]] | None = None,
 ) -> list[GateChargeResult]:
     """Find and digitize every plausible gate-charge chart in ``pdf_path``."""
 
@@ -120,31 +129,79 @@ def digitize_gate_charge(
     ocr_attempted = bool(page_text)
     with pymupdf.open(pdf) as doc:
         for panel in panels:
-            result = _digitize_panel(pdf, doc, panel, dpi, page_text.get(panel.page))
-            if result is not None and result.status in {"axis_assumed", "axis_grid_inferred"}:
-                # Raster charts often retain accurate numeric labels that the
-                # native PDF text layer omits.  Retry a provisional axis once
-                # with bounded OCR before deciding that no scalar is safe.
-                if not retry_ocr and not ocr_attempted:
-                    retry_ocr.update(
-                        {page.page_num: page for page in run_tesseract_page_text(pdf, dpi=200)}
-                    )
-                    ocr_attempted = True
-                ocr_text = retry_ocr.get(panel.page)
-                if ocr_text is not None:
-                    ocr_result = _digitize_panel(pdf, doc, panel, dpi, ocr_text)
-                    if ocr_result is not None and (
-                        ocr_result.status == "rejected_non_gate"
-                        or (
-                            ocr_result.y_tick_count >= 3
-                            and ocr_result.vpl is not None
-                            and 1.0 <= ocr_result.vpl <= 12.0
+            try:
+                result = _digitize_panel(pdf, doc, panel, dpi, page_text.get(panel.page))
+                if result is not None and _needs_dual_y_axis_ocr(panel, result):
+                    bounded_ocr = _dual_y_axis_ocr_page(pdf, doc, panel, result)
+                    if bounded_ocr is not None:
+                        ocr_result = _digitize_panel(pdf, doc, panel, dpi, bounded_ocr)
+                        if ocr_result is not None and (
+                            ocr_result.status == "rejected_non_gate"
+                            or (
+                                ocr_result.y_tick_count >= 3
+                                and _vpl_is_plausible(ocr_result.vpl)
+                                and ocr_result.x_tick_unit is not None
+                            )
+                        ):
+                            result = replace(
+                                ocr_result,
+                                diagnostics=tuple(
+                                    dict.fromkeys(
+                                        (*ocr_result.diagnostics, "axis_ocr_bounded_dual_y")
+                                    )
+                                ),
+                            )
+                if result is not None and result.status in {"axis_assumed", "axis_grid_inferred"}:
+                    # Raster charts often retain accurate numeric labels that the
+                    # native PDF text layer omits.  Retry a provisional axis once
+                    # with bounded OCR before deciding that no scalar is safe.
+                    if not retry_ocr and not ocr_attempted:
+                        retry_ocr.update(
+                            {page.page_num: page for page in run_tesseract_page_text(pdf, dpi=200)}
                         )
-                    ):
-                        result = ocr_result
-            if result is not None:
-                results.append(result)
+                        ocr_attempted = True
+                    ocr_text = retry_ocr.get(panel.page)
+                    if ocr_text is not None:
+                        ocr_result = _digitize_panel(pdf, doc, panel, dpi, ocr_text)
+                        if ocr_result is not None and (
+                            ocr_result.status == "rejected_non_gate"
+                            or (
+                                ocr_result.y_tick_count >= 3
+                                and ocr_result.vpl is not None
+                                and _vpl_is_plausible(ocr_result.vpl)
+                            )
+                        ):
+                            result = ocr_result
+                if result is not None:
+                    results.append(result)
+            except Exception as error:
+                if _errors is None:
+                    raise
+                _errors.append({
+                    "kind": "gate_charge",
+                    "page": panel.page,
+                    "diagram": panel.diagram,
+                    "error": str(error),
+                })
     return sorted(results, key=_result_sort_key)
+
+
+def digitize_gate_charge_fail_closed(
+    pdf_path: str | Path,
+    *,
+    dpi: int = 220,
+    finder_dpi: int = 120,
+) -> tuple[list[GateChargeResult], list[dict[str, object]]]:
+    """Digitize owned panels independently and retain explicit refusals."""
+
+    errors: list[dict[str, object]] = []
+    results = digitize_gate_charge(
+        pdf_path,
+        dpi=dpi,
+        finder_dpi=finder_dpi,
+        _errors=errors,
+    )
+    return results, errors
 
 
 def _discover_gate_panels(
@@ -217,10 +274,155 @@ def _x_ticks_with_zero(
     return [(0.0, zero_x), *ordered]
 
 
+def _y_ticks_with_zero(
+    ticks: list[tuple[float, float]], panel_rect: pymupdf.Rect
+) -> list[tuple[float, float]]:
+    """Extrapolate one omitted edge zero from a proven arithmetic Y run."""
+
+    ordered = sorted(ticks, key=lambda item: item[1])
+    if len(ordered) < 3 or abs(ordered[-1][0]) < 1e-9:
+        return ordered
+    values = np.asarray([value for value, _y in ordered], dtype=float)
+    ys = np.asarray([y for _value, y in ordered], dtype=float)
+    value_steps = np.diff(values)
+    y_steps = np.diff(ys)
+    if np.any(y_steps <= 0):
+        return ordered
+    value_step = float(np.median(value_steps))
+    y_step = float(np.median(y_steps))
+    if abs(value_step) < 1e-9 or abs(ordered[-1][0] + value_step) > 0.12 * abs(value_step):
+        return ordered
+    if np.max(np.abs(value_steps - value_step)) > 0.12 * abs(value_step):
+        return ordered
+    if np.max(np.abs(y_steps - y_step)) > 0.12 * y_step:
+        return ordered
+    zero_y = float(ys[-1] + y_step)
+    if not ys[-1] < zero_y <= panel_rect.y1 + 12.0:
+        return ordered
+    return [*ordered, (0.0, zero_y)]
+
+
 def _detach_transient_panel_artifacts(panel: ChartPanel) -> ChartPanel:
     """Clear finder paths whose temporary output directory will be deleted."""
 
     return replace(panel, crop_png="")
+
+
+def _vpl_is_plausible(vpl: float | None) -> bool:
+    return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
+
+
+def _depletion_vpl_is_source_plausible(
+    vpl: float | None,
+    vpl_y_px: float | None,
+    curve: list[tuple[int, int]],
+    plot_box: tuple[int, int, int, int],
+    y_ticks: list[tuple[float, float]],
+) -> bool:
+    """Recognize a low depletion-mode plateau without widening normal limits."""
+
+    if vpl is None or vpl_y_px is None or len(curve) < 20 or len(y_ticks) < 3:
+        return False
+    values = np.asarray([value for value, _pixel in y_ticks], dtype=float)
+    pixels = np.asarray([pixel for _value, pixel in y_ticks], dtype=float)
+    if not (np.min(values) < 0.0 < np.max(values)):
+        return False
+    slope, offset = np.polyfit(pixels, values, 1)
+    first_y = min(curve, key=lambda point: point[0])[1]
+    if float(slope * first_y + offset) >= -0.25:
+        return False
+    if not np.min(values) <= float(vpl) <= np.max(values):
+        return False
+
+    nearby_x = sorted(
+        x
+        for x, y in curve
+        if abs(float(y) - float(vpl_y_px)) <= 2.0
+    )
+    longest_span = 0
+    if nearby_x:
+        start = previous = nearby_x[0]
+        for x in nearby_x[1:]:
+            if x - previous > 3:
+                longest_span = max(longest_span, previous - start)
+                start = x
+            previous = x
+        longest_span = max(longest_span, previous - start)
+    plot_width = max(1, plot_box[2] - plot_box[0])
+    return longest_span >= 0.05 * plot_width
+
+
+def _needs_dual_y_axis_ocr(panel: ChartPanel, result: GateChargeResult) -> bool:
+    title = re.sub(r"\s+", " ", panel.title.lower()).strip()
+    diagnostics = getattr(result, "diagnostics", ())
+    axis_problem = result.status in {"axis_assumed", "axis_grid_inferred"} or any(
+        item in diagnostics
+        for item in ("axis_assumed_0_10", "axis_inferred_from_regular_grid", "gate_charge_unit_unresolved")
+    )
+    return panel.diagram == 810 and title == "dynamic input/output characteristics" and axis_problem
+
+
+def _dual_y_axis_ocr_page(
+    pdf: Path,
+    doc: pymupdf.Document,
+    panel: ChartPanel,
+    result: GateChargeResult,
+) -> PageText | None:
+    """OCR only the owned right-VGS and bottom-Qg label bands."""
+
+    page = doc[panel.page - 1]
+    crop = pymupdf.Rect(result.crop_box_pt)
+    scale = result.dpi / 72.0
+    px0, py0, px1, py1 = result.plot_box_px
+    plot = pymupdf.Rect(
+        crop.x0 + px0 / scale,
+        crop.y0 + py0 / scale,
+        crop.x0 + px1 / scale,
+        crop.y0 + py1 / scale,
+    )
+    owner = pymupdf.Rect(panel.bbox_pt)
+    right_band = pymupdf.Rect(
+        plot.x1 + 0.5,
+        max(page.rect.y0, owner.y0 - 8.0),
+        min(page.rect.x1, plot.x1 + 22.0),
+        min(page.rect.y1, owner.y1 + 6.0),
+    )
+    bottom_band = pymupdf.Rect(
+        max(page.rect.x0, plot.x0 - 18.0),
+        max(page.rect.y0, plot.y1 - 3.0),
+        min(page.rect.x1, plot.x1 + 18.0),
+        min(page.rect.y1, owner.y1),
+    )
+    try:
+        right_sparse = ocr_words_in_rect(
+            pdf, panel.page, right_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=11
+        )
+        right_block = ocr_words_in_rect(
+            pdf, panel.page, right_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
+        )
+        signed_sparse = sum(
+            bool(re.fullmatch(r"[-−–—]\d+(?:\.\d+)?", word[4]))
+            for word in right_sparse
+        )
+        raw_words = [
+            *(right_sparse if signed_sparse >= 3 else right_block),
+            *ocr_words_in_rect(
+                pdf, panel.page, bottom_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
+            ),
+        ]
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return None
+    words = [Word(text, x0, y0, x1, y1) for x0, y0, x1, y1, text in raw_words]
+    compact = re.sub(r"[^a-z0-9]", "", " ".join(word.text for word in words).lower())
+    if "nc" not in compact:
+        return None
+    return PageText(
+        panel.page,
+        float(page.rect.width),
+        float(page.rect.height),
+        words,
+        "tesseract_fallback",
+    )
 
 
 def find_vpl_result(
@@ -256,11 +458,13 @@ def _digitize_panel(
     page = doc[page_index]
     text_page = _PageWordOverride(page, page_text) if page_text is not None else page
     panel_rect = pymupdf.Rect(panel.bbox_pt)
+    finder_rect = pymupdf.Rect(panel.bbox_pt)
     expanded_image_rect = _containing_chart_image(page, panel_rect)
     if expanded_image_rect is not None:
         panel_rect = expanded_image_rect
     panel_axis = _best_y_axis_for_panel(text_page, panel_rect)
     panel_y_ticks, axis_x = panel_axis if panel_axis is not None else ([], None)
+    panel_y_ticks = _y_ticks_with_zero(panel_y_ticks, panel_rect)
     panel_x_ticks: list[tuple[float, float]] = []
     if panel_y_ticks:
         tick_ys = [y for _value, y in panel_y_ticks]
@@ -301,6 +505,17 @@ def _digitize_panel(
         panel_rect.x1 = min(page.rect.x1, tick_xs[-1] + right_pad)
 
     crop_rect = (panel_rect + (-46, -38, 42, 52)) & page.rect
+    crop_rect = _clip_context_at_foreign_text(
+        page,
+        panel_rect,
+        crop_rect,
+        panel.diagram,
+        caption_owner_rect=finder_rect,
+    )
+    panel_cell = _enclosing_panel_cell(page, panel_rect)
+    if panel_cell is not None:
+        panel_rect &= panel_cell
+        crop_rect &= panel_cell
     scale = dpi / 72.0
     pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), clip=crop_rect, alpha=False)
     crop = Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
@@ -372,6 +587,7 @@ def _digitize_panel(
     local_y_ticks = _local_y_ticks_for_plot(text_page, crop_rect, scale, plot_box)
     if len(local_y_ticks) < 2:
         local_y_ticks = panel_y_ticks
+    local_y_ticks = _y_ticks_with_zero(local_y_ticks, panel_rect)
     axis_grid_inferred = False
     if len(local_y_ticks) < 2 and raster_grid is not None:
         grid_ys = raster_grid[1]
@@ -392,14 +608,32 @@ def _digitize_panel(
             (0.0, crop_rect.y0 + y1 / scale),
         ]
 
-    raster_curve = _select_raster_curve(
-        [
-            _smooth_polyline(_trace_gate_curve(trace_crop, plot_box))
+    bounded_dual_y_trace = _uses_bounded_dual_y_trace(panel, page_text)
+    raster_candidates = [
+        _smooth_polyline(_trace_gate_curve(trace_crop, plot_box))
+        for trace_crop in trace_crops
+    ]
+    if bounded_dual_y_trace:
+        # Toshiba's outlined VGS stroke can be lighter than its VDS family.
+        # Add a panel-local light-ink candidate; the normal raster path and its
+        # threshold remain byte-identical for every other chart.
+        raster_candidates.extend(
+            _smooth_polyline(
+                _trace_gate_curve(
+                    trace_crop,
+                    plot_box,
+                    gray_threshold=DUAL_Y_LIGHT_TRACE_THRESHOLD,
+                )
+            )
             for trace_crop in trace_crops
-        ],
-        crop.height,
-        crop.width,
-    )
+        )
+        raster_curve = _select_dual_y_raster_curve(
+            raster_candidates, plot_box, crop.height, crop.width
+        )
+    else:
+        raster_curve = _select_raster_curve(
+            raster_candidates, crop.height, crop.width
+        )
     vector_curve = _smooth_polyline(
         _trace_vector_gate_curve(page, crop_rect, scale, plot_box), stride=1
     )
@@ -423,6 +657,13 @@ def _digitize_panel(
     curve, trace_source, _selection_score, trace_score = max(
         choices, key=lambda choice: choice[2]
     )
+    if (
+        trace_source == "raster"
+        and bounded_dual_y_trace
+    ):
+        curve = _repair_narrow_plateau_branch_excursion(curve, plot_box)
+        curve = _trim_dual_y_terminal_branch_switch(curve, plot_box)
+        curve = _trim_dual_y_terminal_grid_capture(curve, plot_box)
     curve = _trim_terminal_flat_grid_capture(curve, plot_box)
     vpl, vpl_y_px = _estimate_vpl_from_curve(
         curve, panel, crop_rect, scale, plot_box, local_y_ticks
@@ -431,28 +672,36 @@ def _digitize_panel(
         vpl = None
 
     diagnostics: list[str] = []
+    vpl_expected_for_source = _vpl_is_plausible(vpl) or _depletion_vpl_is_source_plausible(
+        vpl, vpl_y_px, curve, plot_box, local_y_ticks
+    )
     low_trace_confidence = trace_score <= -1e8
     missing_initial_ramp = _curve_missing_initial_ramp(curve, plot_box)
+    missing_axis_origin = bounded_dual_y_trace and not _curve_starts_at_axis_origin(
+        curve, plot_box
+    )
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
         diagnostics.append("low_trace_confidence")
     if missing_initial_ramp:
         diagnostics.append("curve_missing_initial_ramp")
+    if missing_axis_origin:
+        diagnostics.append("curve_missing_axis_origin")
     if axis_assumed:
         diagnostics.append("axis_assumed_0_10")
     elif axis_grid_inferred:
         diagnostics.append("axis_inferred_from_regular_grid")
     if vpl is None:
         diagnostics.append("vpl_unresolved")
-    elif not 1.0 <= vpl <= 12.0:
+    elif not vpl_expected_for_source:
         diagnostics.append("vpl_outside_expected_range")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)
     if vpl is None:
         score -= 30.0
-    elif not 1.0 <= vpl <= 12.0:
+    elif not _vpl_is_plausible(vpl):
         score -= 12.0
 
     if vpl is None or len(curve) < 20:
@@ -461,7 +710,7 @@ def _digitize_panel(
         status = "axis_assumed"
     elif axis_grid_inferred:
         status = "axis_grid_inferred"
-    elif low_trace_confidence or missing_initial_ramp:
+    elif low_trace_confidence or missing_initial_ramp or missing_axis_origin:
         status = "low_confidence"
     else:
         status = "ok"
@@ -502,7 +751,7 @@ def _digitize_panel(
         x_tick_unit=x_tick_unit,
     )
     if non_gate_reason is not None and mixed_gate_context and (
-        low_trace_confidence or vpl is None or not 1.0 <= vpl <= 12.0
+        low_trace_confidence or not _vpl_is_plausible(vpl)
     ):
         return replace(
             result,
@@ -620,6 +869,219 @@ def _trim_terminal_flat_grid_capture(
     if entry_rise < TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION * height:
         return curve
     return curve[: start + 1]
+
+
+def _repair_narrow_plateau_branch_excursion(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Recover one source-evidenced VGS plateau through VDS crossings.
+
+    Toshiba dual-Y raster plots draw falling VDS curves through the VGS Miller
+    plateau.  A local endpoint search can choose two points on the same wrong
+    VDS stroke and manufacture a second plateau level.  Instead, prove the
+    printed plateau from the flattest source-supported window, extend only
+    through nearby same-level samples, and repair isolated approach/exit
+    crossings by interpolation between source points on both sides.  This is
+    bounded to the pre-terminal half and never touches the separately guarded
+    terminal bundle.
+    """
+
+    ordered = sorted(curve)
+    if len(ordered) < 12:
+        return ordered
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    repair_limit_x = x0 + 0.55 * width
+    plateau_search_start = x0 + 0.08 * width
+    search_indexes = [
+        index
+        for index, (x, _y) in enumerate(ordered)
+        if plateau_search_start <= x <= repair_limit_x
+    ]
+    if len(search_indexes) < 7:
+        return ordered
+
+    x_steps = np.diff([ordered[index][0] for index in search_indexes])
+    stride = max(1.0, float(np.median(x_steps)))
+    window_points = max(7, int(round(0.07 * width / stride)))
+    if len(search_indexes) < window_points:
+        return ordered
+
+    best: tuple[tuple[float, float, float, int], int, int, int] | None = None
+    first = search_indexes[0]
+    last = search_indexes[-1]
+    for start in range(first, last - window_points + 2):
+        stop = start + window_points - 1
+        window = ordered[start : stop + 1]
+        if window[-1][0] > repair_limit_x:
+            break
+        values = np.array([y for _x, y in window], dtype=float)
+        median = float(np.median(values))
+        score = (
+            float(np.median(np.abs(np.diff(values)))),
+            float(np.median(np.abs(values - median))),
+            float(np.ptp(values)),
+            start,
+        )
+        candidate = (score, start, stop, int(round(median)))
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+    if best is None or best[0][0] > 1.5:
+        # A continuously rising source has no Miller plateau to repair.
+        return ordered
+
+    _score, window_start, window_stop, plateau_y = best
+    level_tolerance = 2
+    near_level = [
+        index
+        for index in range(first, last + 1)
+        if abs(ordered[index][1] - plateau_y) <= level_tolerance
+    ]
+    groups: list[list[int]] = []
+    for index in near_level:
+        # Up to four stride-sampled columns can be swallowed by one thick VDS
+        # crossing; keep the same-level source samples on both sides in one
+        # plateau group without extending the boundary to unrelated levels.
+        if groups and index - groups[-1][-1] <= 5:
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+    plateau_group = next(
+        (
+            group
+            for group in groups
+            if any(window_start <= index <= window_stop for index in group)
+        ),
+        None,
+    )
+    if plateau_group is None:
+        return ordered
+
+    plateau_start = plateau_group[0]
+    plateau_stop = plateau_group[-1]
+    repaired = list(ordered)
+    for index in range(plateau_start, plateau_stop + 1):
+        repaired[index] = (repaired[index][0], plateau_y)
+
+    minimum_excursion = max(4.0, 0.009 * height)
+    approach = range(2, max(2, plateau_start - 1))
+    exit_segment = range(
+        min(len(repaired) - 2, plateau_stop + 2), len(repaired) - 2
+    )
+    for _iteration in range(3):
+        changed = False
+        for index in (*approach, *exit_segment):
+            x, y = repaired[index]
+            if x > repair_limit_x:
+                continue
+            xa, ya = repaired[index - 2]
+            xb, yb = repaired[index + 2]
+            if xb <= xa:
+                continue
+            expected_y = ya + (x - xa) * (yb - ya) / (xb - xa)
+            if abs(y - expected_y) < minimum_excursion:
+                continue
+            repaired[index] = (x, int(round(expected_y)))
+            changed = True
+        if not changed:
+            break
+    return repaired
+
+
+def _uses_bounded_dual_y_trace(
+    panel: ChartPanel, page_text: PageText | None
+) -> bool:
+    """Limit the light-stroke trace path to the owned Toshiba OCR retry."""
+
+    return (
+        page_text is not None
+        and page_text.text_source == "tesseract_fallback"
+        and panel.diagram == 810
+        and re.sub(r"\s+", " ", panel.title.lower()).strip()
+        == "dynamic input/output characteristics"
+    )
+
+
+def _trim_dual_y_terminal_branch_switch(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Stop at the first finished VGS branch instead of joining its neighbors.
+
+    The Toshiba VGS bundle has several rising strokes that end separately at
+    the same upper voltage.  Raster continuity can jump downward to a later
+    branch after the first one ends.  A monotonic fit is unsafe here because it
+    turns that source discontinuity into a horizontal, source-absent segment.
+    """
+
+    if len(curve) < 8:
+        return curve
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    search_start = x0 + 0.55 * width
+    reverse_jump = max(5.0, 0.012 * height)
+    required_future_progress = max(6.0, 0.02 * height)
+    for index in range(1, len(curve)):
+        x, y = curve[index]
+        previous_y = curve[index - 1][1]
+        if x < search_start or y - previous_y < reverse_jump:
+            continue
+        future_min_y = min(point_y for _point_x, point_y in curve[index:])
+        if previous_y - future_min_y < required_future_progress:
+            return curve[:index]
+    return curve
+
+
+def _trim_dual_y_terminal_grid_capture(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Stop a Toshiba VGS trace where it reaches and then rides a gridline."""
+
+    if len(curve) < 8:
+        return curve
+    x0, _y0, x1, _y1 = plot_box
+    width = max(1, x1 - x0)
+    if x1 - curve[-1][0] > TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION * width:
+        return curve
+    tail_y = curve[-1][1]
+    start = len(curve) - 1
+    while start > 0 and abs(curve[start - 1][1] - tail_y) <= 1:
+        start -= 1
+    if curve[-1][0] - curve[start][0] < 0.06 * width:
+        return curve
+    return curve[: start + 1]
+
+
+def _curve_starts_at_axis_origin(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> bool:
+    """Require Qg=0 to meet the right-axis VGS=0 origin."""
+
+    if not curve:
+        return False
+    x0, _y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - _y0)
+    start_x, start_y = curve[0]
+    return (
+        start_x - x0 <= MAX_CURVE_LEFT_GAP_FRACTION * width
+        and y1 - start_y <= 0.04 * height
+    )
+
+
+def _select_dual_y_raster_curve(
+    curves: list[list[tuple[int, int]]],
+    plot_box: tuple[int, int, int, int],
+    height: int,
+    width: int,
+) -> list[tuple[int, int]]:
+    """Prefer the source-owned VGS branch proven to start at Qg=VGS=0."""
+
+    origin_curves = [
+        curve for curve in curves if _curve_starts_at_axis_origin(curve, plot_box)
+    ]
+    return _select_raster_curve(origin_curves or curves, height, width)
 
 
 def _select_raster_curve(
@@ -870,6 +1332,116 @@ def _containing_chart_image(
     return min(candidates, key=lambda rect: rect.get_area()) if candidates else None
 
 
+def _enclosing_panel_cell(
+    page: pymupdf.Page, panel_rect: pymupdf.Rect
+) -> pymupdf.Rect | None:
+    """Return a positively closed table cell around one chart panel.
+
+    Some datasheets place two plots in bordered cells.  The gate digitizer's
+    review-context padding must stop at those source-owned rails: otherwise it
+    can repaint a neighbouring axis or a title from the row above even though
+    the selected gate curve is correct.  A pair of matching horizontals is not
+    enough; require both full-height side rails to close the same rectangle.
+    """
+
+    horizontals: list[tuple[float, float, float]] = []
+    verticals: list[tuple[float, float, float]] = []
+    for drawing in page.get_drawings():
+        for item in drawing.get("items", []):
+            if item[0] != "l":
+                continue
+            start, end = item[1], item[2]
+            x0, x1 = sorted((float(start.x), float(end.x)))
+            y0, y1 = sorted((float(start.y), float(end.y)))
+            if y1 - y0 <= 0.5 and x1 - x0 >= 0.70 * panel_rect.width:
+                horizontals.append((0.5 * (y0 + y1), x0, x1))
+            if x1 - x0 <= 0.5 and y1 - y0 >= 0.70 * panel_rect.height:
+                verticals.append((0.5 * (x0 + x1), y0, y1))
+
+    alignment = PANEL_CELL_ALIGNMENT_TOLERANCE_PT
+    containment = PANEL_CELL_CONTAINMENT_TOLERANCE_PT
+    candidates: list[pymupdf.Rect] = []
+    for top, top_x0, top_x1 in horizontals:
+        for bottom, bottom_x0, bottom_x1 in horizontals:
+            if bottom <= top:
+                continue
+            if abs(top_x0 - bottom_x0) > alignment:
+                continue
+            if abs(top_x1 - bottom_x1) > alignment:
+                continue
+            x0 = 0.5 * (top_x0 + bottom_x0)
+            x1 = 0.5 * (top_x1 + bottom_x1)
+            cell = pymupdf.Rect(x0, top, x1, bottom)
+            if cell.get_area() > PANEL_CELL_MAX_AREA_MULTIPLIER * panel_rect.get_area():
+                continue
+            if (
+                cell.x0 > panel_rect.x0 + containment
+                or cell.y0 > panel_rect.y0 + containment
+                or cell.x1 < panel_rect.x1 - containment
+                or cell.y1 < panel_rect.y1 - containment
+            ):
+                continue
+            sides = [
+                x
+                for x, y0, y1 in verticals
+                if y0 <= top + alignment and y1 >= bottom - alignment
+            ]
+            if not any(abs(x - cell.x0) <= alignment for x in sides):
+                continue
+            if not any(abs(x - cell.x1) <= alignment for x in sides):
+                continue
+            candidates.append(cell)
+    return min(candidates, key=lambda rect: rect.get_area()) if candidates else None
+
+
+def _clip_context_at_foreign_text(
+    page: pymupdf.Page,
+    panel_rect: pymupdf.Rect,
+    crop_rect: pymupdf.Rect,
+    diagram: int,
+    *,
+    caption_owner_rect: pymupdf.Rect | None = None,
+) -> pymupdf.Rect:
+    """Stop gate review padding at positively identified neighbour content."""
+
+    words = list(page.get_text("words"))
+    lines: dict[tuple[int, int], list[tuple[object, ...]]] = {}
+    for word in words:
+        if len(word) >= 7:
+            lines.setdefault((int(word[5]), int(word[6])), []).append(word)
+    clipped = pymupdf.Rect(crop_rect)
+    caption_rect = caption_owner_rect or panel_rect
+    for line_words in lines.values():
+        ordered = sorted(line_words, key=lambda word: float(word[0]))
+        text = " ".join(str(word[4]) for word in ordered)
+        match = re.search(r"\bFigure\s+(\d+)\b", text, re.I)
+        if match is None or int(match.group(1)) == diagram:
+            continue
+        x0 = min(float(word[0]) for word in ordered)
+        y1 = max(float(word[3]) for word in ordered)
+        x1 = max(float(word[2]) for word in ordered)
+        overlap = max(0.0, min(x1, caption_rect.x1) - max(x0, caption_rect.x0))
+        if overlap < 0.20 * min(x1 - x0, caption_rect.width):
+            continue
+        if y1 <= caption_rect.y0 + 2.0 and caption_rect.y0 - y1 <= 0.50 * caption_rect.height:
+            clipped.y0 = max(clipped.y0, y1 + 1.0)
+
+    foreign_axis_words = [
+        word
+        for word in words
+        if str(word[4]).lower() in {"capacitance", "breakdown", "normalized"}
+        and float(word[1]) <= panel_rect.y1
+        and float(word[3]) >= panel_rect.y0
+    ]
+    right = [float(word[0]) for word in foreign_axis_words if float(word[0]) > panel_rect.x1]
+    left = [float(word[2]) for word in foreign_axis_words if float(word[2]) < panel_rect.x0]
+    if right:
+        clipped.x1 = min(clipped.x1, 0.5 * (panel_rect.x1 + min(right)))
+    if left:
+        clipped.x0 = max(clipped.x0, 0.5 * (panel_rect.x0 + max(left)))
+    return clipped
+
+
 def _title_score(panel: ChartPanel) -> float:
     title = re.sub(r"\s+", " ", panel.title.lower())
     penalty = 0.0
@@ -888,5 +1460,5 @@ def _title_score(panel: ChartPanel) -> float:
 
 def _result_sort_key(result: GateChargeResult) -> tuple[int, float, int, int]:
     finite = result.vpl is not None
-    plausible = finite and 1.0 <= float(result.vpl) <= 12.0
+    plausible = finite and _vpl_is_plausible(result.vpl)
     return (0 if plausible else 1 if finite else 2, -result.score, result.panel.page, result.panel.diagram)
