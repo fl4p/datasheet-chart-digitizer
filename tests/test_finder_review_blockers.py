@@ -1128,6 +1128,15 @@ class RealPanelOwnershipRegressionTests(unittest.TestCase):
             {"Gate Charge Waveform"},
         )
 
+    def test_nexperia_gate_data_is_separate_from_explicit_definition_sketch(self) -> None:
+        panels = self._page_panels("nxp/PXP8R3-20QX.pdf", 9)
+
+        gate = [panel for panel in panels if panel.kind == "gate_charge"]
+        self.assertEqual([(panel.diagram, panel.title) for panel in gate], [
+            (14, "Gate-source voltage as a function of gate charge; typical values 003aal160"),
+        ])
+        self.assertFalse([panel for panel in panels if panel.diagram == 15])
+
 
 if __name__ == "__main__":
     unittest.main()

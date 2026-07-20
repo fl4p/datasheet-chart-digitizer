@@ -1,8 +1,10 @@
 # Gate-charge definition-waveform finder audit
 
-**Status:** the source-gated ROHM paired-definition slice is agent-GREEN on the
-11-document layout cluster. The broader waveform-title corpus remains held and
-full-corpus behavior was not evaluated. `human_verified=false`.
+**Status:** the source-gated ROHM paired-definition slice is agent-GREEN on its
+11-document layout cluster. The explicit Nexperia `waveform definitions` slice
+is independently agent-GREEN on its 18-document cluster. The broader waveform-
+title corpus remains held and full-corpus behavior was not evaluated.
+`human_verified=false`.
 
 ## Why the broader audit remains separate
 
@@ -67,6 +69,41 @@ genuine gate panel remains an honest `unresolved` result because its `nC` unit
 is not yet owned; no Vpl is served. Independent review passed 127 tests with six
 optional skips, 33 subtests, and the real ROHM regression. Full-corpus A/B is
 not claimed.
+
+## Nexperia explicit-definition slice
+
+Layout cluster `doc-00070` contains 18 P-channel Nexperia PDFs. Every member
+has a genuine page-9 diagram 14 numeric gate-charge curve followed by diagram
+15, `Gate charge waveform definitions`. Diagram 15 is a generic Qg/Qgs/Qgd
+definition sketch with VDS and ID reference waveforms, not a measured numeric
+gate-charge chart. The baseline routed both diagrams to the Vpl extractor;
+diagram 15 then failed as `axis_grid_inferred`.
+
+The bounded classifier rule treats the exact semantic phrase `gate charge
+waveform definitions` as generic `chart`. It does not match measured titles
+such as `Gate charge waveform`, `Gate-source voltage as a function of gate
+charge`, or other standalone waveform wording. Candidate output across all 18
+cluster members retains diagram 14 as the measured gate-charge panel and drops
+diagram 15 from chart detection, so it no longer invokes the digitizer.
+
+Frozen packet: `/private/tmp/dsdig-nexperia-doc00070-waveform-v1/`.
+
+- source SHA-256:
+  `9b5d33c1200c92bbc74501d77a339b7dd9662b76b31938dfdf24385b6831b76c`;
+- candidate/repeat annotated PDF SHA-256:
+  `0f5ae1727c2e1c05592e9337849169f44c78dab3d5b8886dca997c32496546e8`;
+- candidate/repeat finder JSON SHA-256:
+  `f0d17defb6c772efed0935d64775511fd5168167ba34cd247742596adf8b09cf`;
+- candidate/repeat diagram-14 overlay SHA-256:
+  `0d0cfe13f26f50f7ebdd46e617a91f0987bee73360c56100bf3dfd9cc501ed09`;
+- independent review:
+  `reviews/independent-review.json`, SHA-256
+  `e041569261266abfd05cd7dab27ca5ad1c1169abe15fa6759f14a4195e788e49`.
+
+Independent review confirmed 18/18 exact-only diagram-15 removals, the signed
+negative Vpl overlay source-seated on the genuine diagram-14 curve, byte-
+deterministic artifacts, both PDFs `qpdf`-clean, and the scoped tests GREEN.
+Repository line caps and `git diff --check` pass. Full-corpus A/B is not claimed.
 
 ## Required evidence and implementation constraints
 

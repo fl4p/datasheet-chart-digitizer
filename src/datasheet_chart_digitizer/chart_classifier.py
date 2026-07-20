@@ -161,6 +161,8 @@ def classify_chart(title: str, text: str) -> str:
     normalized_title = _normalized_chart_text(title)
     if "test circuit" in normalized_title or "measurement circuit" in normalized_title:
         return "chart"
+    if "gate charge waveform definitions" in normalized_title:
+        return "chart"
     formula_kind = compact_formula_chart_kind(title)
     if formula_kind is not None:
         return formula_kind

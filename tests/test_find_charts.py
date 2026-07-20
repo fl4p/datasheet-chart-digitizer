@@ -13,6 +13,7 @@ class ChartClassificationTests(unittest.TestCase):
         cases = [
             ("Typ. gate charge", "VGS=f(QGate); ID=20A"),
             ("Gate Charge Characteristics", "Gate-to-source voltage vs total gate charge"),
+            ("Gate charge waveform", "0 10 20 Qg (nC) VGS (V)"),
             ("Dynamic Input/Output Characteristics", "Total gate charge Qg (nC) Gate-source voltage VGS"),
         ]
 
@@ -48,10 +49,10 @@ class ChartClassificationTests(unittest.TestCase):
             "breakdown_voltage",
         )
 
-    def test_standalone_waveform_definition_remains_separately_audited(self) -> None:
+    def test_explicit_waveform_definition_is_not_gate_charge_data(self) -> None:
         self.assertEqual(
             find_charts.classify_chart("Gate charge waveform definitions", ""),
-            "gate_charge",
+            "chart",
         )
 
     def test_explicit_characteristics_owns_synthetic_caption_kind(self) -> None:
@@ -513,7 +514,7 @@ class CaptionTitleTests(unittest.TestCase):
 
         self.assertEqual(find_charts.find_caption_titles(page), [])
 
-    def test_wrapped_caption_cannot_change_the_explicit_chart_family(self) -> None:
+    def test_explicit_definition_does_not_corrupt_following_chart_caption(self) -> None:
         page = self._page([
             find_charts.Word("Fig.", 20, 100, 40, 110),
             find_charts.Word("15.", 44, 100, 58, 110),
@@ -526,11 +527,10 @@ class CaptionTitleTests(unittest.TestCase):
             find_charts.Word("Input", 342, 112, 375, 122),
             find_charts.Word("capacitances", 379, 112, 450, 122),
         ])
-
-        title = find_charts.find_caption_titles(page)[0]
-
-        self.assertEqual(title.number, 15)
-        self.assertEqual(title.title, "Gate charge waveform definitions")
+        titles = find_charts.find_caption_titles(page)
+        self.assertEqual([(title.number, title.title) for title in titles], [
+            (16, "Input capacitances"),
+        ])
 
     def test_splits_paired_typ_gate_charge_and_breakdown_headers(self) -> None:
         page = find_charts.PageText(
