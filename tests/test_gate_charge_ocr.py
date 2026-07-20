@@ -161,6 +161,16 @@ class GateChargeOcrTests(unittest.TestCase):
         ocr.assert_called_once_with(Path("sample.pdf"))
         injected.assert_called_once_with(Path("sample.pdf"), Path("out"), 120, [ocr_page])
 
+    def test_dual_y_ocr_uses_numbered_figure_semantics_not_literal_810(self) -> None:
+        panel = _panel()
+        panel.title = "Dynamic Input/Output Characteristics"
+        result = SimpleNamespace(status="unresolved", diagnostics=("gate_charge_unit_unresolved",))
+
+        panel.diagram = 811
+        self.assertTrue(gate._needs_dual_y_axis_ocr(panel, result))
+        panel.diagram = 901
+        self.assertFalse(gate._needs_dual_y_axis_ocr(panel, result))
+
     def test_arithmetic_x_axis_extrapolates_omitted_zero(self) -> None:
         ticks = [(25.0, 350.0), (50.0, 400.0), (75.0, 450.0), (100.0, 500.0)]
 
@@ -441,21 +451,22 @@ class ToshibaDualYAxisOcrRegression(unittest.TestCase):
             self.skipTest("tesseract is not installed")
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
         cases = {
-            "toshiba/TK25S06N1L.pdf": (3.75, 1),
-            "toshiba/TJ40S04M3L.pdf": (-3.86, -1),
-            "toshiba/TPH3R70APL1,LQ.pdf": (3.97, 1),
-            "toshiba/TPN2R903PL.pdf": (3.07, 1),
-            "toshiba/TPHR8504PL1.pdf": (3.18, 1),
+            "toshiba/TK25S06N1L.pdf": (3.75, 1, 810),
+            "toshiba/TJ40S04M3L.pdf": (-3.86, -1, 810),
+            "toshiba/TPH3R70APL1,LQ.pdf": (3.97, 1, 810),
+            "toshiba/TPN2R903PL.pdf": (3.07, 1, 810),
+            "toshiba/TPHR8504PL1.pdf": (3.18, 1, 810),
+            "toshiba/TK110U65Z.pdf": (5.96, 1, 811),
         }
         if not all((root / rel).exists() for rel in cases):
             self.skipTest("optional Toshiba dual-Y regression PDFs are not configured")
 
-        for rel, (reference, polarity) in cases.items():
+        for rel, (reference, polarity, diagram) in cases.items():
             with self.subTest(pdf=rel):
                 result = next(
                     item
                     for item in gate.digitize_gate_charge(root / rel)
-                    if item.panel.page == 6 and item.panel.diagram == 810
+                    if item.panel.page == 6 and item.panel.diagram == diagram
                 )
                 self.assertEqual(result.status, "ok")
                 self.assertEqual(result.x_tick_unit, "nC")

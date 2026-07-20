@@ -359,7 +359,7 @@ def _needs_dual_y_axis_ocr(panel: ChartPanel, result: GateChargeResult) -> bool:
         item in diagnostics
         for item in ("axis_assumed_0_10", "axis_inferred_from_regular_grid", "gate_charge_unit_unresolved")
     )
-    return panel.diagram == 810 and title == "dynamic input/output characteristics" and axis_problem
+    return panel.diagram < 900 and title == "dynamic input/output characteristics" and axis_problem
 
 
 def _dual_y_axis_ocr_page(
@@ -415,7 +415,20 @@ def _dual_y_axis_ocr_page(
     words = [Word(text, x0, y0, x1, y1) for x0, y0, x1, y1, text in raw_words]
     compact = re.sub(r"[^a-z0-9]", "", " ".join(word.text for word in words).lower())
     if "nc" not in compact:
-        return None
+        bottom_band.y1 = min(page.rect.y1, owner.y1 + 30.0)
+        try:
+            raw_words = [
+                *(right_sparse if signed_sparse >= 3 else right_block),
+                *ocr_words_in_rect(
+                    pdf, panel.page, bottom_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
+                ),
+            ]
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return None
+        words = [Word(text, x0, y0, x1, y1) for x0, y0, x1, y1, text in raw_words]
+        compact = re.sub(r"[^a-z0-9]", "", " ".join(word.text for word in words).lower())
+        if "nc" not in compact:
+            return None
     return PageText(
         panel.page,
         float(page.rect.width),

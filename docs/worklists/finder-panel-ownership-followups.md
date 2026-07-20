@@ -1,18 +1,19 @@
 # Finder panel-ownership follow-ups
 
-**Status:** the HXY Figure 4 candidate is implemented with deterministic
-source-backed finder and digitizer A/B and independent review GREEN. The
-Toshiba source is now materialized and ready for a separate ownership slice.
-`human_verified=false`.
+**Status:** the HXY Figure 4 candidate landed on `main` in `8fb1bba`. The
+materialized Toshiba source proves diagram 811 is a genuine gate-charge chart;
+its deterministic bounded extraction candidate and controls are independently
+GREEN. Full-corpus collateral remains held. `human_verified=false`.
 
 ## Confirmed defect candidates
 
 1. `hxy/NTMD4840NR2G-HXY.pdf`, page 3: the `Gate-Charge Characteristics` caption is bound to
    the later Figure 6 normalized `RDS(on)` versus junction-temperature plot. The gate-charge
    digitizer currently refuses, so this is a finder/provenance defect without a served scalar.
-2. `toshiba/TK110U65Z.pdf`, page 6, diagram 811: `Dynamic Input/Output Characteristics` is
-   emitted as a second `gate_charge` panel. Source ownership and whether this is a measured Qg
-   chart require explicit adjudication; title similarity alone is insufficient.
+2. `toshiba/TK110U65Z.pdf`, page 6, diagram 811: source adjudication proves
+   `Dynamic Input/Output Characteristics` is the real Figure 8.11 dual-Y gate-charge chart,
+   not a duplicate or false classification. The remaining defect was its silent physical-output
+   loss in the diagram-810-specific OCR path; the bounded candidate below resolves it.
 
 The AGM012 body/SOA and capacitance/power-caption fusion moved into the active SPD03
 finder acceptance scope after the full-corpus review proved it candidate-relevant. It is
@@ -86,9 +87,45 @@ source ownership of Figure 4, unchanged Figure 7, and a non-consumable
 review-required gate result. The remote-axis negative must stay rejected while
 an owned local tick run remains accepted.
 
-TK110U65Z remains a separate positive. Its canonical 498,922-byte, 10-page PDF
-is now materialized (SHA-256
-`18e7aa7fec29b07700ee00a9d7c7c1b27ad71a41f9520172354cbb23c0c9ff6c`), so
-diagram 811 can be adjudicated in a source-backed follow-up. A classifier fix
-and a validator refusal guard are independently landable, but neither may hide
-the other's diagnostic provenance.
+## Toshiba bounded candidate
+
+TK110U65Z's canonical 498,922-byte, 10-page PDF is materialized (SHA-256
+`18e7aa7fec29b07700ee00a9d7c7c1b27ad71a41f9520172354cbb23c0c9ff6c`).
+The finder already binds Figure 8.11 correctly. Baseline extraction remained
+`unresolved` because the bounded Toshiba dual-Y OCR retry was hard-coded to
+diagram 810, and Figure 8.11's `nC` unit sits just below the finder-owned frame.
+
+The candidate applies the retry to numbered `Dynamic Input/Output
+Characteristics` figures and expands the bottom OCR band only after its first,
+unchanged bounded read fails to find `nC`. It recovers the right `VGS` scale
+0/5/10/15 V, the `Qg` scale 0..60 nC, and a source-seated Vpl of 5.963 V. The
+finder crop and all non-gate failures are unchanged.
+
+Frozen packet: `/private/tmp/dsdig-tk110-ownership-v1/`.
+
+Independent review: `reviews/independent-review.json`, SHA-256
+`0491dfdde8c21a032257196d263f04f927c4d2af032fdf6547243817bbffc303`.
+
+- baseline gate JSON SHA-256:
+  `022b56794d3d6b8b956360a9a2b7035b01d2b34b9a8cf8da7d6baa74ffd77e3d`;
+- candidate/repeat gate JSON SHA-256:
+  `0fab45317f5f305d98ae78c062b508b579719ab4f926899d542d38df07cff10a`;
+- candidate/repeat overlay SHA-256:
+  `61e280eecf984b86dbfca8ea801ffd349eb7ab1d5bce03a99540d7e7821024f4`;
+- candidate/repeat annotated PDF SHA-256:
+  `f3a7d790b26ae477fadeaf808ecf9b4972b863c07212cf7bb0a2c760ca0e2775`;
+- candidate/repeat finder JSON SHA-256:
+  `58e3866881220aa69f4cafed5d4f9930022566a70071b4ba5e7a1cf2728e123d`.
+
+The five earlier Toshiba diagram-810 physical manifests are byte-identical
+baseline-to-candidate: TK25S06N1L (`b22dbf21...`), TJ40S04M3L
+(`44d0a96e...`), TPH3R70APL1LQ (`a0f56765...`), TPN2R903PL
+(`705f3298...`), and TPHR8504PL1 (`38584017...`). Synthetic diagram IDs remain
+ineligible for this OCR retry.
+
+The materialized XPQR8308QB source is a second positive, not a unitless
+negative: Figure 8.14 visibly owns `Total gate charge Qg (nC)` and the right
+0..10 V `VGS` axis. Its stale unresolved regression expectation is corrected;
+baseline SHA-256 `6f0250de...` becomes deterministic candidate/repeat
+`ddb4acdb...`, status `ok`, Vpl 5.484 V. Its page-3 spec-table false panel is no
+longer emitted by the finder.

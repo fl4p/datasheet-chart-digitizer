@@ -946,7 +946,7 @@ class GateChargeVplTests(unittest.TestCase):
         self.assertAlmostEqual(result.vpl, 6.4, delta=0.5)
         self.assertGreaterEqual(result.y_tick_count, 4)
 
-    def test_real_dual_axis_without_charge_unit_is_fail_closed(self) -> None:
+    def test_real_dual_axis_owned_charge_unit_is_recovered(self) -> None:
         pdf = (
             Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
             / "datasheets/toshiba/XPQR8308QB.pdf"
@@ -954,18 +954,15 @@ class GateChargeVplTests(unittest.TestCase):
         if not pdf.exists():
             self.skipTest("XPQR8308QB regression PDF is not configured")
 
-        result = gate.find_vpl_result(pdf)
-
-        self.assertIsNotNone(result)
-        assert result is not None
+        results = gate.digitize_gate_charge(pdf)
+        self.assertEqual(len(results), 1)
+        result = results[0]
         self.assertEqual(result.panel.page, 7)
         self.assertIn("Dynamic Input/Output", result.panel.title)
         self.assertAlmostEqual(result.vpl, 5.5, delta=0.5)
-        self.assertEqual(result.status, "unresolved")
-        self.assertIn("gate_charge_unit_unresolved", result.diagnostics)
-        page_three = next(item for item in gate.digitize_gate_charge(pdf) if item.panel.page == 3)
-        self.assertIsNone(page_three.vpl)
-        self.assertEqual(page_three.status, "unresolved")
+        self.assertEqual(result.status, "ok")
+        self.assertEqual(result.x_tick_unit, "nC")
+        self.assertIn("axis_ocr_bounded_dual_y", result.diagnostics)
 
     def test_real_faint_vector_gate_curve_is_numeric(self) -> None:
         pdf = (
