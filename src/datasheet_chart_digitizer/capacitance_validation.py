@@ -20,6 +20,8 @@ MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 MAX_CRSS_PEER_X_SPAN_DEFICIT = 0.06
 MAX_TRACE_LEFT_EDGE_GAP_FRACTION = 0.03
 MAX_PEER_LEFT_START_DEFICIT = 0.03
+MAX_PEER_RIGHT_END_DEFICIT = 0.06
+PEER_ENDPOINT_COMPARISON_ABS_TOL = 1e-9
 FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
 # Grid-capture is raster-only; vector paths cannot latch onto a gridline.
 FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
@@ -39,6 +41,7 @@ def trace_validation_summary(
     shared_collapse_spans: list[dict[str, object]] | None = None,
     left_start_fractions: dict[str, float] | None = None,
     source_support_diagnostics: dict[str, object] | None = None,
+    right_end_fractions: dict[str, float] | None = None,
 ) -> dict[str, object]:
     """Fail closed on incomplete or semantically untrusted C(V) traces."""
 
@@ -111,6 +114,25 @@ def trace_validation_summary(
             if len(late_names) == 1:
                 reasons.append(f"{late_names[0]}_peer_relative_late_x_start")
 
+    right_ends = {
+        name: min(1.0, float(value))
+        for name, value in (right_end_fractions or {}).items()
+        if name in ("Ciss", "Coss", "Crss")
+    }
+    if extraction_method == "raster" and len(right_ends) == 3:
+        fullest = max(right_ends.values())
+        for name in ("Ciss", "Coss"):
+            if (
+                fullest - right_ends[name]
+                > MAX_PEER_RIGHT_END_DEFICIT + PEER_ENDPOINT_COMPARISON_ABS_TOL
+            ):
+                # Raster traces have no source-owned endpoint proof. Across 439
+                # frozen panels, every previously passing upper trace more than
+                # 6% short of its fullest peer ended before visible source ink.
+                # Vector paths are intentionally excluded because vendors may
+                # author complete Ciss/Coss paths that stop inside the frame.
+                reasons.append(f"{name}_peer_relative_early_x_end")
+
     for name in ("Ciss", "Coss", "Crss"):
         trace_diag = diagnostics.get(name)
         if not isinstance(trace_diag, dict):
@@ -157,6 +179,19 @@ def trace_left_start_fractions(
     width = max(1, plot.width - 1)
     return {
         trace.name: (min(x for x, _y in trace.points) - plot.x0) / width
+        for trace in traces
+        if trace.points
+    }
+
+
+def trace_right_end_fractions(
+    traces: list[Trace], plot: PlotBox
+) -> dict[str, float]:
+    """Measure each trace's last served source column in plot pixel space."""
+
+    width = max(1, plot.width - 1)
+    return {
+        trace.name: (max(x for x, _y in trace.points) - plot.x0) / width
         for trace in traces
         if trace.points
     }

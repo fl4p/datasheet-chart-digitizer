@@ -1,9 +1,9 @@
 # Capacitance unresolved Ciss/Coss shared collapse
 
-Status: minimal fail-closed invariant implemented in the current worktree;
-focused unit and bounded positive/control checks pass. Full capacitance-corpus
-A/B and independent artifact review remain open. `human_verified=false` for
-the implementation packet.
+Status: fail-closed shared-collapse and raster source-seating invariants are
+implemented on `main`. Focused tests, bounded positives/controls, and the
+frozen post-extraction corpus A/B pass. Fresh full-source re-extraction remains
+held on unresolved Git-LFS PDF pointers. `human_verified=false`.
 
 ## Defect
 
@@ -96,11 +96,13 @@ separation remains accepted. A fresh bounded run makes `STW70N60DM6-4` p6d7
 
 ST `STB80N20M5` p6d7 is a separate crossing-seating defect: Fab flagged Coss
 cutting below its source curve and rejoining, but it emits no shared span and
-is not claimed fixed by this invariant.
+is caught by the landed raster source-ink support validator rather than the
+shared-span invariant.
 
 ## Separate trace-fidelity item
 
 Infineon `IPB160N04S2L-03` p6d11 is a distinct bug: Crss leaves the printed
 source below roughly 1 V on a linear VDS axis while retaining a full point
-count. It has no shared-collapse discriminator and is tracked in
+count. It has no shared-collapse discriminator; the landed raster
+source-seating validator catches this class. It remains tracked in
 [capacitance trace coverage and clipped top decade](current-capacitance-trace-coverage-top-clip.md).

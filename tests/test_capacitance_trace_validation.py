@@ -174,6 +174,57 @@ class CapacitanceTraceValidationTests(unittest.TestCase):
         self.assertEqual("pass", summary["status"])
         self.assertEqual([], summary["reasons"])
 
+    def test_raster_coss_materially_earlier_than_peers_refuses(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.98, coss_span=0.88, crss_span=0.98),
+            "raster",
+            right_end_fractions={"Ciss": 0.99, "Coss": 0.89, "Crss": 0.99},
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Coss_peer_relative_early_x_end", summary["reasons"])
+
+    def test_two_raster_upper_traces_ending_before_crss_refuse(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.91, coss_span=0.90, crss_span=0.97),
+            "raster",
+            right_end_fractions={"Ciss": 0.92, "Coss": 0.91, "Crss": 0.99},
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Ciss_peer_relative_early_x_end", summary["reasons"])
+        self.assertIn("Coss_peer_relative_early_x_end", summary["reasons"])
+
+    def test_small_raster_right_end_deficit_passes(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.95, coss_span=0.91, crss_span=0.95),
+            "raster",
+            right_end_fractions={"Ciss": 0.98, "Coss": 0.93, "Crss": 0.98},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
+    def test_exact_raster_right_end_threshold_passes(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=1.0, coss_span=0.94, crss_span=1.0),
+            "raster",
+            right_end_fractions={"Ciss": 1.0, "Coss": 0.94, "Crss": 1.0},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
+    def test_vector_authored_right_end_deficit_passes(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.91, coss_span=0.90, crss_span=0.97),
+            "vector",
+            right_end_fractions={"Ciss": 0.92, "Coss": 0.91, "Crss": 0.99},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertEqual([], summary["reasons"])
+
     def test_late_shared_ciss_coss_without_reseparation_refuses(self) -> None:
         shared = [{
             "curves": ["Ciss", "Coss"],

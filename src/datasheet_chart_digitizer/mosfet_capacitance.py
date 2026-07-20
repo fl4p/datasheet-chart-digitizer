@@ -133,6 +133,7 @@ from .capacitance_validation import (
     qoss_validation_status,
     top_decade_clip_diagnostic,
     trace_left_start_fractions,
+    trace_right_end_fractions,
     trace_validation_summary,
     vendor_qoss_tail_validation,
 )
@@ -327,6 +328,7 @@ def process_chart(
         shared_spans,
         trace_left_start_fractions(traces, plot),
         source_support_diagnostics,
+        trace_right_end_fractions(traces, plot),
     )
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
