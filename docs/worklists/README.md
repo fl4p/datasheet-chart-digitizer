@@ -21,6 +21,15 @@ presently emphasizing Nexperia, ROHM, Vishay, and IXYS/Littelfuse. Each newly
 flagged item must enter a bounded worklist and must not be laundered by later
 sampling. SPD03 remains a historical open packet; its gates are not waived.
 
+The 2026-07-20 capacitance discovery sweep is now closed at the safety layer.
+Across 200 reviewed charts, its 22 defect rows are covered by landed
+shared-identity, source-support, side-frame, left-edge, peer-endpoint, and Qoss
+plot-ceiling contracts. See
+[capacitance sweep safety closure](current-capacitance-sweep-closure.md).
+Further random capacitance discovery is paused after saturation; recovery work
+must prove source-owned pixels, while the layout loop pivots to wrong-panel
+ownership defects that can still serve values from the wrong chart.
+
 Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual-y-gate-charge.md),
 [ST normalized breakdown](current-st-normalized-breakdown-caption.md),
 [Onsemi frameless cover prose](current-onsemi-frameless-cover-prose.md), and
