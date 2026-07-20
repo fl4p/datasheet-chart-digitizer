@@ -157,6 +157,7 @@ from .capacitance_vector import (
     _vector_curve_edges,
     extract_vector_trace_components_with_provenance,
 )
+from .chart_classifier import strong_noncapacitance_panel_kind
 
 
 def _axis_result_is_trusted(
@@ -212,6 +213,9 @@ def process_chart(
     datasheet_root: Path,
     debug_axis_overlays: bool = False,
 ) -> dict[str, object]:
+    owned_kind = strong_noncapacitance_panel_kind(str(chart.get("text") or ""))
+    if owned_kind is not None:
+        raise RuntimeError(f"panel semantics identify {owned_kind}, not capacitance")
     image = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
     if image is None:
         raise RuntimeError(f"could not read crop {crop_path}")

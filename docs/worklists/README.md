@@ -29,6 +29,10 @@ plot-ceiling contracts. See
 Further random capacitance discovery is paused after saturation; recovery work
 must prove source-owned pixels, while the layout loop pivots to wrong-panel
 ownership defects that can still serve values from the wrong chart.
+The [SOA/body-diode as capacitance safety slice](nce-soa-panel-misbinding.md)
+reclassifies 38 source-proven non-capacitance crops and independently refuses
+stale chart indexes; the missing real NCE capacitance panel remains a separate
+source-bound recovery gate.
 
 Current focused slices include [Toshiba dual-Y gate charge](current-toshiba-dual-y-gate-charge.md),
 [ST normalized breakdown](current-st-normalized-breakdown-caption.md),
@@ -166,9 +170,9 @@ slice changes, invalidate and rerun later A/Bs rather than carrying stale hashes
 
 - [Qoss inline min/typ/max recovery v2](qoss-inline-recovery-v2.md): recover 13
   source-proven NXP values after Qoss parser v1; no existing value may move.
-- [NCE SOA panel misbinding](nce-soa-panel-misbinding.md): finder rejects three
-  SOA panels currently fail-closed as capacitance and fixes `NCE2010E`, which currently
-  serves SOA/body-diode-derived C(V) points as if they were capacitance curves.
+- [NCE real capacitance-panel recovery](nce-soa-panel-misbinding.md): after the
+  safety classifier lands, bind the missing real Figure 8 only from a restored
+  source page and one-to-one frame/axis ownership evidence.
 - [Finder panel-ownership follow-ups](finder-panel-ownership-followups.md): source-bound
   caption/crop fixes for the HXY and Toshiba finder defects discovered during the random loop.
 - [Gate-charge definition-waveform audit](gate-charge-definition-waveforms.md): source-gated

@@ -1204,7 +1204,7 @@ def _append_panel(
             or w.text in {"Ciss", "Coss", "Crss"}
         }
     )
-    kind_from_title = title_owns_chart_kind(title.title, title.number)
+    kind_from_title = title_owns_chart_kind(title.title, title.number, text)
     if kind_from_title is not None:
         # An explicit numbered caption/diagram title is stronger evidence than
         # the panel text, which can bleed in from an adjacent chart when a

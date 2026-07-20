@@ -64,6 +64,32 @@ def _is_body_diode_chart_text(text: str) -> bool:
     )
 
 
+def strong_noncapacitance_panel_kind(text: str) -> str | None:
+    """Return a contradictory owned family only from decisive panel semantics."""
+    normalized = _normalized_chart_text(text)
+    compact = re.sub(r"[^a-z0-9]+", "", normalized)
+    has_cap_identity = any(
+        marker in compact
+        for marker in (
+            "ciss", "coss", "crss", "inputcapacitanceiss",
+            "outputcapacitanceoss", "reversetransfercapacitancerss",
+        )
+    )
+    has_cap_axis = re.search(
+        r"(?:capacitances?.{0,16}\b[pnum]?f\b|\b[pnum]?f\b.{0,16}capacitances?)",
+        normalized,
+    ) is not None
+    if has_cap_identity or has_cap_axis:
+        return None
+    if "safe operation area" in normalized or "safe operating area" in normalized:
+        return "safe_operating_area"
+    if _is_body_diode_chart_text(normalized) or all(
+        word in normalized for word in ("reverse", "drain", "current", "voltage")
+    ):
+        return "body_diode"
+    return None
+
+
 def is_spaced_figure_start(tokens: list[str], index: int) -> bool:
     """Recognize OCR-split ``Fi g u r e N`` caption starts."""
     return [token.lower().strip(".") for token in tokens[index:index + 5]] == ["fi", "g", "u", "r", "e"]
@@ -117,6 +143,9 @@ def classify_chart(title: str, text: str) -> str:
     ):
         return "coss_energy"
 
+    owned_noncapacitance = strong_noncapacitance_panel_kind(text)
+    if owned_noncapacitance is not None:
+        return owned_noncapacitance
     haystack = _normalized_chart_text(f"{title} {text}")
     if any(word in haystack for word in CAPACITANCE_WORDS):
         return "capacitances"
@@ -142,9 +171,15 @@ def classify_chart(title: str, text: str) -> str:
     return "chart"
 
 
-def title_owns_chart_kind(title: str, number: int) -> str | None:
+def title_owns_chart_kind(
+    title: str, number: int, panel_text: str = ""
+) -> str | None:
     """Return an explicit caption's family when adjacent text cannot override it."""
     kind = classify_chart(title, "")
+    if kind == "capacitances":
+        owned_noncapacitance = strong_noncapacitance_panel_kind(panel_text)
+        if owned_noncapacitance is not None:
+            return owned_noncapacitance
     if kind == "chart":
         return None
     if number < 900 or "characteristics" in title.lower():
