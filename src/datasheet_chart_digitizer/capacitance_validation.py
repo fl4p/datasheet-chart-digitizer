@@ -383,6 +383,7 @@ def _vendor_qoss_curve_path(part: str) -> Path | None:
 def top_decade_clip_diagnostic(
     trace_data: dict[str, list[tuple[float, float]]],
     calibration: AxisCalibration | None,
+    plot: PlotBox,
 ) -> dict[str, object] | None:
     if calibration is None or "Coss" not in trace_data:
         return None
@@ -393,9 +394,28 @@ def top_decade_clip_diagnostic(
     low_v_limit = calibration.x_min_v + 0.05 * (calibration.x_max_v - calibration.x_min_v)
     low_v_caps = [cap for vds, cap in data if vds <= low_v_limit]
     max_low_v_coss = max(low_v_caps or [data[0][1]])
+    plot_top_pf: float | None = None
+    if (
+        calibration.y_scale is not None
+        and calibration.y_scale < 0.0
+        and calibration.y_offset is not None
+    ):
+        calibrated_top = calibration.y_scale * plot.y0 + calibration.y_offset
+        candidate_top_pf = (
+            10.0 ** calibrated_top if calibration.y_log else calibrated_top
+        )
+        if np.isfinite(candidate_top_pf) and candidate_top_pf > 0.0:
+            plot_top_pf = float(candidate_top_pf)
     return {
+        "highest_labeled_tick_pf": axis_top_pf,
+        # Retained for compatibility with frozen review packets. This is the
+        # highest consumed label, not necessarily the calibrated plot ceiling.
         "axis_top_pf": axis_top_pf,
+        "plot_top_pf": plot_top_pf,
         "max_low_v_coss_pf": max_low_v_coss,
         "low_v_limit_v": low_v_limit,
         "near_axis_top": max_low_v_coss >= axis_top_pf * 0.70,
+        "near_plot_top": bool(
+            plot_top_pf is not None and max_low_v_coss >= plot_top_pf * 0.98
+        ),
     }

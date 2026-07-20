@@ -406,7 +406,9 @@ def process_chart(
     qoss_validation_error: str | None = None
     qoss_vendor_tail_validation: dict[str, object] | None = None
     metrics = None
-    coss_clip_diag = top_decade_clip_diagnostic(trace_data, axis_calibration)
+    coss_clip_diag = top_decade_clip_diagnostic(
+        trace_data, axis_calibration, plot
+    )
     if not axis_trusted and axis_calibration is not None:
         qoss_validation_error = "untrusted axis calibration"
     elif axis_calibration is not None and "Coss" in trace_data and output_ref.vint_v:
@@ -417,8 +419,8 @@ def process_chart(
             if coss_metrics is None or validate_axis is None:
                 raise RuntimeError("coss_integrator is not available")
             clip_ceiling = None
-            if coss_clip_diag and coss_clip_diag.get("near_axis_top"):
-                clip_ceiling = float(coss_clip_diag["axis_top_pf"])
+            if coss_clip_diag and coss_clip_diag.get("near_plot_top"):
+                clip_ceiling = float(coss_clip_diag["plot_top_pf"])
             metrics = coss_metrics(vds, coss, output_ref.vint_v, clip_ceiling=clip_ceiling)
             qoss_metrics = coss_metrics_to_json(metrics)
             qoss_vendor_tail_validation = vendor_qoss_tail_validation(

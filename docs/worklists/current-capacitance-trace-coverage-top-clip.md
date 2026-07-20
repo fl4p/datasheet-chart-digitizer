@@ -1,10 +1,11 @@
 # Capacitance trace coverage and clipped top decade
 
 Status: peer-relative endpoint refusals, raster source-seating validation, and
-inset-side plot-frame recovery are implemented on `main`. Focused tests and
-frozen full-corpus post-extraction A/B checks pass. Fresh full-source
-re-extraction remains held because the local canonical PDFs are unresolved
-Git-LFS pointers. Clipped-top-decade recovery remains open.
+inset-side plot-frame recovery are implemented on `main`. Qoss clipped-region
+completion now keys off the calibrated plot ceiling rather than the highest
+labeled tick. Focused tests and frozen full-corpus post-extraction A/B checks
+pass. Fresh full-source re-extraction remains held because the local canonical
+PDFs are unresolved Git-LFS pointers.
 
 ## Defect families
 
@@ -13,9 +14,9 @@ Ciss/Coss shared identity:
 
 1. **High-V Crss truncation.** The extracted Crss stops before the source trace
    reaches the chart's high-voltage endpoint while Ciss/Coss continue.
-2. **Clipped top decade.** The source Ciss/Coss enters above the calibrated
-   plot ceiling while the output remains `status=ok` and
-   `trace_validation_status=pass`.
+2. **False clipped-top completion.** The old Qoss gate treated Coss above the
+   highest labeled tick as clipped even when the source trace remained fully
+   visible below the calibrated plot frame.
 3. **Full-count source divergence.** A trace can have a plausible point count
    and x-span yet leave its source stroke locally, so count-only validation is
    insufficient.
@@ -54,9 +55,11 @@ Frozen evidence:
 - A curve that stops materially before its source endpoint must be recovered
   from source-owned ink or have its physical values withheld with a specific
   diagnostic.
-- `near_axis_top=true` with source values above `axis_top_pf` cannot silently
-  disappear behind a generic full-curve pass. The clipped interval must remain
-  explicit and non-consumable unless independently recovered.
+- `near_axis_top=true` means only that Coss approaches or exceeds the highest
+  consumed label. It must not activate clipped completion unless Coss also
+  reaches the independently calibrated plot ceiling (`near_plot_top=true`).
+- A genuinely plot-top-clipped interval remains explicit and non-consumable
+  unless the existing referenced completion contract validates it.
 - Local source seating remains mandatory even when point count and x-span are
   complete. The `IPB160N04S2L-03` low-V fixture must catch off-source Crss
   without broadly rejecting steep, source-seated Crss curves.
@@ -72,8 +75,8 @@ Frozen evidence:
 - At least one clean steep-Crss chart with nonuniform column density but full
   source endpoint coverage, proving the new guard is based on source extent
   rather than equal point counts.
-- At least one intentionally chart-clipped capacitance panel whose existing
-  partial/Qoss refusal remains unchanged.
+- A synthetic plot-top-clipped capacitance control whose completion path stays
+  active, because no source-proven positive was present in the frozen corpus.
 
 ## Acceptance
 
@@ -112,4 +115,15 @@ On the 459-panel authoritative frozen packet, it changes 57 reason bundles but
 only four statuses (`pass` to `suspect`); all four stop before visible source
 ink ends. Vector panels are excluded because their source-owned paths may
 intentionally terminate inside the frame. This is a safety refusal, not tail
-reconstruction. Clipped-top-decade recovery remains unresolved.
+reconstruction.
+
+The Qoss clip gate now records both `highest_labeled_tick_pf` (with the legacy
+`axis_top_pf` alias) and `plot_top_pf`. Completion activates only within two
+percent of the latter. In the 459-panel authoritative frozen packet, all 49
+old `near_axis_top` signals remain useful review metadata, but none reaches the
+actual plot ceiling. Only five Qoss computations change: `FDD86250`, `FDS2672`,
+`NTMFS6H824NLT1G`, `NTMFSC012N15MC`, and `NVTFS6H850NLWFTAG`. Each source
+overlay shows visible, non-clipped Coss; the old path fabricated 1.2%--32.5%
+clipped completion by comparing against an interior labeled tick. Trace points,
+axis calibration, and chart availability are unchanged; missing-reference Qoss
+remains diagnostic-only.
