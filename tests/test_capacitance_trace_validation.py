@@ -37,6 +37,67 @@ def _diagnostics(
 
 
 class CapacitanceTraceValidationTests(unittest.TestCase):
+    def test_material_source_absent_coss_run_refuses(self) -> None:
+        source_support = {
+            "applicable": True,
+            "trace_support": {
+                "Ciss": {"material_source_absent_runs": []},
+                "Coss": {
+                    "material_source_absent_runs": [
+                        {"x0_px": 100, "x1_px": 124, "sample_count": 25}
+                    ]
+                },
+                "Crss": {"material_source_absent_runs": []},
+            },
+            "material_shared_orphan_source_runs": [],
+        }
+
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.95, coss_span=0.95, crss_span=0.95),
+            "raster",
+            source_support_diagnostics=source_support,
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn("Coss_source_ink_absent_run", summary["reasons"])
+
+    def test_material_orphan_source_branch_refuses_shared_trace(self) -> None:
+        source_support = {
+            "applicable": True,
+            "trace_support": {},
+            "material_shared_orphan_source_runs": [
+                {"x0_px": 20, "x1_px": 180, "sample_count": 161}
+            ],
+        }
+
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.95, coss_span=0.95, crss_span=0.95),
+            "raster",
+            source_support_diagnostics=source_support,
+        )
+
+        self.assertEqual("suspect", summary["status"])
+        self.assertIn(
+            "ciss_coss_shared_trace_orphans_source_branch", summary["reasons"]
+        )
+
+    def test_source_support_diagnostics_do_not_gate_vector_extraction(self) -> None:
+        source_support = {
+            "applicable": True,
+            "trace_support": {
+                "Coss": {"material_source_absent_runs": [{"sample_count": 30}]}
+            },
+            "material_shared_orphan_source_runs": [{"sample_count": 30}],
+        }
+
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.95, coss_span=0.95, crss_span=0.95),
+            "vector",
+            source_support_diagnostics=source_support,
+        )
+
+        self.assertEqual("pass", summary["status"])
+
     def test_crss_tail_materially_shorter_than_upper_curves_refuses(self) -> None:
         summary = trace_validation_summary(
             _diagnostics(ciss_span=0.998, coss_span=0.998, crss_span=0.909),

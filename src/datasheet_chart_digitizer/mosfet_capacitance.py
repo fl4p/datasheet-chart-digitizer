@@ -73,6 +73,7 @@ from .capacitance_refs import (
     parse_capacitance_anchors,
     parse_output_charge_reference,
 )
+from .capacitance_source_support import raster_source_support_diagnostics
 from .capacitance_traces import (
     SHARED_CISS_COSS_DISTANCE_FRACTION,
     SHARED_CISS_COSS_MAX_COLUMN_GAP_PX,
@@ -307,6 +308,11 @@ def process_chart(
     )
     traces, identity_diagnostics = repair_merged_ciss_coss_identity(traces, plot)
     shared_spans = ciss_coss_shared_spans(traces, plot)
+    source_support_diagnostics = (
+        raster_source_support_diagnostics(gray, plot, traces, shared_spans)
+        if extraction_method == "raster"
+        else {"applicable": False, "reason": "vector_extraction"}
+    )
     overlay = draw_trace_overlay(
         image,
         plot,
@@ -320,6 +326,7 @@ def process_chart(
         extraction_method,
         shared_spans,
         trace_left_start_fractions(traces, plot),
+        source_support_diagnostics,
     )
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
@@ -507,6 +514,7 @@ def process_chart(
         "trace_validation_status": validation["status"],
         "trace_validation_reasons": validation["reasons"],
         "shared_collapse_spans": shared_spans,
+        "source_support_diagnostics": source_support_diagnostics,
         "shared_collapse_thresholds": {
             "distance_fraction_of_short_plot_side": SHARED_CISS_COSS_DISTANCE_FRACTION,
             "minimum_span_fraction": SHARED_CISS_COSS_MIN_SPAN_FRACTION,

@@ -277,31 +277,7 @@ def find_plot_box(gray: np.ndarray) -> PlotBox:
 def extract_trace_components(
     gray: np.ndarray, plot: PlotBox, anchors: dict[str, CapAnchor] | None = None
 ) -> list[Trace]:
-    roi = gray[plot.y0 : plot.y1 + 1, plot.x0 : plot.x1 + 1]
-
-    # The Infineon traces are black; gridlines are gray. Keeping only very dark
-    # pixels separates traces from the log grid. Work column-by-column instead
-    # of relying on connected components: on some low-voltage parts Ciss and
-    # Coss touch at the left edge and become one connected component.
-    dark = (roi < 90).astype(np.uint8)
-    # Toshiba raster figures draw the grid in BLACK, same shade as the traces;
-    # the dark mask is then dominated by the grid (>10% of the ROI vs ~2-4% on
-    # gray-grid crops) and the intensity threshold separates nothing. Separate
-    # by stroke thickness instead: gridlines are 1 px, traces >=2 px, so a 2x2
-    # opening erases the grid. The plot frame is thick enough to survive and
-    # would track as flat phantom traces at the top/bottom decades -- blank a
-    # small frame margin. If the opening also destroys the traces, the band
-    # check below fails loudly rather than returning grid lines as data.
-    if float(dark.mean()) > 0.10:
-        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-        dark = _remove_full_width_horizontal_rails(dark)
-    margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
-    dark[:margin, :] = 0
-    dark[-margin:, :] = 0
-    dark[:, :margin] = 0
-    dark[:, -margin:] = 0
-    mask = _trace_fragment_mask(dark, plot)
-    centers_by_x = [_cluster_column_runs(mask[:, x]) for x in range(mask.shape[1])]
+    mask, centers_by_x = _raster_source_centers_by_x(gray, plot)
 
     band_samples = [[], [], []]
     for centers in centers_by_x:
@@ -331,6 +307,39 @@ def extract_trace_components(
         bbox = (min(xs) - plot.x0, min(ys) - plot.y0, max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
         traces.append(Trace(name=name, area=len(points), bbox=bbox, points=points))
     return traces
+
+
+def _raster_source_centers_by_x(
+    gray: np.ndarray, plot: PlotBox
+) -> tuple[np.ndarray, list[list[float]]]:
+    """Return the source-only raster mask and its per-column stroke centers."""
+
+    roi = gray[plot.y0 : plot.y1 + 1, plot.x0 : plot.x1 + 1]
+
+    # The Infineon traces are black; gridlines are gray. Keeping only very dark
+    # pixels separates traces from the log grid. Work column-by-column instead
+    # of relying on connected components: on some low-voltage parts Ciss and
+    # Coss touch at the left edge and become one connected component.
+    dark = (roi < 90).astype(np.uint8)
+    # Toshiba raster figures draw the grid in BLACK, same shade as the traces;
+    # the dark mask is then dominated by the grid (>10% of the ROI vs ~2-4% on
+    # gray-grid crops) and the intensity threshold separates nothing. Separate
+    # by stroke thickness instead: gridlines are 1 px, traces >=2 px, so a 2x2
+    # opening erases the grid. The plot frame is thick enough to survive and
+    # would track as flat phantom traces at the top/bottom decades -- blank a
+    # small frame margin. If the opening also destroys the traces, the band
+    # check below fails loudly rather than returning grid lines as data.
+    if float(dark.mean()) > 0.10:
+        dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+        dark = _remove_full_width_horizontal_rails(dark)
+    margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
+    dark[:margin, :] = 0
+    dark[-margin:, :] = 0
+    dark[:, :margin] = 0
+    dark[:, -margin:] = 0
+    mask = _trace_fragment_mask(dark, plot)
+    centers_by_x = [_cluster_column_runs(mask[:, x]) for x in range(mask.shape[1])]
+    return mask, centers_by_x
 
 
 def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, object]:

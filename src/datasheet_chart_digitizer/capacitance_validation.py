@@ -38,6 +38,7 @@ def trace_validation_summary(
     extraction_method: str | None = None,
     shared_collapse_spans: list[dict[str, object]] | None = None,
     left_start_fractions: dict[str, float] | None = None,
+    source_support_diagnostics: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Fail closed on incomplete or semantically untrusted C(V) traces."""
 
@@ -47,6 +48,18 @@ def trace_validation_summary(
         else FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION
     )
     reasons: list[str] = []
+    source_support = source_support_diagnostics or {}
+    if extraction_method == "raster" and source_support.get("applicable"):
+        trace_support = source_support.get("trace_support")
+        if isinstance(trace_support, dict):
+            for name in ("Ciss", "Coss", "Crss"):
+                item = trace_support.get(name)
+                if isinstance(item, dict) and item.get(
+                    "material_source_absent_runs"
+                ):
+                    reasons.append(f"{name}_source_ink_absent_run")
+        if source_support.get("material_shared_orphan_source_runs"):
+            reasons.append("ciss_coss_shared_trace_orphans_source_branch")
     if any(
         span.get("separated_sign_before") is not None
         and span.get("separated_sign_after") is None
