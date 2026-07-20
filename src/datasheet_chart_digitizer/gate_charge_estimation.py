@@ -194,6 +194,9 @@ def _best_y_axis_for_panel(
         reference_span = max(1.0, min(y_span, panel_rect.height))
         if overlap / reference_span < 0.25:
             continue
+        overhang = max(0.0, panel_rect.y0 - min(ys)) + max(0.0, max(ys) - panel_rect.y1)
+        if x_axis_edges is None and overhang > 0.45 * panel_rect.height:
+            continue
         horizontal_gap = min(abs(axis_x - panel_rect.x0), abs(axis_x - panel_rect.x1))
         value_span = max(value for value, _y in ticks) - min(value for value, _y in ticks)
         score = (

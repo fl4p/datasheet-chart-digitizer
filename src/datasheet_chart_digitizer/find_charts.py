@@ -822,7 +822,7 @@ def _has_gate_charge_axis_label_above_caption(page: PageText, title: DiagramTitl
     tx0, ty0, tx1, _ = title.bbox_pt
     for line in group_words_into_lines(page.words):
         text = line_text(line)
-        if not _is_gate_charge_axis_label(text):
+        if not _is_gate_charge_axis_label(text, ocr_tolerant=page.text_source == "tesseract_fallback"):
             continue
         lx0, ly0, lx1, ly1 = line_bbox(line)
         if not (ty0 - 70.0 <= ly1 <= ty0 - 4.0):
@@ -944,27 +944,23 @@ def _is_gate_charge_axis_label(text: str, *, ocr_tolerant: bool = False) -> bool
     has_qg = bool(re.search(r"\bq\s*g\b|\bqg(?:tot|total)?\b|\bqgate\b", normalized))
     has_ocr_qg = (
         ocr_tolerant
-        and bool(re.search(r"\bq[qc]\b", normalized))
+        and bool(re.search(r"\bq[qces]\b", normalized))
         and "gate charge" in normalized
         and "nc" in normalized
     )
     has_charge_unit = "charge" in normalized or "nc" in normalized
     return (has_qg or has_ocr_qg) and has_charge_unit
-
 def _token_norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", text.lower().replace("‑", "-").replace("–", "-"))
-
 def _is_qg_token_pair(line: list[Word], idx: int, *, ocr_tolerant: bool = False) -> bool:
     token = _token_norm(line[idx].text)
     if token in {"qg", "qgate", "qgtot", "qgtotal", "qtotal"}:
         return True
-    if ocr_tolerant and token in {"qc", "qq"}:
+    if ocr_tolerant and token in {"qc", "qe", "qq", "qs"}:
         return True
     if token == "q" and idx + 1 < len(line):
         return _token_norm(line[idx + 1].text) in {"g", "gate", "gtot", "total"}
     return False
-
-
 def gate_charge_axis_label_spans(page: PageText) -> list[tuple[float, float, float, float]]:
     """Return local Qg/Gate-Charge axis-label spans.
 
@@ -997,8 +993,6 @@ def gate_charge_axis_label_spans(page: PageText) -> list[tuple[float, float, flo
                 continue
             spans.append(line_bbox(selected))
     return spans
-
-
 def choose_caption_axis_label_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -1015,7 +1009,7 @@ def choose_caption_axis_label_bbox(
     best: tuple[float, tuple[float, float, float, float]] | None = None
     for line in group_words_into_lines(page.words):
         text = line_text(line)
-        if not _is_gate_charge_axis_label(text):
+        if not _is_gate_charge_axis_label(text, ocr_tolerant=page.text_source == "tesseract_fallback"):
             continue
         lx0, ly0, lx1, ly1 = line_bbox(line)
         lcx = 0.5 * (lx0 + lx1)
@@ -1294,6 +1288,7 @@ def process_page_texts(
 ) -> list[ChartPanel]:
     """Run normal panel discovery against an injected page-text source."""
     panels: list[ChartPanel] = []
+    ocr_by_page: dict[int, PageText] = {}
     with tempfile.TemporaryDirectory(prefix="chart-pages-") as tmp:
         tmpdir = Path(tmp)
         for page in pages:
@@ -1358,6 +1353,11 @@ def process_page_texts(
                         tight=title.number in recovered_numbers,
                     )
                 axis_label_bbox = choose_caption_axis_label_bbox_for_kind(page, title)
+                if kind == "gate_charge" and axis_label_bbox is None and title.number < 900 and page.text_source != "tesseract_fallback":
+                    tsv = _tesseract_tsv(page_png) if page.page_num not in ocr_by_page else None
+                    if tsv is not None:
+                        ocr_by_page[page.page_num] = _page_text_from_tesseract_tsv(tsv, page_num=page.page_num, width_pt=page.width_pt, height_pt=page.height_pt, width_px=width_px, height_px=height_px)
+                    axis_label_bbox = choose_caption_axis_label_bbox_for_kind(ocr_by_page.get(page.page_num, page), title)
                 if bbox is None:
                     bbox = axis_label_bbox
                 if bbox is None and page.text_source != "pymupdf_fallback":
