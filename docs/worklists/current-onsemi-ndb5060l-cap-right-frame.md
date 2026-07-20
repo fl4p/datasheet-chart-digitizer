@@ -2,8 +2,8 @@
 
 Status: all NDB5060L charts human-GREEN by Fab on 2026-07-20, after focused
 dual review and authoritative 800-input capacitance A/B. Target human review is
-closed; shared landing remains pending. `human_verified=true` for NDB5060L;
-no commit or push.
+closed and the shared frame recovery is on `main`. `human_verified=true` for
+NDB5060L.
 
 ## Defect
 

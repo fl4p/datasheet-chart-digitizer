@@ -30,6 +30,7 @@ plus [Onsemi shared-endpoint capacitance source paths](current-onsemi-shared-cap
 [capacitance trace coverage and clipped top decade](current-capacitance-trace-coverage-top-clip.md),
 [capacitance left-edge trace coverage](current-capacitance-left-edge-coverage.md),
 [capacitance Coss source-support fail-close](current-capacitance-coss-source-support.md),
+[capacitance symmetric side-frame coverage](current-capacitance-side-frame-coverage.md),
 [Infineon IPD50N10S3L-16 capacitance right-frame coverage](current-infineon-ipd50-cap-right-frame.md),
 [Infineon BSC normalized RDS(on) temperature routing](current-infineon-bsc059-rdst.md),
 [TI CSD19537Q3 converging transfer paths](current-ti-csd19537q3-transfer.md), and

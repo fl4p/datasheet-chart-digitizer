@@ -1,8 +1,9 @@
 # Infineon IPD50N10S3L-16 capacitance right-frame coverage
 
-Status: bounded recovery implemented in the current worktree and focused
-end-to-end test passes. Candidate artifact is agent-inspected only;
-independent review and full capacitance-corpus A/B remain open.
+Status: **scoped landing-GREEN through the symmetric side-frame recovery;
+fresh full source re-extraction held by unavailable Git-LFS objects**.
+The focused end-to-end candidate remains deterministic and source-seated;
+`human_verified=false`.
 
 ## Defect
 
