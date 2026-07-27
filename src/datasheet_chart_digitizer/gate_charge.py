@@ -312,6 +312,37 @@ def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
 
 
+def _vpl_extrapolated_beyond_ticks(
+    vpl_y_px: float | None,
+    local_y_ticks: list[tuple[float, float]],
+    crop_rect,
+    scale: float,
+) -> bool:
+    """Does the plateau sit outside the pixel span the y ticks actually calibrate?
+
+    Two ticks fix a line, and that line is only EVIDENCE between them. Past the last
+    tick it is extrapolation, and its error grows without bound while nothing about the
+    fit looks worse -- residuals are computed on the ticks, which still fit perfectly.
+    The tolerance is a fraction of the measured span rather than a pixel count, so a
+    tightly-labelled axis is not judged by the same absolute slack as a sparse one.
+
+    Returns False when there is nothing to judge (no plateau, fewer than two ticks) --
+    NOT because that is fine, but because those states already have their own
+    diagnostics (`vpl_unresolved`, `axis_assumed_0_10`) and this must not silently
+    stand in for them.
+    """
+
+    if vpl_y_px is None or len(local_y_ticks) < 2:
+        return False
+    tick_px = [float((y - crop_rect.y0) * scale) for _value, y in local_y_ticks]
+    lo, hi = min(tick_px), max(tick_px)
+    span = hi - lo
+    if span <= 0:
+        return False
+    slack = 0.10 * span
+    return not (lo - slack <= float(vpl_y_px) <= hi + slack)
+
+
 def _depletion_vpl_is_source_plausible(
     vpl: float | None,
     vpl_y_px: float | None,
@@ -709,6 +740,15 @@ def _digitize_panel(
         diagnostics.append("vpl_unresolved")
     elif not vpl_expected_for_source:
         diagnostics.append("vpl_outside_expected_range")
+    # A plateau read BELOW the lowest tick or ABOVE the highest is not measured, it is
+    # extrapolated off the end of the calibration. SUP90140E is the case: two ticks
+    # (2 V, 20 V) spanning 48% of a 1471 px plot box, plateau pixel 318 px past the
+    # lower anchor, answer 28.6 V for a part whose gate never leaves +-20 V.
+    extrapolated_vpl = _vpl_extrapolated_beyond_ticks(
+        vpl_y_px, local_y_ticks, crop_rect, scale
+    )
+    if extrapolated_vpl:
+        diagnostics.append("vpl_extrapolated_beyond_ticks")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)
@@ -723,7 +763,19 @@ def _digitize_panel(
         status = "axis_assumed"
     elif axis_grid_inferred:
         status = "axis_grid_inferred"
-    elif low_trace_confidence or missing_initial_ramp or missing_axis_origin:
+    elif (
+        low_trace_confidence
+        or missing_initial_ramp
+        or missing_axis_origin
+        # A value the digitizer itself calls implausible, or one it had to extrapolate
+        # off the end of its ticks, must not be reported as "ok". These two diagnostics
+        # were computed and then dropped on the floor by the status: SUP90140E returned
+        # 28.6 V with status "ok" AND vpl_outside_expected_range, and every consumer
+        # that keys on status -- fetlib's read_charts among them -- stored it as a clean
+        # reading. A status is a provenance claim; it must not claim more than was done.
+        or not vpl_expected_for_source
+        or extrapolated_vpl
+    ):
         status = "low_confidence"
     else:
         status = "ok"

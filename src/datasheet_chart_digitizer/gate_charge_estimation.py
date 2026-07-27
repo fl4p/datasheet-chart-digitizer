@@ -8,6 +8,10 @@ import pymupdf
 
 _NATIVE_Y_TICK_MAX = 30.0
 _OCR_Y_TICK_RAW_MAX = 50.0
+# Horizontal spread within which right-aligned tick labels still count as one column
+# ('12.0' and '9.6' share an axis but not a centre). Also the tolerance under which two
+# columns are "equally close" to a plot frame, so the two cannot drift apart.
+_Y_AXIS_COLUMN_TOLERANCE = 6.0
 
 
 def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> float | None:
@@ -52,7 +56,11 @@ def _local_y_ticks_for_plot(
     try:
         words = page.get_text("words")
     except Exception:
-        return candidates
+        # ``candidates`` is the accumulator, not a result. Returning it handed the
+        # caller a dict where it expects a tick list, and ``len(...) >= 2`` on a
+        # two-key dict reads as "two ticks measured" -- an unreadable text layer
+        # would have presented itself as a calibrated axis.
+        return []
     repair_ocr_decimal = getattr(page, "text_source", "") == "tesseract_fallback"
     for word in words:
         wx0, wy0, wx1, wy1 = [float(v) for v in word[:4]]
@@ -78,34 +86,62 @@ def _local_y_ticks_for_plot(
             continue
         candidates["left" if left_band else "right"].append((value, cy, cx))
 
-    axes = [
-        axis
-        for side in candidates.values()
-        for axis in _cluster_y_tick_columns(
-            side, repair_missing_decimal=repair_ocr_decimal
-        )
-    ]
-    axes = [axis for axis in axes if len(axis) >= 2]
+    axes: list[tuple[list[tuple[float, float]], float]] = []
+    for side, rows in candidates.items():
+        edge = px0 if side == "left" else px1
+        for axis, column_x in _cluster_y_tick_columns(
+            rows, repair_missing_decimal=repair_ocr_decimal
+        ):
+            if len(axis) >= 2:
+                axes.append((axis, abs(column_x - edge)))
     if not axes:
         return []
-    return max(axes, key=len)
+    # The y axis of THIS plot is the label column seated against its own frame; any
+    # column further out belongs to the chart beyond it. Selecting by label COUNT
+    # alone -- what this did -- hands the plot its neighbour's axis whenever the
+    # neighbour is equally well labelled, and the tie then fell to whichever column
+    # sorted first, i.e. the leftmost, i.e. the neighbour's.
+    #
+    # EPC2934C is the calibration case: a Coss stored-energy chart sits to the left
+    # with six labels (0.0 .. 12.0 uJ) against the gate chart's own six (0 .. 5 V),
+    # so every V_GS came out 2.4x high -- Vpl 4.97 V for a 2.15 V plateau, with
+    # status "ok" and no diagnostic, because a wrong-but-linear axis still fits.
+    #
+    # Count only breaks ties WITHIN one column. `_normalize_y_tick_candidate_runs`
+    # can split a single column into several maximal runs; those carry the identical
+    # column_x, hence the identical gap, so comparing gaps exactly lets the longest
+    # run of that column win while never letting a different column win on count.
+    #
+    # Deliberately not a tolerance band around the gap: any such window re-opens the
+    # bug for an OPPOSITE-side pair. Same-side columns are already >6 pt apart (the
+    # clustering threshold), so their gaps are too and no window catches them, but
+    # nothing couples the two sides -- our own axis 3.5 pt to the left and the next
+    # chart's labels 8.9 pt to the right share any 6 pt bucket, and count hands the
+    # plot the neighbour again. Distance is the physical fact; count never outranks it.
+    return min(axes, key=lambda item: (item[1], -len(item[0])))[0]
 
 
 def _cluster_y_tick_columns(
     candidates: list[tuple[float, float, float]],
     *,
     repair_missing_decimal: bool = False,
-) -> list[list[tuple[float, float]]]:
-    """Split numeric labels into distinct columns and stacked axis runs."""
+) -> list[tuple[list[tuple[float, float]], float]]:
+    """Split numeric labels into distinct columns and stacked axis runs.
+
+    Each run is returned with the median x of the column it came from. The caller
+    needs that to tell its OWN axis from the neighbouring chart's: the two are
+    usually gridline-aligned, so they are separable by column, never by row.
+    """
 
     columns: list[list[tuple[float, float, float]]] = []
     for item in sorted(candidates, key=lambda candidate: candidate[2]):
-        if columns and item[2] - columns[-1][-1][2] <= 6.0:
+        if columns and item[2] - columns[-1][-1][2] <= _Y_AXIS_COLUMN_TOLERANCE:
             columns[-1].append(item)
         else:
             columns.append([item])
-    axes: list[list[tuple[float, float]]] = []
+    axes: list[tuple[list[tuple[float, float]], float]] = []
     for column in columns:
+        column_x = float(np.median([entry[2] for entry in column]))
         rows = sorted(column, key=lambda row: row[1])
         gaps = np.diff([row[1] for row in rows])
         typical_gap = float(np.median(gaps)) if len(gaps) else 0.0
@@ -119,7 +155,8 @@ def _cluster_y_tick_columns(
             if not (at_end or separated):
                 continue
             axes.extend(
-                _normalize_y_tick_candidate_runs(
+                (run, column_x)
+                for run in _normalize_y_tick_candidate_runs(
                     [(value, y) for value, y, _x in rows[start:stop]],
                     repair_missing_decimal=repair_missing_decimal,
                 )
@@ -166,7 +203,11 @@ def _best_y_axis_for_panel(
         candidates.append((value, 0.5 * (wy0 + wy1), 0.5 * (wx0 + wx1)))
 
     best: tuple[float, list[tuple[float, float]], float] | None = None
-    for ticks in _cluster_y_tick_columns(
+    # The panel-level chooser keeps deriving axis_x by matching rows below: unlike the
+    # plot-local band it already carries a proximity term in its score, and its axis_x
+    # feeds two HARD filters, so adopting the column median here would move panels in
+    # and out of detection for reasons unrelated to this fix.
+    for ticks, _column_x in _cluster_y_tick_columns(
         candidates, repair_missing_decimal=repair_ocr_decimal
     ):
         if len(ticks) < 2:
