@@ -97,6 +97,7 @@ class DiagramTitle:
     title: str
     bbox_pt: tuple[float, float, float, float]
     line_text: str
+    owner_frame: tuple[float, float, float, float] | None = None
 @dataclass
 class ChartPanel:
     pdf: str
@@ -1313,15 +1314,15 @@ def process_page_texts(
                     bbox for bbox in axis_label_spans
                     if not (rx0 <= 0.5 * (bbox[0] + bbox[2]) <= rx1 and ry0 <= 0.5 * (bbox[1] + bbox[3]) <= ry1)
                 ]
-            if not titles and not caption_titles and not axis_label_spans:
+            if not titles and not caption_titles:
                 page_vector_frames = _page_vector_plot_frames(pdf, page.page_num, page)
                 recovered = frame_bound_short_caption_segments(
                     page, group_words_into_lines(page.words), page_vector_frames,
-                    classify_chart, is_spec_table_header_title,
+                    classify_chart, lambda text: is_spec_table_header_title(text) or _is_gate_charge_axis_label(text), below_only=bool(axis_label_spans),
                 )
-                caption_titles = [DiagramTitle(901 + index, text, bbox, text) for index, (text, bbox) in enumerate(recovered)]
+                caption_titles = [DiagramTitle(901 + index, text, bbox, text, frame) for index, (text, bbox, frame) in enumerate(recovered)]
                 recovered_numbers = {title.number for title in caption_titles}
-                if not caption_titles: continue
+                if not caption_titles and not axis_label_spans: continue
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
             with Image.open(page_png) as rendered:
                 width_px, height_px = rendered.size
@@ -1349,7 +1350,7 @@ def process_page_texts(
                     if page_vector_frames is None:
                         page_vector_frames = _page_vector_plot_frames(pdf, page.page_num, page)
                     bbox = _caption_vector_frame_bbox(
-                        page, title, page_vector_frames, numbered_caption=False,
+                        page, title, [title.owner_frame] if title.owner_frame else page_vector_frames, numbered_caption=False,
                         tight=title.number in recovered_numbers,
                     )
                 axis_label_bbox = choose_caption_axis_label_bbox_for_kind(page, title)

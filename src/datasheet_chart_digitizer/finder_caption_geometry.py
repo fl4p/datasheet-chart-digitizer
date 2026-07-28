@@ -204,26 +204,32 @@ def frame_bound_short_caption_segments(
     frames: list[BBox],
     classify: Callable[[str, str], str],
     reject: Callable[[str], bool],
-) -> list[tuple[str, BBox]]:
+    *,
+    below_only: bool = False,
+) -> list[tuple[str, BBox, BBox]]:
     """Recover short unnumbered titles only from an evidenced chart row."""
     supported = {
         "gate_charge", "breakdown_voltage", "body_diode", "transfer",
         "capacitances", "rds_on",
     }
-    candidates: dict[BBox, str] = {}
+    above_candidates: dict[BBox, tuple[str, BBox]] = {}
+    below_candidates: dict[BBox, tuple[str, BBox]] = {}
     for frame in frames:
-        fx0, fy0, fx1, _ = frame
+        fx0, fy0, fx1, fy1 = frame
         for line in lines:
             if not line:
                 continue
+            ly0 = min(word.y0 for word in line)
             ly1 = max(word.y1 for word in line)
-            if not 0.0 <= fy0 - ly1 <= 24.0:
+            above = 0.0 <= fy0 - ly1 <= 24.0
+            below = 24.0 <= ly0 - fy1 <= 52.0
+            if not above and not below:
                 continue
             own = [
                 word for word in line
                 if fx0 - 42.0 <= 0.5 * (word.x0 + word.x1) <= fx1 + 24.0
             ]
-            if not 1 <= len(own) <= 6:
+            if not 1 <= len(own) <= (9 if below else 6):
                 continue
             text = " ".join(word.text for word in own).strip()
             if classify(text, "") not in supported or reject(text):
@@ -232,8 +238,17 @@ def frame_bound_short_caption_segments(
                 min(word.x0 for word in own), min(word.y0 for word in own),
                 max(word.x1 for word in own), max(word.y1 for word in own),
             )
-            candidates[bbox] = text
-    return sorted(((text, bbox) for bbox, text in candidates.items()), key=lambda item: (item[1][1], item[1][0]))
+            if above:
+                above_candidates[bbox] = (text, frame)
+            if below:
+                below_candidates[bbox] = (text, frame)
+    below_frames = {frame for _, frame in below_candidates.values()}
+    candidates = (
+        below_candidates
+        if below_only or len(below_candidates) >= 2 and len(below_frames) >= 2
+        else above_candidates
+    )
+    return sorted(((text, bbox, frame) for bbox, (text, frame) in candidates.items()), key=lambda item: (item[1][1], item[1][0]))
 
 
 def extend_wrapped_caption_titles(
@@ -1018,6 +1033,11 @@ def caption_vector_frame_bbox(
         else:
             continue
         if gap > 65.0:
+            continue
+        if tight and not (
+            direction == "below" and gap <= 24.0
+            or direction == "above" and 24.0 <= gap <= 52.0
+        ):
             continue
         score = gap + 0.20 * abs(tcx - center_x)
         if best is None or score < best[0]:

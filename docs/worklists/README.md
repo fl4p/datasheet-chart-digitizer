@@ -20,6 +20,9 @@ layout-driven: choose canonical medoids/outliers from the structural index,
 presently emphasizing Nexperia, ROHM, Vishay, and IXYS/Littelfuse. Each newly
 flagged item must enter a bounded worklist and must not be laundered by later
 sampling. SPD03 remains a historical open packet; its gates are not waived.
+The active [Vishay below-frame caption recovery](current-vishay-below-frame-captions.md)
+uses a 57-document structural cluster and a generated-copy-free four-vendor
+collateral corpus.
 
 The 2026-07-20 capacitance discovery sweep is now closed at the safety layer.
 Across 200 reviewed charts, its 22 defect rows are covered by landed

@@ -10,6 +10,105 @@ from datasheet_chart_digitizer import find_charts
 
 
 class FinderProductionPathGuardTests(unittest.TestCase):
+    def test_frame_bound_caption_below_skips_nearer_axis_label(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        axis = [find_charts.Word("Qg - Total Gate Charge (nC)", 110, 282, 240, 290)]
+        caption = [find_charts.Word("Gate Charge", 150, 300, 210, 308)]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, [axis, caption], [(100, 100, 250, 250)],
+            find_charts.classify_chart,
+            lambda text: find_charts.is_spec_table_header_title(text)
+            or find_charts._is_gate_charge_axis_label(text),
+            below_only=True,
+        )
+
+        self.assertEqual(recovered, [
+            ("Gate Charge", (150, 300, 210, 308), (100, 100, 250, 250)),
+        ])
+
+    def test_axis_fallback_page_does_not_claim_title_above_next_frame(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        caption = [find_charts.Word("On-Resistance vs. Drain Current", 110, 270, 240, 278)]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, [caption], [(100, 302, 250, 452)],
+            find_charts.classify_chart, find_charts.is_spec_table_header_title,
+            below_only=True,
+        )
+
+        self.assertEqual(recovered, [])
+
+    def test_one_below_caption_preserves_legacy_above_direction(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        above = [find_charts.Word("Transfer Characteristics", 110, 80, 240, 88)]
+        below = [find_charts.Word("Gate Charge", 150, 300, 210, 308)]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, [above, below], [(100, 100, 250, 250)],
+            find_charts.classify_chart, find_charts.is_spec_table_header_title,
+        )
+
+        self.assertEqual(recovered, [
+            ("Transfer Characteristics", (110, 80, 240, 88), (100, 100, 250, 250)),
+        ])
+
+    def test_two_below_titles_on_one_frame_do_not_establish_direction(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        above = [find_charts.Word("Transfer Characteristics", 110, 80, 240, 88)]
+        below = [
+            [find_charts.Word("Transfer Characteristics", 110, 280, 240, 288)],
+            [find_charts.Word("Gate Charge", 150, 300, 210, 308)],
+        ]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, [above, *below], [(100, 100, 250, 250)],
+            find_charts.classify_chart, find_charts.is_spec_table_header_title,
+        )
+
+        self.assertEqual(recovered, [
+            ("Transfer Characteristics", (110, 80, 240, 88), (100, 100, 250, 250)),
+        ])
+
+    def test_below_convention_suppresses_unclaimed_above_frame(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        lines = [
+            [find_charts.Word("Transfer Characteristics", 110, 280, 240, 288)],
+            [find_charts.Word("Gate Charge", 350, 280, 410, 288)],
+            [find_charts.Word("Source-Drain Diode Forward Voltage", 350, 330, 490, 338)],
+        ]
+        frames = [
+            (100, 100, 250, 250),
+            (300, 100, 450, 250),
+            (300, 350, 450, 500),
+        ]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, lines, frames, find_charts.classify_chart,
+            find_charts.is_spec_table_header_title,
+        )
+
+        self.assertEqual(recovered, [
+            ("Transfer Characteristics", (110, 280, 240, 288), frames[0]),
+            ("Gate Charge", (350, 280, 410, 288), frames[1]),
+        ])
+
+    def test_tight_below_frame_caption_prefers_preceding_frame(self) -> None:
+        page = find_charts.PageText(1, 600, 800, [])
+        title = find_charts.DiagramTitle(
+            901, "Gate Charge", (150, 282, 210, 290), "Gate Charge",
+        )
+
+        bbox = find_charts._caption_vector_frame_bbox(
+            page, title, [(100, 100, 250, 250), (100, 319, 250, 469)],
+            numbered_caption=False, tight=True,
+        )
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[1], 100)
+        self.assertLess(bbox[3], 319)
+
     def test_gate_charge_measurement_circuit_is_not_data(self) -> None:
         self.assertEqual(
             find_charts.classify_chart("Gate Charge Measurement Circuit", ""),
@@ -1136,6 +1235,89 @@ class RealPanelOwnershipRegressionTests(unittest.TestCase):
             (14, "Gate-source voltage as a function of gate charge; typical values 003aal160"),
         ])
         self.assertFalse([panel for panel in panels if panel.diagram == 15])
+
+    def test_vishay_below_frame_titles_recover_supported_page_three_charts(self) -> None:
+        page1 = self._page_panels("vishay/SiR882BDP.pdf", 1)
+        panels = self._page_panels("vishay/SiR882BDP.pdf", 3)
+        page4 = self._page_panels("vishay/SiR882BDP.pdf", 4)
+
+        self.assertEqual(
+            [(panel.diagram, panel.kind, panel.title) for panel in page1],
+            [(951, "gate_charge", "Gate charge")],
+        )
+        self.assertEqual(
+            {(panel.kind, panel.title) for panel in panels},
+            {
+                ("transfer", "Transfer Characteristics"),
+                ("rds_on", "On-Resistance vs. Drain Current and Gate Voltage"),
+                ("capacitances", "Capacitance"),
+                ("gate_charge", "Gate Charge"),
+                ("rds_on", "On-Resistance vs. Junction Temperature"),
+            },
+        )
+        self.assertEqual(
+            {(panel.kind, panel.title) for panel in page4},
+            {
+                ("body_diode", "Source-Drain Diode Forward Voltage"),
+                ("rds_on", "On-Resistance vs. Gate-to-Source Voltage"),
+            },
+        )
+        self.assertTrue(all(panel.bbox_pt[2] < 306 for panel in page4))
+        self.assertLess(page4[0].bbox_pt[3], page4[1].bbox_pt[1])
+
+    def test_vishay_qg_axis_label_is_not_promoted_to_a_caption(self) -> None:
+        panels = self._page_panels("vishay/SIR804DP-T1-GE3.pdf", 3)
+
+        self.assertEqual(
+            [(panel.diagram, panel.kind, panel.title) for panel in panels],
+            [(951, "gate_charge", "Gate charge")],
+        )
+
+    def test_vishay_recovered_titles_keep_their_discovery_frames(self) -> None:
+        panels = self._page_panels("vishay/Si4190ADY.pdf", 3)
+        by_title = {panel.title: panel for panel in panels}
+
+        self.assertEqual(set(by_title), {
+            "Transfer Characteristics", "Capacitance", "Gate Charge",
+            "On-Resistance vs. Junction Temperature",
+        })
+        self.assertLess(
+            by_title["Transfer Characteristics"].bbox_pt[3],
+            by_title["Capacitance"].bbox_pt[1],
+        )
+        self.assertLess(
+            by_title["Capacitance"].bbox_pt[3],
+            by_title["Gate Charge"].bbox_pt[1],
+        )
+        self.assertLess(by_title["Gate Charge"].bbox_pt[2], 306)
+        self.assertGreater(
+            by_title["On-Resistance vs. Junction Temperature"].bbox_pt[0], 306,
+        )
+
+        page4 = {panel.title: panel for panel in self._page_panels(
+            "vishay/Si4190ADY.pdf", 4,
+        )}
+        body = page4["Source-Drain Diode Forward Voltage"]
+        rds = page4["On-Resistance vs. Gate-to-Source Voltage"]
+        self.assertLess(body.bbox_pt[2], 306)
+        self.assertGreater(rds.bbox_pt[0], 306)
+        self.assertLess(body.bbox_pt[3], 306)
+        self.assertLess(rds.bbox_pt[3], 306)
+
+    def test_vishay_missing_frame_does_not_cross_bind_body_caption(self) -> None:
+        panels = self._page_panels("vishay/SUD50N04-8m8P.pdf", 4)
+        by_title = {panel.title: panel for panel in panels}
+
+        self.assertEqual(set(by_title), {
+            "On-Resistance vs. Junction Temperature",
+            "On-Resistance vs. Gate-to-Source Voltage",
+        })
+        self.assertLess(
+            by_title["On-Resistance vs. Junction Temperature"].bbox_pt[2], 306,
+        )
+        self.assertLess(
+            by_title["On-Resistance vs. Gate-to-Source Voltage"].bbox_pt[2], 306,
+        )
 
 
 if __name__ == "__main__":
