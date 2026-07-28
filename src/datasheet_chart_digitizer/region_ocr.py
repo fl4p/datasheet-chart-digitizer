@@ -8,10 +8,59 @@ import tempfile
 from pathlib import Path
 
 import pymupdf
+from PIL import Image
 
 
 def _normalize_token(text: str) -> str:
     return text.strip().strip("|:;").replace(",", ".")
+
+
+def ocr_rotated_text_in_rect(
+    pdf: str | Path,
+    page_number: int,
+    clip_rect,
+    *,
+    dpi: float = 500.0,
+    psm: int = 6,
+    timeout: float = 120.0,
+) -> str | None:
+    """OCR a vertical text strip (e.g. a rotated Y-axis title) as plain text.
+
+    The strip is rendered, rotated upright (bottom-to-top titles read
+    clockwise), and OCRed. Returns None when the region is empty or tesseract
+    yields nothing; callers must treat None as absent evidence, never as a
+    default.
+    """
+    with pymupdf.open(Path(pdf)) as doc:
+        page_index = int(page_number) - 1
+        if not 0 <= page_index < len(doc):
+            return None
+        page = doc[page_index]
+        clip = pymupdf.Rect(clip_rect) & page.rect
+        if clip.is_empty:
+            return None
+        scale = dpi / 72.0
+        pix = page.get_pixmap(
+            matrix=pymupdf.Matrix(scale, scale), clip=clip, alpha=False
+        )
+        executable = shutil.which("tesseract")
+        if executable is None:
+            return None
+        with tempfile.TemporaryDirectory() as tmp:
+            png = Path(tmp) / "ocr-rotated.png"
+            pix.save(str(png))
+            with Image.open(png) as image:
+                image.rotate(-90, expand=True).save(png)
+            proc = subprocess.run(
+                [executable, str(png), "stdout", "--psm", str(psm)],
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        if proc.returncode != 0:
+            return None
+        text = proc.stdout.strip()
+        return text or None
 
 
 def ocr_words_in_rect(
