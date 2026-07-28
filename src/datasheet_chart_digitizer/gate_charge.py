@@ -312,6 +312,36 @@ def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
 
 
+# A gate-charge plot is wider than tall or roughly square. Measured over 95 panels that
+# resolved a Vpl: min 0.46, p50 0.76, p90 0.90, p95 1.40 -- then NOTHING until 2.05, and
+# the whole tail above that gap is suspect (EPC2022 1.43 V against siblings at 2.2-2.5,
+# EPC2023 9.25 V, SUP90140E 28.65 V). The threshold sits in the empty gap rather than on
+# either shoulder, so it is not tuned to the three cases that motivated it.
+_MAX_PLOT_BOX_ASPECT = 1.75
+
+
+def _plot_box_aspect_implausible(plot_box: tuple[int, int, int, int]) -> bool:
+    """Is this "plot" too tall to be one chart?
+
+    A box several times taller than wide has bound the frame across STACKED panels, and
+    everything downstream inherits that: the label column nearest the frame belongs to a
+    different chart, and the ticks calibrate a different axis. The reading that comes out
+    is internally consistent -- linear ticks, clean residuals, a plateau inside the tick
+    span -- and simply describes the wrong plot, which is why none of the other guards
+    here can see it.
+
+    Returns False for a degenerate box (zero width) rather than dividing: that state is
+    not "fine", it is already fatal upstream, and this must not become the thing that
+    reports it.
+    """
+
+    x0, y0, x1, y1 = plot_box
+    width = x1 - x0
+    if width <= 0:
+        return False
+    return (y1 - y0) / width > _MAX_PLOT_BOX_ASPECT
+
+
 def _vpl_extrapolated_beyond_ticks(
     vpl_y_px: float | None,
     local_y_ticks: list[tuple[float, float]],
@@ -749,6 +779,12 @@ def _digitize_panel(
     )
     if extrapolated_vpl:
         diagnostics.append("vpl_extrapolated_beyond_ticks")
+    # Checked even when vpl is None: a frame bound across stacked panels is wrong
+    # whether or not a plateau came out of it, and saying so is how the finder defect
+    # becomes visible instead of being inferred from a strange number.
+    implausible_box = _plot_box_aspect_implausible(plot_box)
+    if implausible_box:
+        diagnostics.append("plot_box_aspect_implausible")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)
@@ -775,6 +811,7 @@ def _digitize_panel(
         # reading. A status is a provenance claim; it must not claim more than was done.
         or not vpl_expected_for_source
         or extrapolated_vpl
+        or implausible_box
     ):
         status = "low_confidence"
     else:

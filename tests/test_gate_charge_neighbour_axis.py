@@ -189,7 +189,72 @@ class ExtrapolatedPlateauTests(unittest.TestCase):
         self.assertFalse(self._extrapolated(150.0, ticks=[]))
 
 
+class PlotBoxAspectTests(unittest.TestCase):
+    """A frame bound across STACKED panels calibrates the wrong chart, consistently.
+
+    Nothing else here can see it: the ticks are linear, the residuals are clean and the
+    plateau sits inside the tick span. The reading is internally coherent and simply
+    describes a different plot. Geometry is the only thing left that can tell.
+    """
+
+    def _implausible(self, width, height):
+        from datasheet_chart_digitizer.gate_charge import _plot_box_aspect_implausible
+
+        return _plot_box_aspect_implausible((10, 20, 10 + width, 20 + height))
+
+    def test_ordinary_gate_charge_boxes_pass(self):
+        # the measured corpus: min 0.46, p50 0.76, p90 0.90, p95 1.40
+        self.assertFalse(self._implausible(679, 520))     # EPC2934C, 0.77
+        self.assertFalse(self._implausible(500, 230))     # 0.46
+        self.assertFalse(self._implausible(500, 700))     # 1.40, the p95
+        self.assertFalse(self._implausible(500, 500))     # square
+
+    def test_stacked_panel_boxes_are_flagged(self):
+        self.assertTrue(self._implausible(505, 1591))     # EPC2023,   3.15
+        self.assertTrue(self._implausible(319, 1471))     # SUP90140E, 4.61
+        self.assertTrue(self._implausible(500, 1030))     # EPC2022,   2.06
+
+    def test_the_threshold_sits_in_the_measured_gap(self):
+        """Not tuned to the three cases that motivated it: every legitimate panel
+        measured <= 1.40 and the tail starts at 2.05, so the boundary is placed in the
+        empty band between them and has headroom on both sides."""
+        from datasheet_chart_digitizer.gate_charge import _MAX_PLOT_BOX_ASPECT
+
+        self.assertGreater(_MAX_PLOT_BOX_ASPECT, 1.40)
+        self.assertLess(_MAX_PLOT_BOX_ASPECT, 2.05)
+
+    def test_degenerate_box_is_not_reported_here(self):
+        """Zero width is already fatal upstream and has its own failure path. This must
+        not become the thing that reports it -- nor divide by zero trying."""
+        self.assertFalse(self._implausible(0, 500))
+        self.assertFalse(self._implausible(-5, 500))
+
+
 SUP90140E = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/vishay/SUP90140E.pdf")
+EPC2023 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/epc/EPC2023.pdf")
+
+
+@unittest.skipUnless(EPC2023.exists(), "local EPC2023 datasheet unavailable")
+class Epc2023StackedPanelTests(unittest.TestCase):
+    def test_a_stacked_panel_reading_is_not_served(self):
+        """EPC2023's frame spans several charts (505x1591). Its siblings all read
+        2.0-2.8 V; through that box the ticks come from a neighbouring 30..3 axis and
+        the answer is 9.25 V -- with no other diagnostic firing, because the wrong axis
+        is a perfectly good axis. The value is still produced; it must not be served."""
+
+        from datasheet_chart_digitizer.gate_charge import (
+            digitize_gate_charge,
+            find_vpl_result,
+        )
+
+        panel = next(
+            r for r in digitize_gate_charge(EPC2023, dpi=220, finder_dpi=120)
+            if r.vpl is not None
+        )
+        self.assertGreater(panel.vpl, 5.0, "the wrong value is still produced ...")
+        self.assertIn("plot_box_aspect_implausible", panel.diagnostics)
+        self.assertNotEqual(panel.status, "ok")
+        self.assertIsNone(find_vpl_result(str(EPC2023)))
 
 
 @unittest.skipUnless(SUP90140E.exists(), "local SUP90140E datasheet unavailable")
