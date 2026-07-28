@@ -29,6 +29,14 @@ _CHARGE_ROW_PHRASES = {
     "gatechargetotal", "gatechargegatetosource", "gatechargegatetodrain",
 }
 _CAPACITANCE_ROW_PHRASES = {"inputcapacitance", "outputcapacitance", "reversetransfercapacitance"}
+# Normalized symbol-cell fragments (Ciss/Coss/Crss, Qg/Qgs/Qgd, td(on)/tr/tf)
+# as pdftotext emits them: the base letter and the subscript come out as
+# separate words that interleave into neighboring wrapped row names.  Used only
+# to build a second phrase-match stream, never to reject on their own.
+_SPEC_SYMBOL_FRAGMENTS = {
+    "c", "q", "t", "r", "g", "d", "f",
+    "iss", "oss", "rss", "gs", "gd", "on", "off", "don", "doff",
+}
 _BODY_DIODE_CURRENT_AXIS_TOKENS = {"isd", "isda", "is", "isa", "if", "ifa"}
 _CAPTION_AXIS_TOKENS = {
     "transfer": {"vgs", "vgsv", "vge", "vgev"},
@@ -637,9 +645,17 @@ def bbox_looks_like_spec_table(
     tokens = {normalize(word.text) for word in selected}
     if len(_SPEC_TABLE_MARKERS & tokens) >= 3:
         return True
-    compact = "".join(
-        normalize(word.text) for word in sorted(selected, key=lambda word: (word.y0, word.x0))
-    )
+    ordered = [normalize(word.text) for word in sorted(selected, key=lambda word: (word.y0, word.x0))]
+    compact = "".join(ordered)
+    # A symbol cell (``C rss``, ``Q gs``) sits vertically between the lines of
+    # its wrapped row name, so the y-ordered stream reads "reverse transfer
+    # C rss capacitance" and the row phrase never matches contiguously.  Row
+    # phrases are therefore also matched with symbol fragments dropped.
+    compact_no_symbols = "".join(t for t in ordered if t not in _SPEC_SYMBOL_FRAGMENTS)
+
+    def _rows(phrases: set[str]) -> int:
+        return sum(phrase in compact or phrase in compact_no_symbols for phrase in phrases)
+
     if "productsummary" in compact and {"value", "unit"} <= tokens:
         return True
     section_headers = sum(
@@ -653,17 +669,11 @@ def bbox_looks_like_spec_table(
     )
     if section_headers >= 2:
         return True
-    if any(phrase in compact for phrase in _SWITCHING_TIME_PHRASES) and any(
-        phrase in compact for phrase in _CHARGE_ROW_PHRASES
-    ):
+    if _rows(_SWITCHING_TIME_PHRASES) and _rows(_CHARGE_ROW_PHRASES):
         return True
-    if any(phrase in compact for phrase in _CHARGE_ROW_PHRASES) and sum(
-        phrase in compact for phrase in _CAPACITANCE_ROW_PHRASES
-    ) >= 2:
+    if _rows(_CHARGE_ROW_PHRASES) and _rows(_CAPACITANCE_ROW_PHRASES) >= 2:
         return True
-    if any(phrase in compact for phrase in _SWITCHING_TIME_PHRASES) and sum(
-        phrase in compact for phrase in _CAPACITANCE_ROW_PHRASES
-    ) >= 2:
+    if _rows(_SWITCHING_TIME_PHRASES) and _rows(_CAPACITANCE_ROW_PHRASES) >= 2:
         return True
     return len((_SPEC_TABLE_FAMILIES - own_families) & tokens) >= 4
 

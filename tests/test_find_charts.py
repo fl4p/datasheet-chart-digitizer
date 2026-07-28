@@ -1473,6 +1473,31 @@ class SpecTableGuardFamilyTests(unittest.TestCase):
             find_charts._bbox_looks_like_spec_table(page, bbox, own_families=frozenset({"charge"}))
         )
 
+    def test_symbol_cell_interleaved_into_wrapped_row_name_still_rejected(self) -> None:
+        # STP310N10F7 p4: the ``C rss`` symbol cell sits vertically between the
+        # two lines of the wrapped "Reverse transfer / capacitance" row name, so
+        # the y-ordered stream reads "reversetransfer C rss capacitance" and the
+        # row phrase never matches contiguously. The dynamic-characteristics
+        # table then passed as a gate-charge axis-label panel.
+        words = [
+            find_charts.Word(text, x0, y0, x0 + w, y0 + 8.0)
+            for text, x0, y0, w in (
+                ("C", 20.0, 100.0, 8.0), ("oss", 28.0, 104.0, 12.0),
+                ("Output", 60.0, 100.0, 34.0), ("capacitance", 98.0, 100.0, 52.0),
+                ("Reverse", 60.0, 118.0, 36.0), ("transfer", 100.0, 118.0, 38.0),
+                ("C", 20.0, 124.0, 8.0), ("rss", 28.0, 128.0, 12.0),
+                ("capacitance", 60.0, 132.0, 52.0),
+                ("Q", 20.0, 150.0, 8.0), ("g", 28.0, 154.0, 6.0),
+                ("Total", 60.0, 150.0, 26.0), ("gate", 90.0, 150.0, 22.0), ("charge", 116.0, 150.0, 32.0),
+                ("Q", 20.0, 170.0, 8.0), ("gs", 28.0, 174.0, 10.0),
+                ("Gate-source", 60.0, 170.0, 54.0), ("charge", 118.0, 170.0, 32.0),
+            )
+        ]
+        page = find_charts.PageText(page_num=1, width_pt=700.0, height_pt=400.0, words=words)
+        self.assertTrue(
+            find_charts._bbox_looks_like_spec_table(page, (0.0, 90.0, 200.0, 190.0))
+        )
+
 
 TK100E10N1 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/toshiba/TK100E10N1.pdf")
 
