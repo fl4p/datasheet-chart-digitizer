@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import cv2
 import numpy as np
-from .capacitance_grid_mask import _remove_full_width_horizontal_rails
+from .capacitance_grid_mask import (
+    _dark_grid_rule_evidence,
+    _remove_frame_residual_rails,
+    _remove_full_width_horizontal_rails,
+)
 from .capacitance_types import CapAnchor, PlotBox, Trace
 from .capacitance_validation import UNPHYSICAL_VALUE_RISE_FRACTION, value_rise_fraction
 
@@ -329,9 +333,10 @@ def _raster_source_centers_by_x(
     # would track as flat phantom traces at the top/bottom decades -- blank a
     # small frame margin. If the opening also destroys the traces, the band
     # check below fails loudly rather than returning grid lines as data.
-    if float(dark.mean()) > 0.10:
+    if float(dark.mean()) > 0.10 or _dark_grid_rule_evidence(dark):
         dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         dark = _remove_full_width_horizontal_rails(dark)
+        dark = _remove_frame_residual_rails(dark)
     margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
     dark[:margin, :] = 0
     dark[-margin:, :] = 0
