@@ -1,0 +1,55 @@
+- [viz-review own overlay pass first](viz-review-own-overlay-pass-first.md) — never hand Fab a batch on trace_validation label; run your OWN overlay pass first, present your verdict (batch-26 Coss-snap miss)
+- [dsdig full-corpus authoritative harness](dsdig-full-corpus-authoritative-harness.md) — shared/data-dependent extractor changes need full-corpus compare w/ production selector; bounded/substitute selection invalid
+- [dsdig data-bearing chart gate](dsdig-data-bearing-chart-gate.md) — reject test-circuit schematics and idealized definition waveforms even when they resemble a supported measured chart
+- [dsdig capacitance closed bottom frame](dsdig-capacitance-closed-bottom-frame.md) — median grid endpoints can truncate dense C(V) plots; extend only with top-aligned side rails + a shared solid bottom
+- [dsdig table-reference column ownership](dsdig-table-reference-column-ownership.md) — table refs must come from evidenced value/typ cells; condition-token captures fail closed visibly
+- [dsdig gate-charge panel-local calibration](dsdig-gate-charge-panel-local-calibration.md) — OCR retry text must not contaminate later panels; bind boxes to evidenced closed frames, keep real unlabeled intervals
+- [dsdig-superscript-axis-trust](dsdig-superscript-axis-trust.md) — parse Unicode superscript ticks semantically (`10²`=100, `10⁻²`=.01); active axis errors override `axis_calibration_trusted=true`
+- [crossing-approach-snap-check](crossing-approach-snap-check.md) — Ciss/Coss crossings: MANDATORY microscopic intersection check for GREEN; Coss can snap onto Ciss through the APPROACH (Fab caught PSMN5R3)
+- [dsdig-sweep-green-axis-integrity-retro](dsdig-sweep-green-axis-integrity-retro.md) — sweep-GREEN pool (227) had axis/box/tick defects; checklist gained §0-diagnostic-override + §3 axis-integrity gates
+- [dsdig-collateral-acceptance-discipline](dsdig-collateral-acceptance-discipline.md) — accepting an extractor change needs FULL-corpus re-extract via authoritative tool/selection + box-ownership on every box delta
+- [lineformer-local-clone](lineformer-local-clone.md) — LineFormer clone at /Users/fab/dev/pv/LineFormer for crossing chart-line segmentation
+- [bv-chart-digitizer-plugin](bv-chart-digitizer-plugin.md) — dsdig breakdown_voltage plugin (V(BR)DSS vs Tj); samples pending Fab's overlay verification
+- [rr-chart-digitizer-plugin](rr-chart-digitizer-plugin.md) — dsdig RR plugin (AO Qrr charts = N_TAU source); AOT414 human-verified, n_tau ≈0.3-0.9
+- [cv-anchor-assignment](cv-anchor-assignment.md) — dsdig #2 (8e978f6): Ciss/Coss/Crss trace assignment via anchor log-residuals + shape priors, conservative gates
+- [cv-crop-transform](cv-crop-transform.md) — dsdig #7 (d4773ce): persisted crop_box_pt, shared CropTransform for C(V)/BV
+- [vpl-finder-glyph-fallback](vpl-finder-glyph-fallback.md) — dsdig guarded PyMuPDF fallback; Vpl parity 61 matched / 0 missing
+- [dsdig-dslib-dependency-inversion](dsdig-dslib-dependency-inversion.md) — dsdig Vpl standalone 63/63; fetlib pins dsdig, dslib.viz.find_vpl defaults to it
+- [chart-overlay-tick-labels](chart-overlay-tick-labels.md) — human overlays show consumed ticks/units; 8× crosshair crops are AI-internal only
+- [dsdig tick-center semantic evidence](dsdig-tick-center-semantic-evidence.md) — exact centering is not semantic identity; conflicting duplicates and long endpoint extrapolation fail closed
+- [dsdig Qoss metric sub-contract](dsdig-qoss-metric-subcontract.md) — C(V) and derived Qoss availability are separate; unsafe bundles are null + diagnostic-only with explicit reasons
+- [dsdig-human-verify-backlog](dsdig-human-verify-backlog.md) — dsdig review queue strict READY/needs_annotation/gap states; arrays alone never prove trace fidelity
+- [dsdig-body-diode-forward-voltage](dsdig-body-diode-forward-voltage.md) — dsdig #5 (b409eec): human-verified VSD/IF traces w/ temperature assignment; diode fitting = future slice
+- [dsdig Toshiba raster OCR stratum](dsdig-toshiba-raster-ocr.md) — image-rect panels + tesseract position calibration + 2x2 stroke opening for black grids; DPI-sensitive (180 OK)
+- [dsdig-base-drift-local-main](dsdig-base-drift-local-main.md) — dsdig agent slices built on origin/main b409eec while Fab local main was ahead; slices need re-validation on rebase
+- [dsdig-thermal-impedance-deferred](dsdig-thermal-impedance-deferred.md) — Zth human RED: scattered off-curve points; slice deferred to dsdig issue #8
+- [dsdig-trace-fidelity-visual-gate](dsdig-trace-fidelity-visual-gate.md) — auditing a slice REQUIRES the source-vs-extracted-point overlay; guards + crosshair-centering ≠ trace fidelity
+- [dsdig-forward-transconductance](dsdig-forward-transconductance.md) — no direct gfs/gm-vs-Id digitizer; fail-closed plugin tracked by dsdig issue #9
+- [dsdig-axis-fitter-consolidation](dsdig-axis-fitter-consolidation.md) — ONE public axis-fit core numeric_axis.fit_axis_ticks (main c2d6bdf); task #1 folds duplicate fitters onto it
+- [viz-review autopilot chart-review contract](viz-review-autopilot-contract.md) — viz-review = review lane for Fab's autopilot: 25-overlay batches, dual-agent GREEN/RED, never marks human_verified
+- [dsdig scale verification thresholds](dsdig-scale-verification-thresholds.md) — dsdig scale verified/unverified/FAIL thresholds + residual units (AO RR batch review)
+- [dsdig body_diode chart-selection false alarm](dsdig-body-diode-capacitance-chart-selection-bug.md) — DMTH83M2 batch-01 #15 misread as capacitance; is the correct body-diode I-V panel (too-wide crop)
+- [transfer-temp-assignment-check](transfer-temp-assignment-check.md) — verify transfer temp identity 3 ways (Vth-lower-hot, crossover, printed labels); batch-11 caught 4/6 NXP PSMN inversions
+- [dsdig opposite-outer transfer label binding](dsdig-opposite-outer-transfer-label-binding.md) — close crossing pairs may bind only from opposite outside labels, then must still pass hot-left/one-ZTC physics
+- [dsdig absolute RDS temperature axis kind](dsdig-absolute-rdst-axis-kind.md) — absolute mOhm RDS(Tj) never takes normalized-unity checks; typ/max serving requires two owned noncrossing traces plus local conditions
+- [dsdig body_diode values.json list format](dsdig-body-diode-values-json-list.md) — body_diode values.json is a list of per-temperature entries, not a dict
+- [Gate-charge Vpl deliverable scope](gate-charge-vpl-deliverable-scope.md) — gate_charge_vpl must deliver full Qg(VGS) curve_px provenance AND the Vpl scalar; curve switching is RED even if Vpl correct
+- [dsdig gate-charge vector extraction fix](dsdig-gate-charge-vector-extraction-fix.md) — fixed curve switching via single branch, no median blend, trim after first upper-axis reach
+- [viz-review autopilot closed 2026-07-16](viz-review-autopilot-closed-2026-07-16.md) — queue 696 GREEN + 1 REWORK; RDS-vs-Tj Batches 24/25 human-GREEN all 46; no pending RDS review
+- [Chart Review Checklist](chart-review-checklist.md) — use dsdig-verify-backlog/CHART-REVIEW-CHECKLIST.md top-to-bottom as the fail-closed discipline for every dsdig review
+- [Proactive viz-review channel monitoring](viz-review-proactive-monitoring.md) — in viz-review, keep watching the channel and review batches as they arrive, not per-batch prompts
+- [dsdig shared channel + wrong-value review loop](dsdig-wrong-value-review-loop.md) — dsdig channel = active two-lane lane for the 23 wrong-value sweep extractions; state [[dsdig-wrong-value-review-state]]
+- [dsdig shared channel file path](dsdig-channel-path.md) — Absolute path to the dsdig shared channel file used by agent reviewers and the implementation owner
+- [dsdig C(V) shared-collapse detector correction](dsdig-cv-shared-collapse-crossing-correction.md) — v4 was human-RED (PSMN5R3 blue drifted onto red pre-crossing); v5 uses <=1px source-seated bridge anchor
+- [dsdig-wrong-value-review-state](dsdig-wrong-value-review-state.md) — progress of the two-lane dsdig review of the 23 wrong-value extractions
+- [dsdig XR100N02F low_confidence scoring bug](dsdig-xr100n02f-crop-plot-normalization-bug.md) — -1e9 sentinel was scoring in crop coords but normalizing by context-crop dims; fixed via plot-local normalization
+- [dsdig fail-closed null scalars rule](dsdig-fail-closed-null-scalars.md) — refuse statuses must null all derived scalars + curves, not only set the status flag
+- [dsdig identical curve bundles need source proof](dsdig-identical-curve-bundles-need-source-proof.md) — byte-identical curves across parts aren't corruption when source PDFs publish identical geometry (AOB414/AOD4126)
+- [dsdig gate-collateral env-drift](dsdig-gate-collateral-env-drift.md) — dsdig OCR/raster+axis-inferred extraction host/dep-sensitive; stored baselines drift; same-host back-to-back A/B is the only causal test (box-v3: 5 deltas, 0 regressions)
+- [dsdig annotated-PDF reproducibility](dsdig-annotated-pdf-reproducibility.md) — save embedded-overlay review PDFs with PyMuPDF `no_new_id=True`, rebuild twice, and hash the actual PDF
+- [dsdig NDB5060L human green](dsdig-ndb5060l-human-green.md) — Fab human-GREEN all NDB5060L charts after Figure 9's closed right-frame recovery through 50 V
+- [dsdig layout clustering](dsdig-layout-clustering.md) — cluster canonical PDFs by page/document structure before series sampling; generated `.pdf.<transform>.pdf` copies stay in a side index
+- [dsdig crossing intersection check mandatory](dsdig-crossing-intersection-check-mandatory.md) — 5× intersection-point inspection is mandatory before GREEN; normal-scale overlay is insufficient for crossing curves
+- [dsdig review HTML location](dsdig-review-html-location.md) — contact sheets at dsdig-verify-backlog/review-html/<packet>/<packet>-001.html
+- [dsdig review overlay cache-bypass naming](dsdig-review-overlay-cache-bypass.md) — re-submitted overlays use unique suffixes (overlay.review-v2.webp); base overlay.webp can serve stale cached image
+- [viz-review shared channel path](viz-review-channel-path.md) — /tmp/claude-channels/viz-review.ndjson
