@@ -588,6 +588,44 @@ def words_in_bbox(words: list[_WordLike], bbox: BBox) -> list[_WordLike]:
     ]
 
 
+def bbox_is_shallow_ruled_row(bbox: BBox, horizontal_rules: list[BBox]) -> bool:
+    """Return whether two local rules enclose one shallow table row."""
+    x0, y0, x1, y1 = bbox
+    width, height = x1 - x0, y1 - y0
+    if width <= 0.0 or not 3.0 <= height <= 36.0:
+        return False
+    center_x = 0.5 * (x0 + x1)
+    nearby = sorted(
+        0.5 * (rule[1] + rule[3])
+        for rule in horizontal_rules
+        if rule[2] - rule[0] >= max(60.0, 0.40 * width)
+        and rule[0] <= center_x <= rule[2]
+        and y0 - 4.0 <= 0.5 * (rule[1] + rule[3]) <= y1 + 4.0
+    )
+    split_y = y0 + 0.5 * height
+    for upper in nearby:
+        if not y0 - 4.0 <= upper <= split_y + 1.0:
+            continue
+        for lower in nearby:
+            if lower >= y1 and 5.0 <= lower - upper <= 28.0:
+                return True
+    return False
+
+
+def bbox_follows_long_horizontal_rule(
+    bbox: BBox, horizontal_rules: list[BBox]
+) -> bool:
+    """Return whether a long local rule immediately precedes a text box."""
+    x0, y0, x1, _ = bbox
+    center_x = 0.5 * (x0 + x1)
+    return any(
+        rule[2] - rule[0] >= max(60.0, 0.40 * (x1 - x0))
+        and rule[0] <= center_x <= rule[2]
+        and y0 - 4.0 <= 0.5 * (rule[1] + rule[3]) <= y0 + 1.0
+        for rule in horizontal_rules
+    )
+
+
 def bbox_looks_like_spec_table(
     words: list[_WordLike],
     bbox: BBox,

@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Find chart panels in datasheet PDFs.
-This pass deliberately stops at "find all charts and emit crops + metadata";
-chart-specific trace digitizers build on top of this index.
-"""
+"""Find chart panels and emit crops plus metadata for downstream digitizers."""
 from __future__ import annotations
 import argparse
 import csv
@@ -22,11 +19,12 @@ from PIL import Image
 try:
     from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
+    from .table_crossref_filter import is_ruled_spec_crossref
     from .finder_caption_geometry import (
         bbox_iou as _bbox_iou,
         bbox_evidences_breakdown,
         bbox_overlap_fraction_of_smaller as _bbox_overlap_fraction_of_smaller,
-        bbox_looks_like_spec_table,
+        bbox_looks_like_spec_table, bbox_is_shallow_ruled_row, bbox_follows_long_horizontal_rule,
         bound_caption_bbox_to_caption_row,
         bound_caption_bbox_to_own_column as _bound_caption_bbox_to_own_column,
         caption_axis_direction,
@@ -49,11 +47,12 @@ try:
 except ImportError:  # pragma: no cover - direct script compatibility
     from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
+    from table_crossref_filter import is_ruled_spec_crossref
     from finder_caption_geometry import (
         bbox_iou as _bbox_iou,
         bbox_evidences_breakdown,
         bbox_overlap_fraction_of_smaller as _bbox_overlap_fraction_of_smaller,
-        bbox_looks_like_spec_table,
+        bbox_looks_like_spec_table, bbox_is_shallow_ruled_row, bbox_follows_long_horizontal_rule,
         bound_caption_bbox_to_caption_row,
         bound_caption_bbox_to_own_column as _bound_caption_bbox_to_own_column,
         caption_axis_direction,
@@ -358,7 +357,6 @@ def line_bbox(line: list[Word]) -> tuple[float, float, float, float]:
         max(w.y1 for w in line),
     )
 
-
 def find_diagram_titles(page: PageText) -> list[DiagramTitle]:
     titles: list[DiagramTitle] = []
     lines = group_words_into_lines(page.words)
@@ -403,7 +401,6 @@ def find_diagram_titles(page: PageText) -> list[DiagramTitle]:
             )
     titles.sort(key=lambda t: (t.bbox_pt[1], t.bbox_pt[0], t.number))
     return titles
-
 
 def _caption_starts(line: list[Word]) -> list[int]:
     starts: list[int] = []
@@ -1329,6 +1326,9 @@ def process_page_texts(
             v_rules_px, h_rules_px = detect_rule_boxes(page_png)
             v_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in v_rules_px]
             h_rules_pt = [box_px_to_pt(box, width_px, height_px, page) for box in h_rules_px]
+            table_crossrefs = [title for title in caption_titles if is_ruled_spec_crossref(page.words, title.bbox_pt, h_rules_pt)]
+            caption_titles = [title for title in caption_titles if title not in table_crossrefs]
+            axis_label_spans = [bbox for bbox in axis_label_spans if not any(_bbox_overlap_fraction_of_smaller(bbox, title.bbox_pt) >= 0.60 for title in table_crossrefs) and not (table_crossrefs and (bbox_is_shallow_ruled_row(bbox, h_rules_pt) or bbox_follows_long_horizontal_rule(bbox, h_rules_pt)))]
             grid_regions = infer_grid_regions_from_h_rules(page, h_rules_pt)
             lines = group_words_into_lines(page.words)
             for title in titles:
