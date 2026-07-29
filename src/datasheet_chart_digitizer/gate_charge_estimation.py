@@ -152,6 +152,23 @@ def _cluster_y_tick_columns(
         for stop in range(1, len(rows) + 1):
             at_end = stop == len(rows)
             separated = not at_end and rows[stop][1] - rows[stop - 1][1] > split_gap
+            if separated and stop - start >= 3:
+                # A terminal label after skipped intermediates (SP010N07AGTQ
+                # prints 10 8 6 5 4 ... 0) sits exactly where the run's own
+                # pt-per-value slope predicts; a stacked chart's first label
+                # does not. Keep only the linear-consistent case together.
+                segment = rows[start:stop]
+                seg_values = [row[0] for row in segment]
+                if len(set(seg_values)) >= 3:
+                    slope = float(
+                        np.polyfit(seg_values, [row[1] for row in segment], 1)[0]
+                    )
+                    expected = slope * (rows[stop][0] - rows[stop - 1][0])
+                    gap = rows[stop][1] - rows[stop - 1][1]
+                    if expected > 0 and abs(gap - expected) <= max(
+                        6.0, 0.15 * expected
+                    ):
+                        separated = False
             if not (at_end or separated):
                 continue
             axes.extend(
@@ -236,7 +253,17 @@ def _best_y_axis_for_panel(
         if overlap / reference_span < 0.25:
             continue
         overhang = max(0.0, panel_rect.y0 - min(ys)) + max(0.0, max(ys) - panel_rect.y1)
-        if x_axis_edges is None and overhang > 0.45 * panel_rect.height:
+        # An x axis proves horizontal ownership only.  It cannot make a y-tick
+        # run that reaches through the panels above/below local to this chart.
+        # Without this unconditional bound, a sparse column assembled from
+        # several stacked charts can win on value span and expand the eventual
+        # crop across most of the page (EPC2023: 30, 20, 3 from three rows).
+        overhang_fraction = (
+            1.20
+            if getattr(page, "text_source", "").startswith("tesseract_bounded_gate")
+            else 0.45
+        )
+        if overhang > overhang_fraction * panel_rect.height:
             continue
         horizontal_gap = min(abs(axis_x - panel_rect.x0), abs(axis_x - panel_rect.x1))
         value_span = max(value for value, _y in ticks) - min(value for value, _y in ticks)
@@ -441,6 +468,24 @@ def _horizontal_numeric_tokens(
     for row in rows:
         runs: list[list[tuple[str, float, float, float, float]]] = []
         for fragment in sorted(row, key=lambda item: item[1]):
+            if runs:
+                # Repeated OCR passes (and Toshiba's overprinted text layer)
+                # emit the same label twice at nearly the same position; the
+                # adjacency join below would otherwise concatenate the copies
+                # into a fictional tick (''10''+''10'' -> ''1010'').
+                previous = runs[-1][-1]
+                overlap = min(fragment[3], previous[3]) - max(
+                    fragment[1], previous[1]
+                )
+                narrow = max(
+                    1e-6,
+                    min(
+                        fragment[3] - fragment[1],
+                        previous[3] - previous[1],
+                    ),
+                )
+                if fragment[0] == previous[0] and overlap >= 0.6 * narrow:
+                    continue
             if runs and fragment[1] - runs[-1][-1][3] <= 1.5:
                 runs[-1].append(fragment)
             else:
@@ -463,6 +508,22 @@ def _normalize_x_tick_candidates(
     candidates: list[tuple[float, float]],
 ) -> list[tuple[float, float]]:
     candidates.sort(key=lambda item: item[1])
+    # Two OCR passes over one band (rect + poppler on Toshiba dual-y charts,
+    # or the source's own overprinted text layer) repeat each label at nearly
+    # the same position. The contiguous-run search below treats the repeat as
+    # a non-increasing step and refuses the whole axis, so collapse same-value
+    # near-coincident reads first; distinct ticks always sit farther apart.
+    deduped: list[tuple[float, float]] = []
+    for value, x in candidates:
+        if (
+            deduped
+            and abs(deduped[-1][0] - value) < 1e-9
+            and abs(x - deduped[-1][1]) <= 3.0
+        ):
+            deduped[-1] = (value, 0.5 * (deduped[-1][1] + x))
+            continue
+        deduped.append((value, x))
+    candidates = deduped
     best: tuple[float, list[tuple[float, float]]] | None = None
     for start in range(len(candidates) - 2):
         for stop in range(start + 3, len(candidates) + 1):
@@ -619,6 +680,43 @@ def _has_gate_charge_evidence(text: str) -> bool:
         or "qgate" in compact
         or "qg" in compact
     )
+
+
+def _drop_glyph_offset_tick(
+    ticks: list[tuple[float, float]],
+) -> list[tuple[float, float]]:
+    """Drop one label printed off its axis row.
+
+    The terminal 0 label often sits below the axis line it names (SP010N07AGTQ:
+    predicted row 478, glyph center 486), and one such offset point tilts the
+    whole least-squares calibration by +0.15 V. Least squares smears that
+    error across every residual, so the outlier is found by leave-one-out
+    refit quality, not by its own residual under the contaminated fit. Only a
+    drop that makes the remaining ticks markedly more collinear is taken.
+    """
+
+    if len(ticks) < 5:
+        return ticks
+
+    def max_fit_residual(subset: list[tuple[float, float]]) -> float:
+        values = np.asarray([value for value, _y in subset], dtype=float)
+        rows = np.asarray([y for _value, y in subset], dtype=float)
+        if np.ptp(rows) < 1e-9:
+            return float("inf")
+        slope, offset = np.polyfit(rows, values, 1)
+        return float(np.max(np.abs(values - (slope * rows + offset))))
+
+    full_residual = max_fit_residual(ticks)
+    kept = min(
+        (
+            [tick for index, tick in enumerate(ticks) if index != leave]
+            for leave in range(len(ticks))
+        ),
+        key=max_fit_residual,
+    )
+    if full_residual >= 3.0 * max(max_fit_residual(kept), 0.02):
+        return kept
+    return ticks
 
 
 def _v_from_local_ticks(y_ticks: list[tuple[float, float]], y_px: float, rect: pymupdf.Rect, scale: float) -> float | None:

@@ -133,6 +133,163 @@ def _candidate_masks(mask: np.ndarray) -> list[np.ndarray]:
     return out
 
 
+def _bridge_source_supported_plateau_gaps(
+    points: list[tuple[int, int]],
+    gray: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Restore a plateau row removed by the grid-line suppression mask."""
+
+    if len(points) < 12:
+        return points
+    height, width = gray.shape
+    ordered = sorted(points)
+    repaired: list[tuple[int, int]] = [ordered[0]]
+    for left, right in zip(ordered, ordered[1:], strict=False):
+        gap = right[0] - left[0]
+        horizontal = _source_horizontal_plateau_bridge(
+            left, right, gray
+        )
+        if horizontal:
+            repaired.extend(horizontal)
+            repaired.append(right)
+            continue
+        if (
+            gap < 0.08 * width
+            or gap > 0.55 * width
+            or abs(right[1] - left[1]) > 0.06 * height
+            # A level bridge seeded at the plot's left edge continues an
+            # axis-adjacent stray, not a Miller plateau: BSP135's depletion
+            # curve got a fictional 149 px plateau from x=29 that moved the
+            # served Vpl off the source row.
+            or left[0] < 0.12 * width
+        ):
+            repaired.append(right)
+            continue
+        xs = np.arange(left[0] + 1, right[0], dtype=int)
+        expected = np.rint(
+            left[1]
+            + (xs - left[0]) * (right[1] - left[1]) / gap
+        ).astype(int)
+        supported = []
+        for x, y in zip(xs, expected, strict=True):
+            y0 = max(0, y - 2)
+            y1 = min(height, y + 3)
+            supported.append(bool(np.min(gray[y0:y1, x]) < 170))
+        if supported and float(np.mean(supported)) >= 0.72:
+            repaired.extend(zip(xs.tolist(), expected.tolist()))
+        repaired.append(right)
+    return repaired
+
+
+def _source_horizontal_plateau_bridge(
+    left: tuple[int, int],
+    right: tuple[int, int],
+    gray: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Restore a disconnected non-grid plateau proven by a dark source run."""
+
+    height, width = gray.shape
+    gap = right[0] - left[0]
+    if (
+        gap < 0.08 * width
+        or gap > 0.55 * width
+        or abs(right[1] - left[1]) <= 0.06 * height
+    ):
+        return []
+    best: tuple[int, int, int] | None = None
+    y_radius = max(3, int(round(0.04 * height)))
+    for y in range(max(0, left[1] - y_radius), min(height, left[1] + y_radius + 1)):
+        dark = gray[y] < 170
+        padded = np.pad(dark.astype(np.int8), (1, 1))
+        transitions = np.diff(padded)
+        for start, end in zip(
+            np.flatnonzero(transitions == 1),
+            np.flatnonzero(transitions == -1),
+            strict=True,
+        ):
+            run = int(end - start)
+            if (
+                0.22 * width <= run <= 0.85 * width
+                and start <= left[0] + 0.03 * width
+                # Every synthesized bridge pixel must be backed by this
+                # source-dark run; never extend a partial plateau.
+                and end >= right[0]
+            ):
+                candidate = (run, -abs(y - left[1]), y)
+                if best is None or candidate > best:
+                    best = candidate
+    if best is None:
+        return []
+    plateau_y = best[2]
+    return [
+        (x, plateau_y)
+        for x in range(left[0] + 1, right[0])
+    ]
+
+
+def _prepend_source_supported_initial_ramp(
+    points: list[tuple[int, int]],
+    gray: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Restore a disconnected Qg=0 ramp only when the source stroke proves it."""
+
+    if len(points) < 12:
+        return points
+    height, width = gray.shape
+    ordered = sorted(points)
+    first_x, first_y = ordered[0]
+    if not 0.05 * width < first_x <= 0.28 * width:
+        return ordered
+    if height - 1 - first_y < 0.18 * height:
+        return ordered
+    xs = np.arange(1, first_x, dtype=int)
+    expected = np.rint(
+        (height - 1) + xs * (first_y - (height - 1)) / first_x
+    ).astype(int)
+    supported = []
+    for x, y in zip(xs, expected, strict=True):
+        y0 = max(0, y - 2)
+        y1 = min(height, y + 3)
+        supported.append(bool(np.min(gray[y0:y1, x]) < 170))
+    if not supported or float(np.mean(supported)) < 0.72:
+        return ordered
+    prefix = [(0, height - 1), *zip(xs.tolist(), expected.tolist())]
+    return [*prefix, *ordered]
+
+
+def _repair_leading_axis_capture(
+    points: list[tuple[int, int]],
+    gray: np.ndarray,
+) -> list[tuple[int, int]]:
+    """Replace a short bottom-axis ride only when the source ramp continues it."""
+
+    if len(points) < 12:
+        return points
+    height, width = gray.shape
+    ordered = sorted(points)
+    first_x, first_y = ordered[0]
+    if (
+        not 0.05 * width < first_x <= 0.28 * width
+        or height - 1 - first_y > 0.03 * height
+    ):
+        return ordered
+    material_index = next(
+        (
+            index
+            for index, (_x, y) in enumerate(ordered)
+            if height - 1 - y >= 0.18 * height
+        ),
+        None,
+    )
+    if material_index is None:
+        return ordered
+    candidate = _prepend_source_supported_initial_ramp(
+        ordered[material_index:],
+        gray,
+    )
+    return candidate if candidate and candidate[0][0] == 0 else ordered
+
+
 def _trace_gate_curve(
     crop: Image.Image,
     plot_box: tuple[int, int, int, int],
@@ -178,6 +335,78 @@ def _trace_gate_curve(
     if not candidates:
         return []
     _score, points = max(candidates, key=lambda item: item[0])
+    points = _bridge_source_supported_plateau_gaps(points, gray)
+    points = _prepend_source_supported_initial_ramp(points, gray)
+    points = _repair_leading_axis_capture(points, gray)
+    return [(x0 + x, y0 + y) for x, y in points]
+
+
+def _trace_monotone_upper_gate_curve(
+    crop: Image.Image,
+    plot_box: tuple[int, int, int, int],
+    *,
+    gray_threshold: int = 190,
+) -> list[tuple[int, int]]:
+    """Follow the rising VGS branch through falling VDS crossings."""
+
+    rgb = np.asarray(crop.convert("RGB"))
+    x0, y0, x1, y1 = plot_box
+    roi = rgb[y0 : y1 + 1, x0 : x1 + 1]
+    if roi.size == 0:
+        return []
+    gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
+    mask = (
+        (gray < gray_threshold)
+        | ((hsv[:, :, 1] > 45) & (hsv[:, :, 2] < 245))
+    ).astype(np.uint8) * 255
+    height, width = mask.shape
+    vertical = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(
+            cv2.MORPH_RECT, (1, max(35, int(0.55 * height)))
+        ),
+    )
+    mask = cv2.bitwise_and(mask, cv2.bitwise_not(vertical))
+    mask[:, (mask > 0).sum(axis=0) / max(1, height) > 0.45] = 0
+    centers_by_x = [_cluster_runs(mask[:, x]) for x in range(width)]
+    start = next(
+        (
+            (x, max(centers))
+            for x, centers in enumerate(centers_by_x)
+            if any(y >= 0.85 * height for y in centers)
+        ),
+        None,
+    )
+    if start is None:
+        return []
+    start_x, current_y = start
+    points = [(start_x, int(round(current_y)))]
+    last_x = start_x
+    last_slope = 0.0
+    for x in range(start_x + 1, width):
+        centers = centers_by_x[x]
+        if not centers:
+            continue
+        dx = x - last_x
+        expected = current_y + min(0.0, last_slope) * dx
+        tolerance = min(10.0, max(4.0, 2.5 * dx))
+        eligible = [
+            y
+            for y in centers
+            if expected - tolerance <= y <= current_y + 2.5
+        ]
+        if not eligible:
+            continue
+        selected_y = min(eligible)
+        observed_slope = (selected_y - current_y) / dx
+        last_slope = 0.70 * last_slope + 0.30 * observed_slope
+        current_y = selected_y
+        points.append((x, int(round(current_y))))
+        last_x = x
+    if len(points) < max(20, int(0.12 * width)):
+        return []
     return [(x0 + x, y0 + y) for x, y in points]
 
 

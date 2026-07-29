@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import re
-import subprocess
 import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -12,19 +11,19 @@ from pathlib import Path
 import pymupdf
 import numpy as np
 from PIL import Image
-
+from .charge_units import gate_charge_unit
+from .curve_provenance import enforce_curve_provenance
 from .find_charts import (
     ChartPanel,
     PageText,
-    Word,
     process_page_texts,
     process_pdf,
     run_tesseract_page_text,
 )
-from .region_ocr import ocr_words_in_rect
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
+    _drop_glyph_offset_tick,
     _estimate_vpl_from_curve,
     _has_gate_charge_evidence,
     _local_y_ticks_for_plot,
@@ -40,23 +39,34 @@ from .gate_charge_trace import (
     _pdf_to_px,
     _smooth_polyline,
     _trace_gate_curve,
+    _trace_monotone_upper_gate_curve,
     _trace_vector_gate_curve,
 )
-
+from .gate_axis_ocr import (
+    MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
+    bounded_axis_result_is_trusted as _bounded_axis_result_is_trusted,
+    bounded_gate_axis_ocr,
+    depletion_vpl_is_source_plausible as _depletion_vpl_is_source_plausible,
+    dual_y_axis_ocr_page as _dual_y_axis_ocr_page,
+    needs_bounded_axis_ocr as _needs_bounded_axis_ocr,
+    needs_dual_y_axis_ocr as _needs_dual_y_axis_ocr,
+    poppler_low_text_page_text,
+    plot_box_aspect_implausible as _plot_box_aspect_implausible,
+    recalibrate_gate_result,
+    refine_oversized_ocr_gate_panel,
+    vpl_extrapolated_beyond_ticks as _vpl_extrapolated_beyond_ticks,
+)
 
 EDGE_TICK_SNAP_MAX_FRACTION = 0.04
 TERMINAL_FLAT_MIN_SPAN_FRACTION = 0.08
 TERMINAL_FLAT_MAX_Y_RANGE_PX = 2
 TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION = 0.03
 TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION = 0.03
-MAX_CURVE_LEFT_GAP_FRACTION = 0.05
+MAX_CURVE_LEFT_GAP_FRACTION = 0.055
 PANEL_CELL_ALIGNMENT_TOLERANCE_PT = 2.5
 PANEL_CELL_CONTAINMENT_TOLERANCE_PT = 3.0
 PANEL_CELL_MAX_AREA_MULTIPLIER = 4.0
-DUAL_Y_AXIS_OCR_DPI = 800.0
 DUAL_Y_LIGHT_TRACE_THRESHOLD = 190
-
-
 @dataclass(frozen=True)
 class GateChargeResult:
     """One package-native gate-charge chart result.
@@ -115,16 +125,8 @@ def digitize_gate_charge(
         panels, page_text = _discover_gate_panels(pdf, Path(tmp), finder_dpi)
 
     results: list[GateChargeResult] = []
-    # The OCR retry below (for panels whose native axis is unreadable) must live
-    # in its OWN cache and never mutate ``page_text``.  ``page_text`` is the
-    # discovery text source (empty for vector-native panels, discovery-OCR for
-    # OCR-discovered ones) and is consulted by EVERY panel's primary extraction.
-    # Mutating it while iterating let one panel's retry contaminate another
-    # panel's native extraction in page order: a page-1 part-summary "Gate
-    # charge" spec-table match (diagram 951, axis_assumed) triggered global OCR
-    # that then bled the neighbour Fig.8 normalized 0.9-1.1 axis into the correct
-    # page-4 Fig.7 native panel, yielding Vpl=1.0 instead of the native 4.96 V
-    # (PSMB050N10NS2 / PSMB055N08NS1 / PSMP050N10NS2).
+    # Keep retry OCR panel-local: mutating discovery text can bleed a
+    # neighboring normalized axis into a later gate-charge result.
     retry_ocr: dict[int, PageText] = {}
     ocr_attempted = bool(page_text)
     with pymupdf.open(pdf) as doc:
@@ -151,7 +153,61 @@ def digitize_gate_charge(
                                     )
                                 ),
                             )
-                if result is not None and result.status in {"axis_assumed", "axis_grid_inferred"}:
+                if result is not None and _needs_bounded_axis_ocr(result):
+                    bounded_ocr = bounded_gate_axis_ocr(
+                        pdf, doc[panel.page - 1], panel, result
+                    )
+                    if bounded_ocr is not None:
+                        ocr_result = _digitize_panel(
+                            pdf, doc, panel, dpi, bounded_ocr
+                        )
+                        bounded_diagnostics = _bounded_ocr_diagnostics(panel)
+                        if _bounded_axis_result_is_trusted(ocr_result):
+                            result = replace(
+                                ocr_result,
+                                diagnostics=tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *ocr_result.diagnostics,
+                                            *bounded_diagnostics,
+                                        )
+                                    )
+                                ),
+                            )
+                        else:
+                            recalibrated = recalibrate_gate_result(
+                                result, bounded_ocr
+                            )
+                            if recalibrated is not None:
+                                vpl, y_ticks_px, x_tick_unit = recalibrated
+                                retained_diagnostics = tuple(
+                                    item
+                                    for item in result.diagnostics
+                                    if item not in {
+                                        "axis_assumed_0_10",
+                                        "axis_inferred_from_regular_grid",
+                                        "gate_charge_unit_unresolved",
+                                        "vpl_extrapolated_beyond_ticks",
+                                        "vpl_outside_expected_range",
+                                    }
+                                )
+                                result = replace(
+                                    result,
+                                    vpl=vpl,
+                                    status="ok",
+                                    y_tick_count=len(y_ticks_px),
+                                    y_ticks_px=y_ticks_px,
+                                    x_tick_unit=x_tick_unit,
+                                    diagnostics=tuple(
+                                        dict.fromkeys(
+                                            (
+                                                *retained_diagnostics,
+                                                *bounded_diagnostics,
+                                            )
+                                        )
+                                    ),
+                                )
+                if result is not None and result.status in {"axis_assumed", "axis_grid_inferred"} and not (panel.diagram >= 900 and "waveform" in panel.title.lower()):
                     # Raster charts often retain accurate numeric labels that the
                     # native PDF text layer omits.  Retry a provisional axis once
                     # with bounded OCR before deciding that no scalar is safe.
@@ -173,7 +229,7 @@ def digitize_gate_charge(
                         ):
                             result = ocr_result
                 if result is not None:
-                    results.append(result)
+                    results.append(enforce_curve_provenance(pdf, result))
             except Exception as error:
                 if _errors is None:
                     raise
@@ -209,13 +265,30 @@ def _discover_gate_panels(
 ) -> tuple[list[ChartPanel], dict[int, PageText]]:
     """Use OCR only when normal discovery yields no gate-charge panels."""
 
-    panels = [panel for panel in process_pdf(pdf, out_dir, dpi) if panel.kind == "gate_charge"]
+    try:
+        panels = [
+            panel
+            for panel in process_pdf(pdf, out_dir, dpi)
+            if panel.kind == "gate_charge"
+        ]
+    except RuntimeError as error:
+        if "both bbox text paths returned no words" not in str(error):
+            raise
+        panels = []
     ocr_by_page: dict[int, PageText] = {}
     if not panels:
-        ocr_pages = run_tesseract_page_text(pdf)
+        ocr_pages = poppler_low_text_page_text(pdf)
+        if ocr_pages:
+            panels = [
+                panel
+                for panel in process_page_texts(pdf, out_dir, dpi, ocr_pages)
+                if panel.kind == "gate_charge"
+            ]
+        if not panels:
+            ocr_pages = run_tesseract_page_text(pdf)
         if ocr_pages:
             ocr_by_page = {page.page_num: page for page in ocr_pages}
-            panels = [
+            panels = panels or [
                 panel
                 for panel in process_page_texts(pdf, out_dir, dpi, ocr_pages)
                 if panel.kind == "gate_charge"
@@ -312,192 +385,10 @@ def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
 
 
-# A gate-charge plot is wider than tall or roughly square. Measured over 95 panels that
-# resolved a Vpl: min 0.46, p50 0.76, p90 0.90, p95 1.40 -- then NOTHING until 2.05, and
-# the whole tail above that gap is suspect (EPC2022 1.43 V against siblings at 2.2-2.5,
-# EPC2023 9.25 V, SUP90140E 28.65 V). The threshold sits in the empty gap rather than on
-# either shoulder, so it is not tuned to the three cases that motivated it.
-_MAX_PLOT_BOX_ASPECT = 1.75
-
-
-def _plot_box_aspect_implausible(plot_box: tuple[int, int, int, int]) -> bool:
-    """Is this "plot" too tall to be one chart?
-
-    A box several times taller than wide has bound the frame across STACKED panels, and
-    everything downstream inherits that: the label column nearest the frame belongs to a
-    different chart, and the ticks calibrate a different axis. The reading that comes out
-    is internally consistent -- linear ticks, clean residuals, a plateau inside the tick
-    span -- and simply describes the wrong plot, which is why none of the other guards
-    here can see it.
-
-    Returns False for a degenerate box (zero width) rather than dividing: that state is
-    not "fine", it is already fatal upstream, and this must not become the thing that
-    reports it.
-    """
-
-    x0, y0, x1, y1 = plot_box
-    width = x1 - x0
-    if width <= 0:
-        return False
-    return (y1 - y0) / width > _MAX_PLOT_BOX_ASPECT
-
-
-def _vpl_extrapolated_beyond_ticks(
-    vpl_y_px: float | None,
-    local_y_ticks: list[tuple[float, float]],
-    crop_rect,
-    scale: float,
-) -> bool:
-    """Does the plateau sit outside the pixel span the y ticks actually calibrate?
-
-    Two ticks fix a line, and that line is only EVIDENCE between them. Past the last
-    tick it is extrapolation, and its error grows without bound while nothing about the
-    fit looks worse -- residuals are computed on the ticks, which still fit perfectly.
-    The tolerance is a fraction of the measured span rather than a pixel count, so a
-    tightly-labelled axis is not judged by the same absolute slack as a sparse one.
-
-    Returns False when there is nothing to judge (no plateau, fewer than two ticks) --
-    NOT because that is fine, but because those states already have their own
-    diagnostics (`vpl_unresolved`, `axis_assumed_0_10`) and this must not silently
-    stand in for them.
-    """
-
-    if vpl_y_px is None or len(local_y_ticks) < 2:
-        return False
-    tick_px = [float((y - crop_rect.y0) * scale) for _value, y in local_y_ticks]
-    lo, hi = min(tick_px), max(tick_px)
-    span = hi - lo
-    if span <= 0:
-        return False
-    slack = 0.10 * span
-    return not (lo - slack <= float(vpl_y_px) <= hi + slack)
-
-
-def _depletion_vpl_is_source_plausible(
-    vpl: float | None,
-    vpl_y_px: float | None,
-    curve: list[tuple[int, int]],
-    plot_box: tuple[int, int, int, int],
-    y_ticks: list[tuple[float, float]],
-) -> bool:
-    """Recognize a low depletion-mode plateau without widening normal limits."""
-
-    if vpl is None or vpl_y_px is None or len(curve) < 20 or len(y_ticks) < 3:
-        return False
-    values = np.asarray([value for value, _pixel in y_ticks], dtype=float)
-    pixels = np.asarray([pixel for _value, pixel in y_ticks], dtype=float)
-    if not (np.min(values) < 0.0 < np.max(values)):
-        return False
-    slope, offset = np.polyfit(pixels, values, 1)
-    first_y = min(curve, key=lambda point: point[0])[1]
-    if float(slope * first_y + offset) >= -0.25:
-        return False
-    if not np.min(values) <= float(vpl) <= np.max(values):
-        return False
-
-    nearby_x = sorted(
-        x
-        for x, y in curve
-        if abs(float(y) - float(vpl_y_px)) <= 2.0
-    )
-    longest_span = 0
-    if nearby_x:
-        start = previous = nearby_x[0]
-        for x in nearby_x[1:]:
-            if x - previous > 3:
-                longest_span = max(longest_span, previous - start)
-                start = x
-            previous = x
-        longest_span = max(longest_span, previous - start)
-    plot_width = max(1, plot_box[2] - plot_box[0])
-    return longest_span >= 0.05 * plot_width
-
-
-def _needs_dual_y_axis_ocr(panel: ChartPanel, result: GateChargeResult) -> bool:
+def _bounded_ocr_diagnostics(panel: ChartPanel) -> tuple[str, ...]:
     title = re.sub(r"\s+", " ", panel.title.lower()).strip()
-    diagnostics = getattr(result, "diagnostics", ())
-    axis_problem = result.status in {"axis_assumed", "axis_grid_inferred"} or any(
-        item in diagnostics
-        for item in ("axis_assumed_0_10", "axis_inferred_from_regular_grid", "gate_charge_unit_unresolved")
-    )
-    return panel.diagram < 900 and title == "dynamic input/output characteristics" and axis_problem
-
-
-def _dual_y_axis_ocr_page(
-    pdf: Path,
-    doc: pymupdf.Document,
-    panel: ChartPanel,
-    result: GateChargeResult,
-) -> PageText | None:
-    """OCR only the owned right-VGS and bottom-Qg label bands."""
-
-    page = doc[panel.page - 1]
-    crop = pymupdf.Rect(result.crop_box_pt)
-    scale = result.dpi / 72.0
-    px0, py0, px1, py1 = result.plot_box_px
-    plot = pymupdf.Rect(
-        crop.x0 + px0 / scale,
-        crop.y0 + py0 / scale,
-        crop.x0 + px1 / scale,
-        crop.y0 + py1 / scale,
-    )
-    owner = pymupdf.Rect(panel.bbox_pt)
-    right_band = pymupdf.Rect(
-        plot.x1 + 0.5,
-        max(page.rect.y0, owner.y0 - 8.0),
-        min(page.rect.x1, plot.x1 + 22.0),
-        min(page.rect.y1, owner.y1 + 6.0),
-    )
-    bottom_band = pymupdf.Rect(
-        max(page.rect.x0, plot.x0 - 18.0),
-        max(page.rect.y0, plot.y1 - 3.0),
-        min(page.rect.x1, plot.x1 + 18.0),
-        min(page.rect.y1, owner.y1),
-    )
-    try:
-        right_sparse = ocr_words_in_rect(
-            pdf, panel.page, right_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=11
-        )
-        right_block = ocr_words_in_rect(
-            pdf, panel.page, right_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
-        )
-        signed_sparse = sum(
-            bool(re.fullmatch(r"[-−–—]\d+(?:\.\d+)?", word[4]))
-            for word in right_sparse
-        )
-        raw_words = [
-            *(right_sparse if signed_sparse >= 3 else right_block),
-            *ocr_words_in_rect(
-                pdf, panel.page, bottom_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
-            ),
-        ]
-    except (OSError, RuntimeError, subprocess.SubprocessError):
-        return None
-    words = [Word(text, x0, y0, x1, y1) for x0, y0, x1, y1, text in raw_words]
-    compact = re.sub(r"[^a-z0-9]", "", " ".join(word.text for word in words).lower())
-    if "nc" not in compact:
-        bottom_band.y1 = min(page.rect.y1, owner.y1 + 30.0)
-        try:
-            raw_words = [
-                *(right_sparse if signed_sparse >= 3 else right_block),
-                *ocr_words_in_rect(
-                    pdf, panel.page, bottom_band, dpi=DUAL_Y_AXIS_OCR_DPI, psm=6
-                ),
-            ]
-        except (OSError, RuntimeError, subprocess.SubprocessError):
-            return None
-        words = [Word(text, x0, y0, x1, y1) for x0, y0, x1, y1, text in raw_words]
-        compact = re.sub(r"[^a-z0-9]", "", " ".join(word.text for word in words).lower())
-        if "nc" not in compact:
-            return None
-    return PageText(
-        panel.page,
-        float(page.rect.width),
-        float(page.rect.height),
-        words,
-        "tesseract_fallback",
-    )
-
+    dual = ("axis_ocr_bounded_dual_y",) if title == "dynamic input/output characteristics" else ()
+    return ("axis_ocr_bounded", *dual)
 
 def find_vpl_result(
     pdf_path: str | Path,
@@ -519,6 +410,28 @@ def find_vpl_result(
     )
 
 
+def _plot_side_of_axis(
+    axis_text_page,
+    panel_rect: pymupdf.Rect,
+    axis_x: float,
+) -> str | None:
+    """Return which side of the y-axis column owns an evidenced x-tick run."""
+
+    sides: dict[str, list[tuple[float, float]]] = {}
+    for side, rect in (
+        ("left", pymupdf.Rect(panel_rect.x0, panel_rect.y0, axis_x - 3.0, panel_rect.y1)),
+        ("right", pymupdf.Rect(axis_x + 3.0, panel_rect.y0, panel_rect.x1, panel_rect.y1)),
+    ):
+        if rect.width < 55.0:
+            continue
+        axis = _best_x_axis_for_panel(axis_text_page, rect)
+        if axis is not None and len(axis[0]) >= 3:
+            sides[side] = axis[0]
+    if len(sides) != 1:
+        return None
+    return next(iter(sides))
+
+
 def _digitize_panel(
     pdf: Path,
     doc: pymupdf.Document,
@@ -533,10 +446,24 @@ def _digitize_panel(
     text_page = _PageWordOverride(page, page_text) if page_text is not None else page
     panel_rect = pymupdf.Rect(panel.bbox_pt)
     finder_rect = pymupdf.Rect(panel.bbox_pt)
+    panel_rect = refine_oversized_ocr_gate_panel(
+        panel_rect, panel, page_text, text_page
+    )
     expanded_image_rect = _containing_chart_image(page, panel_rect)
-    if expanded_image_rect is not None:
+    if expanded_image_rect is not None and panel_rect == finder_rect:
         panel_rect = expanded_image_rect
+    axis_text_page = text_page
     panel_axis = _best_y_axis_for_panel(text_page, panel_rect)
+    if page_text is not None:
+        # OCR can be necessary to discover a panel while the PDF's native text
+        # layer still owns a better numeric axis.  Prefer that source-backed
+        # axis when present instead of letting page-wide discovery OCR replace
+        # it wholesale (SUP90140E: OCR found the caption but mixed tick labels
+        # from the stacked charts; native text has the complete 10..0 V run).
+        native_panel_axis = _best_y_axis_for_panel(page, panel_rect)
+        if native_panel_axis is not None and not page_text.text_source.startswith("tesseract_bounded_gate"):
+            panel_axis = native_panel_axis
+            axis_text_page = page
     panel_y_ticks, axis_x = panel_axis if panel_axis is not None else ([], None)
     panel_y_ticks = _y_ticks_with_zero(panel_y_ticks, panel_rect)
     panel_x_ticks: list[tuple[float, float]] = []
@@ -551,13 +478,23 @@ def _digitize_panel(
             panel_rect.y0 = max(page.rect.y0, min(panel_rect.y0, min(tick_ys) - 14.0))
             panel_rect.y1 = min(page.rect.y1, max(panel_rect.y1, max(tick_ys) + 14.0))
         if axis_x is not None:
-            distance_to_left = abs(axis_x - panel_rect.x0)
-            distance_to_right = abs(axis_x - panel_rect.x1)
-            if distance_to_left <= distance_to_right:
+            # A finder bbox spanning two side-by-side charts puts the owned
+            # y-axis column nearer the WRONG edge (IRFP4127PBF: Fig 5+6 in one
+            # bbox, ticks at 344 pt closer to x1), so proximity alone binds the
+            # plot onto the neighbour. Prefer the side that owns an evidenced
+            # x-tick run; fall back to edge proximity when neither side does.
+            plot_side = _plot_side_of_axis(axis_text_page, panel_rect, axis_x)
+            if plot_side is None:
+                distance_to_left = abs(axis_x - panel_rect.x0)
+                distance_to_right = abs(axis_x - panel_rect.x1)
+                plot_side = (
+                    "right" if distance_to_left <= distance_to_right else "left"
+                )
+            if plot_side == "right":
                 panel_rect.x0 = max(panel_rect.x0, axis_x + 3.0)
             else:
                 panel_rect.x1 = min(panel_rect.x1, axis_x - 3.0)
-    panel_x_axis = _best_x_axis_for_panel(text_page, panel_rect)
+    panel_x_axis = _best_x_axis_for_panel(axis_text_page, panel_rect)
     if panel_x_axis is not None:
         panel_x_ticks, _axis_y = panel_x_axis
         # Native text and OCR both omit an edge label on some otherwise regular
@@ -658,10 +595,13 @@ def _digitize_panel(
         return _rejected_non_gate_result(
             pdf, panel, dpi, crop_rect, plot_box, panel_y_ticks, non_gate_reason
         )
-    local_y_ticks = _local_y_ticks_for_plot(text_page, crop_rect, scale, plot_box)
+    local_y_ticks = _local_y_ticks_for_plot(
+        axis_text_page, crop_rect, scale, plot_box
+    )
     if len(local_y_ticks) < 2:
         local_y_ticks = panel_y_ticks
     local_y_ticks = _y_ticks_with_zero(local_y_ticks, panel_rect)
+    local_y_ticks = _drop_glyph_offset_tick(local_y_ticks)
     axis_grid_inferred = False
     if len(local_y_ticks) < 2 and raster_grid is not None:
         grid_ys = raster_grid[1]
@@ -688,9 +628,7 @@ def _digitize_panel(
         for trace_crop in trace_crops
     ]
     if bounded_dual_y_trace:
-        # Toshiba's outlined VGS stroke can be lighter than its VDS family.
-        # Add a panel-local light-ink candidate; the normal raster path and its
-        # threshold remain byte-identical for every other chart.
+        # Add panel-local light-ink and monotone VGS candidates.
         raster_candidates.extend(
             _smooth_polyline(
                 _trace_gate_curve(
@@ -701,13 +639,15 @@ def _digitize_panel(
             )
             for trace_crop in trace_crops
         )
+        raster_candidates.extend(
+            _smooth_polyline(_trace_monotone_upper_gate_curve(trace_crop, plot_box))
+            for trace_crop in trace_crops
+        )
         raster_curve = _select_dual_y_raster_curve(
             raster_candidates, plot_box, crop.height, crop.width
         )
     else:
-        raster_curve = _select_raster_curve(
-            raster_candidates, crop.height, crop.width
-        )
+        raster_curve = max(raster_candidates, key=lambda curve: _score_curve_in_plot(curve, plot_box), default=[])
     vector_curve = _smooth_polyline(
         _trace_vector_gate_curve(page, crop_rect, scale, plot_box), stride=1
     )
@@ -728,9 +668,8 @@ def _digitize_panel(
     # Preserve the established raster-vs-vector selection ordering, but judge
     # the selected curve's confidence against the calibrated plot rather than
     # unrelated context padding around it.
-    curve, trace_source, _selection_score, trace_score = max(
-        choices, key=lambda choice: choice[2]
-    )
+    complete_choices = [choice for choice in choices if not _curve_missing_initial_ramp(choice[0], plot_box)]
+    curve, trace_source, _selection_score, trace_score = max(complete_choices or choices, key=lambda choice: choice[2])
     if (
         trace_source == "raster"
         and bounded_dual_y_trace
@@ -739,6 +678,7 @@ def _digitize_panel(
         curve = _trim_dual_y_terminal_branch_switch(curve, plot_box)
         curve = _trim_dual_y_terminal_grid_capture(curve, plot_box)
     curve = _trim_terminal_flat_grid_capture(curve, plot_box)
+    curve = _trim_after_upper_axis_reach(curve, plot_box)
     vpl, vpl_y_px = _estimate_vpl_from_curve(
         curve, panel, crop_rect, scale, plot_box, local_y_ticks
     )
@@ -751,9 +691,9 @@ def _digitize_panel(
     )
     low_trace_confidence = trace_score <= -1e8
     missing_initial_ramp = _curve_missing_initial_ramp(curve, plot_box)
-    missing_axis_origin = bounded_dual_y_trace and not _curve_starts_at_axis_origin(
-        curve, plot_box
-    )
+    missing_axis_origin = (
+        bounded_dual_y_trace and not _curve_starts_at_axis_origin(curve, plot_box)
+    ) or bool(panel_x_ticks and min(value for value, _x in panel_x_ticks) > 0.0)
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
@@ -882,6 +822,8 @@ def _strong_local_non_gate_reason(tight_context: str) -> str | None:
         "drain current" in tight or "drain-source voltage" in tight
     ):
         return "safe_operating_area"
+    if "gate charge waveform" in tight and re.search(r"\b(?:qgd|qgs)\b|test circuit|switching time", tight):
+        return "gate_charge_definition"
     return None
 
 
@@ -914,13 +856,7 @@ def _rejected_non_gate_result(
 def _gate_charge_unit(context: str) -> str | None:
     """Return the locally evidenced charge unit without assuming nC."""
 
-    normalized = context.lower().replace("μ", "u").replace("µ", "u")
-    compact = re.sub(r"[^a-z0-9]", "", normalized)
-    if "nc" in compact or "nanocoulomb" in compact:
-        return "nC"
-    if "uc" in compact:
-        return "uC"
-    return None
+    return gate_charge_unit(context)
 
 
 def _score_curve_in_plot(
@@ -971,6 +907,32 @@ def _trim_terminal_flat_grid_capture(
     if entry_rise < TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION * height:
         return curve
     return curve[: start + 1]
+
+
+def _trim_after_upper_axis_reach(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Stop a gate curve when its selected branch first reaches the plot ceiling.
+
+    Several VDS gate-charge curves can share the initial rise and plateau, then
+    terminate at the same VGS ceiling at different Qg values.  A vector envelope
+    may otherwise drop from the first completed branch onto the next and climb
+    back to the ceiling, producing source-discontinuous teeth in the exported
+    full curve.  Once a rising branch reaches the owned upper axis there is no
+    physical in-frame continuation to preserve.
+    """
+
+    if len(curve) < 8:
+        return curve
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    search_start = x0 + 0.55 * width
+    ceiling_tolerance = max(3.0, 0.012 * height)
+    for index, (x, y) in enumerate(curve):
+        if x >= search_start and y <= y0 + ceiling_tolerance:
+            return curve[: index + 1]
+    return curve
 
 
 def _repair_narrow_plateau_branch_excursion(
@@ -1098,7 +1060,7 @@ def _uses_bounded_dual_y_trace(
 
     return (
         page_text is not None
-        and page_text.text_source == "tesseract_fallback"
+        and page_text.text_source.startswith("tesseract")
         and panel.diagram == 810
         and re.sub(r"\s+", " ", panel.title.lower()).strip()
         == "dynamic input/output characteristics"
@@ -1180,10 +1142,10 @@ def _select_dual_y_raster_curve(
 ) -> list[tuple[int, int]]:
     """Prefer the source-owned VGS branch proven to start at Qg=VGS=0."""
 
-    origin_curves = [
-        curve for curve in curves if _curve_starts_at_axis_origin(curve, plot_box)
-    ]
-    return _select_raster_curve(origin_curves or curves, height, width)
+    candidates = [curve for curve in curves if _curve_starts_at_axis_origin(curve, plot_box)] or curves
+    best_score = max((_score_curve_in_plot(curve, plot_box) for curve in candidates), default=-1e9)
+    evidenced = [curve for curve in candidates if _score_curve_in_plot(curve, plot_box) >= best_score - 0.5]
+    return max(evidenced, key=lambda curve: (len(curve), _score_curve_in_plot(curve, plot_box)), default=[])
 
 
 def _select_raster_curve(
@@ -1213,7 +1175,7 @@ def _bind_plot_box_to_axes(
         tick_x1 = int(round((max(tick_xs) - crop_rect.x0) * scale))
         if detector_used_fallback:
             x0, x1 = tick_x0, tick_x1
-        elif tick_x0 < x0 - 4:
+        elif tick_x0 <= x0 + 4:
             x0 = tick_x0
         if not detector_used_fallback and tick_x1 > x1 + 4:
             x1 = tick_x1
@@ -1223,7 +1185,7 @@ def _bind_plot_box_to_axes(
         tick_y1 = int(round((max(tick_ys) - crop_rect.y0) * scale))
         if detector_used_fallback:
             y0, y1 = tick_y0, tick_y1
-        elif tick_y0 < y0 - 4:
+        elif tick_y0 <= y0 + 4:
             y0 = tick_y0
         if not detector_used_fallback and tick_y1 > y1 + 4:
             y1 = tick_y1
