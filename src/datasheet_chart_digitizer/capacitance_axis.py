@@ -709,6 +709,7 @@ def _seat_signed_log_x_ticks_on_grid(
 
 
 _LINEAR_Y_LABEL_GRID_MAX_PX = 3.0
+_LINEAR_Y_VECTOR_LABEL_GRID_MAX_PX = 7.0
 _LINEAR_Y_FIT_GRID_MAX_PX = 1.0
 
 
@@ -722,17 +723,37 @@ def _vector_horizontal_gridline_candidates(
         if drawing.get("type") not in {"s", "fs"}:
             continue
         for item in drawing.get("items", []):
-            if item[0] != "l":
+            if item[0] == "l":
+                x0, y0 = transform.to_px(float(item[1].x), float(item[1].y))
+                x1, y1 = transform.to_px(float(item[2].x), float(item[2].y))
+                if abs(y1 - y0) > 1.0:
+                    continue
+                if min(x0, x1) > plot.x0 + 3.0 or max(x0, x1) < plot.x1 - 3.0:
+                    continue
+                center = (y0 + y1) / 2.0
+                if plot.y0 - 3.0 <= center <= plot.y1 + 3.0:
+                    positions.append(center)
                 continue
-            x0, y0 = transform.to_px(float(item[1].x), float(item[1].y))
-            x1, y1 = transform.to_px(float(item[2].x), float(item[2].y))
-            if abs(y1 - y0) > 1.0:
+            rect = None
+            if item[0] == "re":
+                rect = item[1]
+            elif item[0] == "qu" and item[1].is_rectangular:
+                rect = item[1].rect
+            if rect is None:
                 continue
-            if min(x0, x1) > plot.x0 + 3.0 or max(x0, x1) < plot.x1 - 3.0:
-                continue
-            center = (y0 + y1) / 2.0
-            if plot.y0 - 3.0 <= center <= plot.y1 + 3.0:
-                positions.append(center)
+            x0, y0 = transform.to_px(float(rect.x0), float(rect.y0))
+            x1, y1 = transform.to_px(float(rect.x1), float(rect.y1))
+            if (
+                min(x0, x1) <= plot.x0 + 3.0
+                and max(x0, x1) >= plot.x1 - 3.0
+                and abs(y1 - y0) >= 0.50 * plot.height
+            ):
+                positions.extend(
+                    center
+                    for center in (y0, y1)
+                    if plot.y0 - 3.0 <= center <= plot.y1 + 3.0
+                )
+
 
     merged: list[float] = []
     for position in sorted(positions):
@@ -760,13 +781,25 @@ def _seat_linear_y_ticks_on_grid(
     if len(values) < 4 or len(label_pixels) != len(values):
         raise RuntimeError("linear Y grid seating lacks one label center per tick")
 
-    candidates = (
+    vector_candidates = (
         _vector_horizontal_gridline_candidates(page, transform, plot)
         if page is not None and transform is not None
         else []
     )
-    if len(candidates) < len(values):
+    # Source vector gridlines are exact geometry, so a LABEL may sit a few px
+    # off its rule (text centering drift) without the seating being wrong.
+    # Raster-detected candidates get no such latitude. Either way the fit
+    # residual gate below (<=1 px to grid centers) stays load-bearing, so this
+    # widens ASSIGNMENT only, never acceptance.
+    vector_backed = len(vector_candidates) >= len(values)
+    candidates = vector_candidates
+    if not vector_backed:
         candidates = _horizontal_gridline_candidates(image, plot)
+    label_grid_tolerance = (
+        _LINEAR_Y_VECTOR_LABEL_GRID_MAX_PX
+        if vector_backed
+        else _LINEAR_Y_LABEL_GRID_MAX_PX
+    )
 
     assignments: list[tuple[float, float, float]] = []
     used: set[float] = set()
@@ -775,12 +808,12 @@ def _seat_linear_y_ticks_on_grid(
             pixel
             for pixel in candidates
             if pixel not in used
-            and abs(pixel - label_pixel) <= _LINEAR_Y_LABEL_GRID_MAX_PX
+            and abs(pixel - label_pixel) <= label_grid_tolerance
         ]
         if len(owned) != 1:
             raise RuntimeError(
                 "linear Y tick does not own exactly one source gridline within "
-                f"{_LINEAR_Y_LABEL_GRID_MAX_PX:g} px"
+                f"{label_grid_tolerance:g} px"
             )
         grid_pixel = owned[0]
         used.add(grid_pixel)
