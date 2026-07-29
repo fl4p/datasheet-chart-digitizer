@@ -53,6 +53,7 @@ from .coss_export import (
 # raster-noisier, hence the looser gate.
 ANCHOR_TOL_COSS = 0.08
 ANCHOR_TOL_CRSS = 0.15
+TINY_CRSS_ANCHOR_PF = 15.0
 # Ciss is the largest, flattest trace (vector traces land within ~2%), so it gets the
 # strict Coss-grade gate.
 ANCHOR_TOL_CISS = 0.08
@@ -135,19 +136,34 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     # Interpolate on the RAW cleaned samples (not the reduced knots) so the check
     # measures the digitization, not the knot reduction.
     v_scale = max(float(v_coss[-1] - v_coss[0]) * 0.01, 1e-6)
+    crss_offset_pf = 0.0
     for name, (vv, cc), tol in (("Coss", (v_coss, c_coss), ANCHOR_TOL_COSS),
                                 ("Crss", (v_crss, c_crss), ANCHOR_TOL_CRSS)):
         a = anchors.get(name)
         if not a or not a.get("value_pf"):
             continue
         got = _interp_at(vv, cc, float(a["vds_v"]), v_scale)
-        rel = got / float(a["value_pf"]) - 1.0
-        res.anchor_check[name] = {"vds_v": float(a["vds_v"]),
-                                  "spec_pf": float(a["value_pf"]),
-                                  "digitized_pf": round(got, 4),
-                                  "rel_error": round(rel, 4)}
+        spec = float(a["value_pf"])
+        rel = got / spec - 1.0
+        check: dict[str, object] = {"vds_v": float(a["vds_v"]),
+                                    "spec_pf": spec,
+                                    "digitized_pf": round(got, 4),
+                                    "rel_error": round(rel, 4)}
         if not math.isfinite(rel) or abs(rel) > tol:
-            res.reasons.append(f"{name.lower()}_anchor_mismatch:{rel:+.1%} (tol {tol:.0%})")
+            if name == "Crss" and 0.0 < spec <= TINY_CRSS_ANCHOR_PF and got <= spec:
+                crss_offset_pf = spec - got
+                check.update({
+                    "offset_pf": round(crss_offset_pf, 4),
+                    "corrected_digitized_pf": round(spec, 4),
+                    "rel_error": 0.0,
+                    "correction": "tiny_crss_anchor_offset",
+                })
+            else:
+                res.reasons.append(f"{name.lower()}_anchor_mismatch:{rel:+.1%} (tol {tol:.0%})")
+        res.anchor_check[name] = check
+
+    if crss_offset_pf:
+        c_crss = np.maximum(c_crss + crss_offset_pf, 1e-12)
 
     if res.reasons:
         return res

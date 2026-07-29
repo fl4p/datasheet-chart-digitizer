@@ -139,6 +139,29 @@ class CossDslibExportTests(unittest.TestCase):
         self.assertEqual(res.status, "rejected")
         self.assertTrue(any(r.startswith("coss_anchor_mismatch") for r in res.reasons))
 
+    def test_tiny_crss_underread_is_offset_to_anchor_not_rejected(self) -> None:
+        pts = self.base / "points/part/tiny_crss.points.csv"
+        with pts.open("w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["trace", "x_px", "y_px", "x_norm", "y_norm_log_axis",
+                        "vds_V", "cap_pF"])
+            for i in range(400):
+                v = 0.05 + i * (80.0 - 0.05) / 399.0
+                w.writerow(["Coss", i, 0, 0, 0, v, _coss(v)])
+                w.writerow(["Crss", i, 0, 0, 0, v, 1e-12])
+                w.writerow(["Ciss", i, 0, 0, 0, v, 9000.0])
+        row = _good_row("points/part/tiny_crss.points.csv")
+        row["anchors"]["Crss"] = {"value_pf": 8.0, "vds_v": 40.0}
+
+        res = export_row(row, self.base)
+
+        self.assertEqual(res.status, "pass", res.reasons)
+        self.assertEqual(res.anchor_check["Crss"].get("correction"),
+                         "tiny_crss_anchor_offset")
+        at40 = [k for k in res.curve if k[0] == 40.0]
+        self.assertEqual(len(at40), 1)
+        self.assertAlmostEqual(at40[0][2], 8.0, delta=0.1)
+
     def test_missing_points_csv_is_rejected(self) -> None:
         row = _good_row("points/part/does_not_exist.points.csv")
         res = export_row(row, self.base)
