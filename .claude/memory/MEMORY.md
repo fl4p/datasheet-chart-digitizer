@@ -58,7 +58,7 @@
 - [dsdig Siliup raster caption stratum](dsdig-siliup-raster-caption-stratum.md) — page-wide-JPEG pages recover panels via raster frames + OCR captions below_only; additions carry text_source=tesseract_fallback
 - [dsdig HXY shared-template exclusion](dsdig-hxy-shared-template-exclusion.md) — 92.84% share exact first-chart hashes and 90.43% share exact multi-curve bodies; withhold HXY Vpl as non-independent provenance
 - [dsdig Vpl stdout refusal fixes](dsdig-vpl-stdout-refusal-fixes.md) — 7 stdout gate-charge refusals fixed via 6 mechanisms; landed as the 4-commit gate-charge lane; full-corpus A/B pending
-- [dsdig EPC color capacitance](dsdig-epc-color-capacitance.md) — printed legend fixes selected EPC C(V) panels; EPC2091 fig902 sparse-vector recovery remains open/full-corpus-held
+- [dsdig EPC color capacitance](dsdig-epc-color-capacitance.md) — printed legend fixes EPC C(V); source-hue overlays are human-review-only; EPC2091/EPC2032 guarded rescues passed full-corpus A/B
 - [dsdig orphaned-lane salvage](dsdig-orphaned-lane-salvage.md) — a dead agent's uncommitted file may silently REVERT landed work; classify every hunk, add the missing tests, commit HEAD+new-work only
 - [dsdig review tool is upstream-only](dsdig-review-tool-upstream-only.md) — review-tooling changes land in dsdig-verify-backlog/tools and are committed there; never a packet-local tools-local/ copy
 - [Codex instruction loading stops at git root](codex-instruction-loading-git-root.md) — sub-repos need their own root AGENTS.md; verify with `codex debug prompt-input` + move-away control

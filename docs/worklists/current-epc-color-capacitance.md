@@ -1,12 +1,76 @@
 # EPC colored-vector capacitance (top50-fugu2-gan-ls feedback)
 
-Status: LANDED + HUMAN-GREEN. Legend-color identity binding lives in
+Status: ORIGINAL SELECTED PANELS LANDED + HUMAN-GREEN; FOLLOW-UP RESCUES A/B-ACCEPTED.
+Legend-color identity binding lives in
 `capacitance_vector.py` (`_legend_swatch_bindings` / `_legend_color_names`,
 provenance `legend_color_components`). Fab reviewed the rebuilt packet on
 2026-07-29: 22 green / 1 flagged / 2 pending — all 10 re-extracted EPC panels
 GREEN, including EPC2022 (whose earlier flag was a bulk comment; its
 extraction was already correct, verified at 2.2x for Crss and 5x through its
 Ciss/Coss crossing).
+
+Follow-up feedback
+`datasheet-chart-digitizer/.vibe-drops/da0a2d84-fugu2-100v-LS2p-gan-coss-scalar-top50-001.review.json`
+(exported 2026-07-29T08:02:14Z; 22 green / 2 flagged / 1 rework) adds:
+
+- `EPC2361` fig901 and `EPC2367` fig901 are trace-correct. The questioned
+  red/orange-looking line at the bottom is dsdig's 6 px orange plot-box frame,
+  not a fourth physical curve. The real Crss trace approaches zero and rides
+  that frame after about 25–40 V, so the green extraction markers and frame
+  overlap visually. Fab clarified that capacitance overlays intentionally use
+  the printed legend/source hues, but only for human-review presentation;
+  `source_color_rgb` must not affect served extraction values or become new
+  curve-identity evidence.
+- `EPC2091` fig902 is a live recovery defect on clean HEAD `08d4eda`, not stale
+  packet behavior: vector extraction refuses with only two candidates, then
+  raster fallback emits Ciss/Coss/Crss spans 503/155/155; Coss is incomplete
+  and the alleged Crss is the legend-box rail. It is safely `unverified` with
+  `physical_output_available=false`, so this is recovery debt rather than a
+  served-value incident.
+- Root cause is narrow: the legitimate full-width colored Ciss path contains
+  seven source vertices, one below the generic eight-point candidate gate.
+  The integrated candidate admits a sparse path only when exactly three distinct
+  color owners bind one-to-one to the complete printed Ciss/Coss/Crss legend.
+  It recovers 538/538/538 vector columns with
+  `legend_sparse_color_components`; 90 focused tests pass, and a fresh
+  end-to-end rebuild is `status=ok`, `trace_validation=pass`, and
+  `physical_output_available=true`. The full overlay plus 5x low-V approach
+  are agent-GREEN.
+
+Additional feedback
+`datasheet-chart-digitizer/.vibe-drops/081ff85f-fugu2-100v-LS2p-gan-coss-scalar-top50-001.review (1).json`
+(exported 2026-07-29T09:19:04Z; 23 green / 2 rework) adds:
+
+- `EPC2032` fig901 and fig902 are genuine live recovery defects, both already
+  fail-closed as raster `unverified` / `suspect` with no physical output.
+  Fig901 loses identity completely; fig902 follows the legend rail instead of
+  Crss.
+- Their legitimate Crss is a light, moderately saturated green excluded by
+  the generic curve-color filter. The guarded recovery admits chromatic
+  strokes only when exactly three unique full-width color owners bind
+  one-to-one to the complete printed legend. Both panels then use
+  `legend_chromatic_color_components`, become `ok` / trace-validation `pass`,
+  and expose physical output with 600/601 columns per trace. Full overlays and
+  both 5x Ciss/Coss crossings are agent-GREEN.
+
+Acceptance is pinned to clean `36cfb89`:
+
+- Frozen affected scope: EPC2032 fig901/fig902 and EPC2091 fig901/fig902,
+  crop-set SHA-256
+  `61dde8a76c2738394f2e9ef8122af0561c13ba305de91ef81515b39bb5feeabe`.
+  Exactly three expected panels change—EPC2032 fig901/fig902 and EPC2091
+  fig902—all from raster/unverified/suspect/no physical output to
+  vector/ok/pass/physical output. EPC2091 fig901 and all axis-debug overlays
+  are byte-identical; negative changes are zero.
+- Frozen production-scale negative scope: 1,093 capacitance panels from 1,168
+  unique PDFs, crop-set SHA-256
+  `bddc4235e76d4158516c1f5f76e63e640cb4591ccf25cc0a6abd9f8f3b10be5d`.
+  Baseline and candidate are byte-identical: 941 results / 152 exceptions,
+  status counts 493 `ok` / 154 `overlay-review-required` / 294 `unverified`,
+  result manifest
+  `a1dadd95dd204af39e0178dea74110399ca357caefbc7fc9e7ad6860db57a5c3`.
+  The artifact-aware comparator reports zero changed panels, including
+  overlays, point CSVs, axis debug, identities, statuses, and error text.
 
 Codex adversarial review returned two P1 fail-opens, both fixed before the
 commit: (1) proximity was arbitrating between differently-colored segments on

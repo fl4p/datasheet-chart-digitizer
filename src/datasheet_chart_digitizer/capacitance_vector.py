@@ -46,11 +46,13 @@ def extract_vector_trace_components_with_provenance(
 
     def _build_candidates(
         components: list[list[tuple[float, float]]],
+        *,
+        minimum_source_points: int = 8,
     ) -> list[tuple[float, list[tuple[int, int]]]]:
         built: list[tuple[float, list[tuple[int, int]]]] = []
         min_x_span = plot_rect.width * 0.35
         for component in components:
-            if len(component) < 8:
+            if len(component) < minimum_source_points:
                 continue
             xs = [p[0] for p in component]
             if max(xs) - min(xs) < min_x_span:
@@ -98,6 +100,88 @@ def extract_vector_trace_components_with_provenance(
         for candidate in group_candidates
     ]
     selection_method = "color_components"
+    if len(candidates) < 3:
+        # EPC2091's log-scale Ciss is a legitimate near-flat full-width
+        # source path made from only six vector segments (seven vertices).
+        # The generic eight-point threshold correctly keeps sparse unowned
+        # annotations out, so relax it only for an exact three-color bundle
+        # that the panel's complete printed legend names one-to-one.
+        sparse_candidate_groups: list[
+            list[tuple[float, list[tuple[int, int]]]]
+        ] = []
+        sparse_color_of_candidate: dict[int, tuple[float, ...]] = {}
+        for color_key, group in by_color.items():
+            edges = _vector_curve_edges(group, plot_rect)
+            if not edges:
+                continue
+            group_candidates = _build_candidates(
+                _chain_vector_components(edges),
+                minimum_source_points=6,
+            )
+            if group_candidates:
+                sparse_candidate_groups.append(group_candidates)
+                for candidate in group_candidates:
+                    sparse_color_of_candidate[id(candidate[1])] = color_key
+        sparse_candidates = [
+            candidate
+            for group_candidates in sparse_candidate_groups
+            for candidate in group_candidates
+        ]
+        sparse_names = _legend_color_names(
+            page,
+            plot_rect,
+            sparse_candidates,
+            sparse_color_of_candidate,
+        )
+        if (
+            _exact_color_source_ownership(sparse_candidate_groups)
+            and sparse_names is not None
+        ):
+            candidates = sparse_candidates
+            per_color_candidate_groups = sparse_candidate_groups
+            color_of_candidate = sparse_color_of_candidate
+            selection_method = "sparse_color_components"
+    if len(candidates) < 3:
+        # EPC2032 prints Crss in a light, moderately saturated green which is
+        # intentionally outside the generic curve-color filter. Admit
+        # chromatic strokes only under the same exact three-owner + complete
+        # one-to-one legend proof used for colored source paths.
+        chromatic_candidate_groups: list[
+            list[tuple[float, list[tuple[int, int]]]]
+        ] = []
+        chromatic_color_of_candidate: dict[int, tuple[float, ...]] = {}
+        for color_key, group in by_color.items():
+            edges = _vector_curve_edges(
+                group,
+                plot_rect,
+                allow_chromatic=True,
+            )
+            if not edges:
+                continue
+            group_candidates = _build_candidates(_chain_vector_components(edges))
+            if group_candidates:
+                chromatic_candidate_groups.append(group_candidates)
+                for candidate in group_candidates:
+                    chromatic_color_of_candidate[id(candidate[1])] = color_key
+        chromatic_candidates = [
+            candidate
+            for group_candidates in chromatic_candidate_groups
+            for candidate in group_candidates
+        ]
+        chromatic_names = _legend_color_names(
+            page,
+            plot_rect,
+            chromatic_candidates,
+            chromatic_color_of_candidate,
+        )
+        if (
+            _exact_color_source_ownership(chromatic_candidate_groups)
+            and chromatic_names is not None
+        ):
+            candidates = chromatic_candidates
+            per_color_candidate_groups = chromatic_candidate_groups
+            color_of_candidate = chromatic_color_of_candidate
+            selection_method = "chromatic_color_components"
     if len(candidates) < 3:
         edges = _vector_curve_edges(drawings, plot_rect)
         candidates = _build_candidates(_chain_vector_components(edges))
@@ -364,6 +448,7 @@ def _vector_curve_edges(
     *,
     min_stroke_width: float = 0.8,
     allow_neutral_gray: bool = False,
+    allow_chromatic: bool = False,
 ) -> list[VectorEdge]:
     edges: list[VectorEdge] = []
     expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
@@ -398,8 +483,10 @@ def _vector_curve_edges(
         if drawing.get("type") != "s":
             continue
         color = drawing.get("color")
-        if not _is_curve_stroke_color(color) and not (
-            allow_neutral_gray and _is_neutral_gray_stroke(color)
+        if (
+            not _is_curve_stroke_color(color)
+            and not (allow_neutral_gray and _is_neutral_gray_stroke(color))
+            and not (allow_chromatic and _is_chromatic_stroke(color))
         ):
             continue
         width = float(drawing.get("width") or 0.0)

@@ -219,6 +219,9 @@ class LegendColorOverlayTests(unittest.TestCase):
 _GAN = Path(
     "/Users/fab/dev/pv/pwr-mosfet-lib/out/fugu2-100v-LS2p-gan/coss-review-top50-2026-07-28"
 )
+_GAN_LS2 = Path(
+    "/Users/fab/dev/pv/pwr-mosfet-lib/out/fugu2-100v-LS2p-gan/coss-review-top50-2026-07-29"
+)
 
 
 @unittest.skipUnless(_GAN.exists(), "local GaN packet not available")
@@ -294,6 +297,71 @@ class EpcEndToEndTests(unittest.TestCase):
         for trace in traces:
             xs = [p[0] for p in trace.points]
             self.assertGreater(max(xs) - min(xs), 400)
+
+
+@unittest.skipUnless(_GAN_LS2.exists(), "local GaN LS2 packet not available")
+class EpcGuardedColorEndToEndTests(unittest.TestCase):
+    def _extract(self, part: str, diagram: int):
+        from PIL import Image
+        from datasheet_chart_digitizer.capacitance_plot_box import (
+            find_capacitance_plot_box,
+        )
+        from datasheet_chart_digitizer.capacitance_vector import (
+            extract_vector_trace_components_with_provenance,
+        )
+
+        charts = json.loads((_GAN_LS2 / "charts.json").read_text())
+        chart = next(
+            (
+                c
+                for c in charts
+                if c["part"] == part and c["diagram"] == diagram
+            ),
+            None,
+        )
+        if chart is None:
+            self.skipTest(f"{part} diagram {diagram} absent from local GaN packet")
+        image = np.asarray(Image.open(_GAN_LS2 / chart["crop_png"]).convert("L"))
+        plot = find_capacitance_plot_box(image)
+        return extract_vector_trace_components_with_provenance(
+            chart,
+            image,
+            plot,
+        )
+
+    def test_epc2091_log_sparse_flat_ciss_recovers_from_complete_legend(self) -> None:
+        traces, method = self._extract("EPC2091", 902)
+
+        self.assertEqual(method, "legend_sparse_color_components")
+        self.assertEqual(
+            {trace.name for trace in traces},
+            {"Ciss", "Coss", "Crss"},
+        )
+        for trace in traces:
+            xs = [point[0] for point in trace.points]
+            self.assertGreater(max(xs) - min(xs), 500)
+
+    def test_epc2032_light_green_crss_recovers_from_complete_legend(self) -> None:
+        for diagram in (901, 902):
+            with self.subTest(diagram=diagram):
+                traces, method = self._extract("EPC2032", diagram)
+
+                self.assertEqual(method, "legend_chromatic_color_components")
+                self.assertEqual(
+                    {trace.name for trace in traces},
+                    {"Ciss", "Coss", "Crss"},
+                )
+                self.assertEqual(
+                    {trace.name: trace.source_color_rgb for trace in traces},
+                    {
+                        "Ciss": (0.19, 0.34, 0.25),
+                        "Coss": (0.6, 0.12, 0.17),
+                        "Crss": (0.65, 0.81, 0.22),
+                    },
+                )
+                for trace in traces:
+                    xs = [point[0] for point in trace.points]
+                    self.assertGreater(max(xs) - min(xs), 500)
 
 
 if __name__ == "__main__":
