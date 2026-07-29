@@ -83,12 +83,15 @@ def extract_vector_trace_components_with_provenance(
     per_color_candidate_groups: list[
         list[tuple[float, list[tuple[int, int]]]]
     ] = []
-    for group in by_color.values():
+    color_of_candidate: dict[int, tuple[float, ...]] = {}
+    for color_key, group in by_color.items():
         edges = _vector_curve_edges(group, plot_rect)
         if edges:
             group_candidates = _build_candidates(_chain_vector_components(edges))
             if group_candidates:
                 per_color_candidate_groups.append(group_candidates)
+                for candidate in group_candidates:
+                    color_of_candidate[id(candidate[1])] = color_key
     candidates = [
         candidate
         for group_candidates in per_color_candidate_groups
@@ -180,6 +183,21 @@ def extract_vector_trace_components_with_provenance(
         selection_method = "exact_color_components_short_source_span"
     ordered = sorted((points for _, points in candidates), key=_right_edge_y_pixels)
     names = ["Ciss", "Coss", "Crss"]
+    positional = {id(points): name for name, points in zip(names, ordered)}
+    legend_named = _legend_color_names(
+        page, plot_rect, candidates, color_of_candidate
+    )
+    if legend_named is not None:
+        # The printed legend is source evidence; the right-edge order is a
+        # heuristic. They must agree -- a disagreement means one of them
+        # misread the chart, and neither may serve.
+        for points, legend_name in legend_named.items():
+            if positional[points] != legend_name:
+                raise RuntimeError(
+                    "legend color identity contradicts right-edge order: "
+                    f"{legend_name} vs {positional[points]}"
+                )
+        selection_method = "legend_" + selection_method
     traces: list[Trace] = []
     for name, points in zip(names, ordered):
         xs = [p[0] for p in points]
@@ -187,6 +205,111 @@ def extract_vector_trace_components_with_provenance(
         bbox_local = (min(xs) - plot.x0, min(ys) - plot.y0, max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
         traces.append(Trace(name=name, area=len(points), bbox=bbox_local, points=points))
     return traces, selection_method
+
+
+_LEGEND_WORD_NAMES = {"CISS": "Ciss", "COSS": "Coss", "CRSS": "Crss"}
+_LEGEND_MAX_SWATCH_GAP_PT = 12.0
+_LEGEND_MAX_COLOR_DISTANCE = 0.40
+_LEGEND_MIN_COLOR_SEPARATION = 1.8
+
+
+def _color_distance(a: tuple[float, ...], b: tuple[float, ...]) -> float:
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def _legend_swatch_bindings(page, clip) -> dict[str, tuple[float, ...]] | None:
+    """Bind CISS/COSS/CRSS legend words to their colored swatch segments.
+
+    Returns None whenever a complete, distinct three-row legend cannot be
+    read (absent, partial such as TI's two-row swatches, duplicated names, or
+    non-distinct colors) -- the caller then keeps its production positional
+    naming; legend evidence may only ADD naming, never break extraction.
+    Formula occurrences of the same tokens (no adjacent swatch) are skipped.
+    """
+    bindings: dict[str, tuple[float, ...]] = {}
+    words = [
+        w
+        for w in page.get_text("words")
+        if clip.x0 <= (w[0] + w[2]) / 2 <= clip.x1
+        and clip.y0 <= (w[1] + w[3]) / 2 <= clip.y1
+    ]
+    drawings = page.get_drawings()
+    for w in words:
+        token = w[4].upper().strip()
+        if token not in _LEGEND_WORD_NAMES:
+            continue
+        cy = (w[1] + w[3]) / 2
+        candidates = []
+        for d in drawings:
+            color = d.get("color")
+            if not isinstance(color, (tuple, list)):
+                continue
+            r = d["rect"]
+            if not (r.y0 - 1.5 <= cy <= r.y1 + 1.5):
+                continue
+            if r.x1 > w[0] or w[0] - r.x1 > _LEGEND_MAX_SWATCH_GAP_PT:
+                continue
+            if r.height > 6.0 or r.width < 6.0:
+                continue
+            key = tuple(round(float(c), 2) for c in color[:3])
+            candidates.append((w[0] - r.x1, key))
+        if not candidates:
+            continue
+        # Proximity must NOT arbitrate between differently-colored segments on
+        # one legend row: a decoy segment printed slightly closer to the word
+        # than the real swatch would silently win and produce a complete,
+        # positional-consistent, WRONG mapping. Two distinct colors eligible
+        # for the same row is unreadable evidence, not a tie to break.
+        if len({color for _gap, color in candidates}) > 1:
+            return None
+        name = _LEGEND_WORD_NAMES[token]
+        if name in bindings and bindings[name] != candidates[0][1]:
+            return None
+        bindings[name] = candidates[0][1]
+    if len(bindings) != 3 or len(set(bindings.values())) != 3:
+        return None
+    return bindings
+
+
+def _legend_color_names(
+    page,
+    plot_rect,
+    candidates: list[tuple[float, list[tuple[int, int]]]],
+    color_of_candidate: dict[int, tuple[float, ...]],
+) -> dict[int, str] | None:
+    """Name candidates from the panel's own colored legend, if one exists.
+
+    Every selected candidate must carry a stroke color (color-components
+    selection) that binds DECISIVELY to exactly one legend row: nearest
+    swatch within 0.40 RGB distance and 1.8x closer than the runner-up
+    (curve strokes use slightly different shades than their swatches --
+    EPC2361 draws Ciss in a different green than its own legend row). Any
+    ambiguity returns None so the caller keeps its production positional
+    naming; the only hard refusal from legend evidence is the caller's
+    contradiction check against that positional order.
+    """
+    colors = [color_of_candidate.get(id(points)) for _, points in candidates]
+    if any(color is None for color in colors):
+        return None
+    bindings = _legend_swatch_bindings(page, plot_rect)
+    if bindings is None:
+        return None
+    named: dict[int, str] = {}
+    for (_, points), color in zip(candidates, colors):
+        assert color is not None
+        ranked = sorted(
+            (_color_distance(color, swatch), name)
+            for name, swatch in bindings.items()
+        )
+        (d0, name0), (d1, _n1) = ranked[0], ranked[1]
+        if d0 > _LEGEND_MAX_COLOR_DISTANCE:
+            return None
+        if d0 > 0.0 and d1 / max(d0, 1e-9) < _LEGEND_MIN_COLOR_SEPARATION:
+            return None
+        named[id(points)] = name0
+    if len(set(named.values())) != 3:
+        return None
+    return named
 
 
 def _load_fitz():
@@ -220,6 +343,33 @@ def _vector_curve_edges(
 ) -> list[VectorEdge]:
     edges: list[VectorEdge] = []
     expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
+    # A near-zero Crss tail is a long dead-flat CHROMATIC stroke riding the
+    # bottom axis -- geometrically identical to a frame rail. Keep such a
+    # segment only when the same stroke color also draws sloped ink here (the
+    # curve's falling left half); a frame-colored group never does.
+    sloped_chromatic_colors: set[tuple[float, ...]] = set()
+    for drawing in drawings:
+        if drawing.get("type") != "s":
+            continue
+        color = drawing.get("color")
+        if not _is_chromatic_stroke(color):
+            continue
+        for item in drawing.get("items", []):
+            if item[0] not in ("l", "c"):
+                continue
+            p0, p1 = item[1], item[-1]
+            if abs(float(p1.y) - float(p0.y)) <= 1.0:
+                continue
+            # The sloped ink must be THIS plot's own: a same-colored legend
+            # stroke, neighbouring panel or off-plot annotation must not
+            # qualify a bottom rail here (it would readmit exactly the frame
+            # rail this filter exists to drop).
+            if not _segment_relevant(
+                [(float(p0.x), float(p0.y)), (float(p1.x), float(p1.y))], expanded
+            ):
+                continue
+            sloped_chromatic_colors.add(_stroke_color_key(color))
+            break
     for drawing in drawings:
         if drawing.get("type") != "s":
             continue
@@ -231,6 +381,10 @@ def _vector_curve_edges(
         width = float(drawing.get("width") or 0.0)
         if width < min_stroke_width or width > 2.2:
             continue
+        keep_boundary_horizontals = (
+            _is_chromatic_stroke(color)
+            and _stroke_color_key(color) in sloped_chromatic_colors
+        )
         for item in drawing.get("items", []):
             kind = item[0]
             if kind == "l":
@@ -247,10 +401,28 @@ def _vector_curve_edges(
                 continue
             if not _segment_relevant(points, expanded):
                 continue
-            if _is_long_orthogonal_segment(points[0], points[-1], plot_rect):
+            if _is_long_orthogonal_segment(points[0], points[-1], plot_rect) and not (
+                keep_boundary_horizontals
+                and abs(points[-1][1] - points[0][1]) < 0.1
+                and abs(0.5 * (points[0][1] + points[-1][1]) - plot_rect.y1) <= 1.5
+            ):
                 continue
             edges.append(VectorEdge(p0=points[0], p1=points[-1], points=points))
     return edges
+
+
+def _stroke_color_key(color) -> tuple[float, ...]:
+    if not isinstance(color, (tuple, list)):
+        return ()
+    return tuple(round(float(c), 2) for c in color[:3])
+
+
+def _is_chromatic_stroke(color) -> bool:
+    """A saturated stroke color; frames/grids are black or neutral gray."""
+    if not isinstance(color, (tuple, list)) or len(color) < 3:
+        return False
+    channels = [float(c) for c in color[:3]]
+    return max(channels) - min(channels) >= 0.15
 
 
 def _filled_path_centerline(
@@ -463,7 +635,22 @@ def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
 
 
 def _mostly_inside_plot(points: list[tuple[float, float]], plot_rect) -> bool:
-    inside_points = [(x, y) for x, y in points if plot_rect.contains((x, y))]
+    # A near-zero Crss rides ON the bottom axis line; with a strict rect test
+    # its whole span reads "outside" by a fraction of a point and the curve is
+    # refused (EPC GaN linear panels). Admit a small bottom margin only -- the
+    # top stays strict so annotations cannot become candidates. The x margin
+    # is sub-glyph rounding allowance: the raster-detected frame sits a
+    # fraction of a point inside the true vector frame, and a flat dashed
+    # curve may carry its entire right half in ONE endpoint vertex (EPC2088),
+    # so excluding that endpoint falsifies the measured span.
+    bottom_margin = max(2.0, 0.015 * (plot_rect.y1 - plot_rect.y0))
+    x_margin = 1.5
+    inside_points = [
+        (x, y)
+        for x, y in points
+        if plot_rect.x0 - x_margin <= x <= plot_rect.x1 + x_margin
+        and plot_rect.y0 <= y <= plot_rect.y1 + bottom_margin
+    ]
     inside = len(inside_points)
     # Some Infineon vector curves intentionally protrude a little beyond the
     # detected frame or include an off-frame legend continuation in the same
