@@ -53,3 +53,6 @@
 - [dsdig review HTML location](dsdig-review-html-location.md) — contact sheets at dsdig-verify-backlog/review-html/<packet>/<packet>-001.html
 - [dsdig review overlay cache-bypass naming](dsdig-review-overlay-cache-bypass.md) — re-submitted overlays use unique suffixes (overlay.review-v2.webp); base overlay.webp can serve stale cached image
 - [viz-review shared channel path](viz-review-channel-path.md) — /tmp/claude-channels/viz-review.ndjson
+- [dsdig Siliup raster caption stratum](dsdig-siliup-raster-caption-stratum.md) — page-wide-JPEG pages recover panels via raster frames + OCR captions below_only; additions carry text_source=tesseract_fallback
+- [dsdig HXY shared-template exclusion](dsdig-hxy-shared-template-exclusion.md) — 92.84% share exact first-chart hashes and 90.43% share exact multi-curve bodies; withhold HXY Vpl as non-independent provenance
+- [dsdig Vpl stdout refusal fixes](dsdig-vpl-stdout-refusal-fixes.md) — 7 stdout gate-charge refusals fixed via 6 mechanisms; landed as the 4-commit gate-charge lane; full-corpus A/B pending
