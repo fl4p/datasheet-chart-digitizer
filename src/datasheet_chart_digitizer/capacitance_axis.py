@@ -10,7 +10,12 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .axis_calibration import _number_tokens, _x_ticks_look_log, calibrate_axes
+from .axis_calibration import (
+    _NUMBER_TOKEN_RE,
+    _number_tokens,
+    _x_ticks_look_log,
+    calibrate_axes,
+)
 
 from .capacitance_traces import _interp_y
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
@@ -974,9 +979,16 @@ def _parse_y_decades_from_chart_text(text: str, x_start_index: int) -> list[floa
     tokens = _number_tokens(prefix)
     if x_start_index > 0:
         tokens = tokens[:x_start_index]
+    adjacent = _numbers_adjacent_in_text(prefix)
 
     decades: list[float] = []
-    for a, b in zip(tokens, tokens[1:]):
+    for index, (a, b) in enumerate(zip(tokens, tokens[1:])):
+        # A split "10 5" label prints the mantissa and exponent side by side.
+        # Numbers separated by PROSE are not a label: Infineon's caption number
+        # pairs with the condition line ("10 Typ. capacitances ... V GS = 0 V")
+        # and fabricated a decade 0, stretching every tick by a full decade.
+        if index < len(adjacent) and not adjacent[index]:
+            continue
         if _is_power_ten_exponent(a) and abs(b - 10.0) < 1e-9:
             decades.append(a)
         elif abs(a - 10.0) < 1e-9 and _is_power_ten_exponent(b):
@@ -989,6 +1001,20 @@ def _parse_y_decades_from_chart_text(text: str, x_start_index: int) -> list[floa
         if not out or abs(value - out[-1]) > 1e-9:
             out.append(value)
     return out
+
+
+def _numbers_adjacent_in_text(text: str) -> list[bool]:
+    """For each consecutive number pair, whether only blanks separate them.
+
+    Indices align with ``zip(tokens, tokens[1:])`` because both walk the same
+    tokenizer's matches in order.
+    """
+
+    spans = [match.span() for match in _NUMBER_TOKEN_RE.finditer(text)]
+    return [
+        text[first[1] : second[0]].strip() == ""
+        for first, second in zip(spans, spans[1:])
+    ]
 
 
 def _is_power_ten_exponent(value: float) -> bool:

@@ -63,6 +63,18 @@ def trace_validation_summary(
                     reasons.append(f"{name}_source_ink_absent_run")
         if source_support.get("material_shared_orphan_source_runs"):
             reasons.append("ciss_coss_shared_trace_orphans_source_branch")
+        capture = source_support.get("grid_rule_capture")
+        if not isinstance(capture, dict) or not capture.get("evaluated"):
+            # An unevaluated grid-capture check is UNVERIFIED, not clean: grid
+            # ink satisfies the source-ink check, so nothing else here would
+            # notice a trace riding a decade line.
+            reasons.append("grid_rule_capture_unevaluated")
+        else:
+            captured = capture.get("captured_traces")
+            if isinstance(captured, dict):
+                for name in ("Ciss", "Coss", "Crss"):
+                    if captured.get(name):
+                        reasons.append(f"{name}_captured_by_grid_rule")
     if any(
         span.get("separated_sign_before") is not None
         and span.get("separated_sign_after") is None
