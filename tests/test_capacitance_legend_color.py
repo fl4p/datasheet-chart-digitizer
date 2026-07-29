@@ -12,6 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
+from datasheet_chart_digitizer.capacitance_overlay import (
+    _trace_color_bgr,
+    draw_trace_overlay,
+)
+from datasheet_chart_digitizer.capacitance_types import PlotBox, Trace
 from datasheet_chart_digitizer.capacitance_vector import (
     _is_chromatic_stroke,
     _legend_color_names,
@@ -183,6 +188,34 @@ class ChromaticStrokeTests(unittest.TestCase):
         self.assertFalse(_is_chromatic_stroke(None))
 
 
+class LegendColorOverlayTests(unittest.TestCase):
+    def test_legend_bound_trace_uses_source_color_in_overlay(self) -> None:
+        trace = Trace(
+            name="Ciss",
+            area=2,
+            bbox=(0, 0, 21, 1),
+            points=[(10, 20), (30, 20)],
+            source_color_rgb=DARK_GREEN,
+        )
+        expected_bgr = (122, 161, 69)
+        self.assertEqual(_trace_color_bgr(trace), expected_bgr)
+
+        image = np.full((50, 50, 3), 255, dtype=np.uint8)
+        overlay = draw_trace_overlay(
+            image, PlotBox(x0=5, y0=5, x1=45, y1=45), [trace]
+        )
+        self.assertEqual(tuple(int(v) for v in overlay[20, 10]), expected_bgr)
+
+    def test_unbound_trace_keeps_default_review_color(self) -> None:
+        trace = Trace(
+            name="Ciss",
+            area=2,
+            bbox=(0, 0, 21, 1),
+            points=[(10, 20), (30, 20)],
+        )
+        self.assertEqual(_trace_color_bgr(trace), (40, 40, 255))
+
+
 _GAN = Path(
     "/Users/fab/dev/pv/pwr-mosfet-lib/out/fugu2-100v-LS2p-gan/coss-review-top50-2026-07-28"
 )
@@ -212,6 +245,14 @@ class EpcEndToEndTests(unittest.TestCase):
         traces, method = self._extract("EPC2367", 901)
         self.assertEqual(method, "legend_color_components")
         by_name = {t.name: t for t in traces}
+        self.assertEqual(
+            {name: trace.source_color_rgb for name, trace in by_name.items()},
+            {
+                "Ciss": (0.0, 0.47, 0.29),
+                "Coss": (0.6, 0.12, 0.17),
+                "Crss": (0.65, 0.81, 0.22),
+            },
+        )
         right_y = {
             name: trace.points[-1][1] for name, trace in by_name.items()
         }

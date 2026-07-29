@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import cv2
 import numpy as np
 from .capacitance_grid_mask import (
@@ -234,7 +236,7 @@ def _trace_y_range(trace: Trace) -> int:
 
 
 def _renamed_trace(trace: Trace, name: str) -> Trace:
-    return Trace(name=name, area=trace.area, bbox=trace.bbox, points=trace.points)
+    return replace(trace, name=name)
 def find_plot_box(gray: np.ndarray) -> PlotBox:
     height, width = gray.shape
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)

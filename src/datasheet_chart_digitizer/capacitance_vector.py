@@ -198,12 +198,36 @@ def extract_vector_trace_components_with_provenance(
                     f"{legend_name} vs {positional[points]}"
                 )
         selection_method = "legend_" + selection_method
+    legend_colors = (
+        _legend_swatch_bindings(page, plot_rect)
+        if legend_named is not None
+        else None
+    )
     traces: list[Trace] = []
     for name, points in zip(names, ordered):
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         bbox_local = (min(xs) - plot.x0, min(ys) - plot.y0, max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
-        traces.append(Trace(name=name, area=len(points), bbox=bbox_local, points=points))
+        source_color = (
+            legend_colors.get(name) if legend_colors is not None else None
+        )
+        traces.append(
+            Trace(
+                name=name,
+                area=len(points),
+                bbox=bbox_local,
+                points=points,
+                source_color_rgb=(
+                    (
+                        float(source_color[0]),
+                        float(source_color[1]),
+                        float(source_color[2]),
+                    )
+                    if source_color is not None and len(source_color) >= 3
+                    else None
+                ),
+            )
+        )
     return traces, selection_method
 
 

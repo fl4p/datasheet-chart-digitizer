@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import itertools
 import math
+from dataclasses import replace
 
 import numpy as np
 
@@ -231,7 +232,7 @@ def _assignment_by_current_name(traces: list[Trace]) -> dict[str, Trace]:
 
 
 def _renamed_trace(trace: Trace, name: str) -> Trace:
-    return Trace(name=name, area=trace.area, bbox=trace.bbox, points=trace.points)
+    return replace(trace, name=name)
 
 
 def _unavailable_diagnostics(reason: str, anchors: dict[str, CapAnchor]) -> dict[str, object]:

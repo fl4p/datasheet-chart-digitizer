@@ -21,7 +21,7 @@ def draw_trace_overlay(
     draw_plot_frame(overlay, plot, color=(0, 180, 255))
 
     for trace in traces:
-        color = TRACE_COLORS_BGR[trace.name]
+        color = _trace_color_bgr(trace)
         pts = trace.points
         for a, b in zip(pts, pts[1:]):
             dx = abs(b[0] - a[0])
@@ -100,7 +100,11 @@ def _draw_shared_ciss_coss_spans(
 ) -> None:
     """Show a merged source stroke without pretending two curves were visible."""
 
-    by_name = {trace.name: {x: y for x, y in trace.points} for trace in traces}
+    traces_by_name = {trace.name: trace for trace in traces}
+    by_name = {
+        name: {x: y for x, y in trace.points}
+        for name, trace in traces_by_name.items()
+    }
     if not {"Ciss", "Coss"}.issubset(by_name):
         return
     ciss = by_name["Ciss"]
@@ -115,9 +119,9 @@ def _draw_shared_ciss_coss_spans(
         ]
         for index, (a, b) in enumerate(zip(points, points[1:])):
             color = (
-                TRACE_COLORS_BGR["Ciss"]
+                _trace_color_bgr(traces_by_name["Ciss"])
                 if (index // 6) % 2 == 0
-                else TRACE_COLORS_BGR["Coss"]
+                else _trace_color_bgr(traces_by_name["Coss"])
             )
             cv2.line(overlay, a, b, color, 4, lineType=cv2.LINE_AA)
         if points:
@@ -132,6 +136,18 @@ def _draw_shared_ciss_coss_spans(
                 1,
                 lineType=cv2.LINE_AA,
             )
+
+
+def _trace_color_bgr(trace: Trace) -> tuple[int, int, int]:
+    """Use a legend-bound source hue; otherwise keep the review palette."""
+
+    if trace.source_color_rgb is None:
+        return TRACE_COLORS_BGR[trace.name]
+    rgb = tuple(
+        max(0, min(255, int(round(255.0 * channel))))
+        for channel in trace.source_color_rgb
+    )
+    return rgb[2], rgb[1], rgb[0]
 
 
 def draw_axis_debug_overlay(

@@ -32,6 +32,9 @@ class Trace:
     area: int
     bbox: tuple[int, int, int, int]
     points: list[tuple[int, int]]
+    # Original PDF legend-swatch color, retained only when the chart's
+    # complete color legend decisively bound all three curve identities.
+    source_color_rgb: tuple[float, float, float] | None = None
 
 
 @dataclass(frozen=True)
