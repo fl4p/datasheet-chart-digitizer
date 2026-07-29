@@ -36,6 +36,10 @@ class HxyGateChargeOwnershipTests(unittest.TestCase):
 
     def test_y_axis_rejects_tick_run_that_straddles_remote_panels(self) -> None:
         page = mock.MagicMock()
+        # The straddle bound is keyed on the page's text source; a bare Mock
+        # attribute would answer startswith() with a truthy Mock and silently
+        # take the wider bounded-OCR allowance.
+        page.text_source = ""
         page.get_text.return_value = [
             (383.0, 295.0, 389.0, 299.0, "4"),
             (383.0, 727.0, 389.0, 731.0, "0"),

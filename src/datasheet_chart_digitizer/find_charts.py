@@ -2,7 +2,6 @@
 """Find chart panels and emit crops plus metadata for downstream digitizers."""
 from __future__ import annotations
 import argparse
-import csv
 import json
 import re
 import shutil
@@ -20,6 +19,13 @@ try:
     from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
     from .table_crossref_filter import is_ruled_spec_crossref
+    from .finder_types import PageText, Word
+    from .finder_text_ocr import (
+        dedupe_overprinted_words as _dedupe_overprinted_words,
+        page_text_from_tesseract_tsv as _page_text_from_tesseract_tsv,
+        run_tesseract_page_text,
+        tesseract_tsv as _tesseract_tsv,
+    )
     from .finder_caption_geometry import (
         bbox_iou as _bbox_iou,
         bbox_evidences_breakdown,
@@ -48,6 +54,13 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
     from table_crossref_filter import is_ruled_spec_crossref
+    from finder_types import PageText, Word
+    from finder_text_ocr import (
+        dedupe_overprinted_words as _dedupe_overprinted_words,
+        page_text_from_tesseract_tsv as _page_text_from_tesseract_tsv,
+        run_tesseract_page_text,
+        tesseract_tsv as _tesseract_tsv,
+    )
     from finder_caption_geometry import (
         bbox_iou as _bbox_iou,
         bbox_evidences_breakdown,
@@ -74,22 +87,8 @@ except ImportError:  # pragma: no cover - direct script compatibility
     )
 DIAGRAM_RE = re.compile(r"^Diagram\s+(\d+):?\s*(.*)$", re.IGNORECASE)
 # Figure numbers: Toshiba "Fig. 8.8", TI "Figure 4-5." (section-hyphenated).
-FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:[.\-]\d+)?)[\.,:]?\s*(.*)$", re.IGNORECASE)
+FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)\s+(\d+(?:[a-z]|[.\-]\d+)?)[\.,:]?\s*(.*)$", re.IGNORECASE)
 COMPACT_FIGURE_RE = re.compile(r"^(?:Figure|Fig\.?)(\d+(?:[.\-]\d+)?)[\.,:\-]?\s*(.*)$", re.IGNORECASE)
-@dataclass(frozen=True)
-class Word:
-    text: str
-    x0: float
-    y0: float
-    x1: float
-    y1: float
-@dataclass(frozen=True)
-class PageText:
-    page_num: int
-    width_pt: float
-    height_pt: float
-    words: list[Word]
-    text_source: str = "pdftotext"
 @dataclass(frozen=True)
 class DiagramTitle:
     number: int
@@ -155,102 +154,6 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
         _select_page_text(page, fallback_by_number.get(page.page_num))
         for page in primary_pages
     ]
-def _tesseract_tsv(page_png: Path, timeout: float = 20.0) -> str | None:
-    """Return sparse-layout OCR TSV, degrading cleanly when OCR is unavailable."""
-    executable = shutil.which("tesseract")
-    if executable is None:
-        return None
-    try:
-        completed = subprocess.run(
-            [executable, str(page_png), "stdout", "--psm", "11", "tsv"],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
-    return completed.stdout
-def _page_text_from_tesseract_tsv(
-    tsv: str,
-    *,
-    page_num: int,
-    width_pt: float,
-    height_pt: float,
-    width_px: int,
-    height_px: int,
-) -> PageText:
-    """Map word-level Tesseract pixel boxes into PDF-point coordinates."""
-    words: list[Word] = []
-    for row in csv.DictReader(tsv.splitlines(), delimiter="\t"):
-        text = (row.get("text") or "").strip()
-        if not text:
-            continue
-        try:
-            confidence = float(row.get("conf") or -1)
-            left = float(row["left"])
-            top = float(row["top"])
-            word_width = float(row["width"])
-            word_height = float(row["height"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if confidence < 10:
-            continue
-        x_scale = width_pt / max(1, width_px)
-        y_scale = height_pt / max(1, height_px)
-        words.append(
-            Word(
-                text=text,
-                x0=left * x_scale,
-                y0=top * y_scale,
-                x1=(left + word_width) * x_scale,
-                y1=(top + word_height) * y_scale,
-            )
-        )
-    return PageText(
-        page_num=page_num,
-        width_pt=width_pt,
-        height_pt=height_pt,
-        words=words,
-        text_source="tesseract_fallback",
-    )
-def run_tesseract_page_text(
-    pdf: Path,
-    *,
-    dpi: int = 160,
-    timeout: float = 20.0,
-) -> list[PageText]:
-    """OCR every page for gate-only fallback discovery."""
-
-    if shutil.which("tesseract") is None:
-        return []
-    private_tmp = Path("/private/tmp")
-    temp_root = private_tmp if private_tmp.is_dir() else None
-    pages: list[PageText] = []
-    with pymupdf.open(pdf) as doc, tempfile.TemporaryDirectory(
-        prefix="dsdig-ocr-", dir=temp_root
-    ) as tmp:
-        scale = dpi / 72.0
-        for page_num, page in enumerate(doc, start=1):
-            pix = page.get_pixmap(matrix=pymupdf.Matrix(scale, scale), alpha=False)
-            page_png = Path(tmp) / f"page-{page_num}.png"
-            pix.save(page_png)
-            tsv = _tesseract_tsv(page_png, timeout=timeout)
-            if tsv is None:
-                continue
-            pages.append(
-                _page_text_from_tesseract_tsv(
-                    tsv,
-                    page_num=page_num,
-                    width_pt=float(page.rect.width),
-                    height_pt=float(page.rect.height),
-                    width_px=pix.width,
-                    height_px=pix.height,
-                )
-            )
-    return pages
-
 def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[PageText]:
     pages: list[PageText] = []
     with pymupdf.open(pdf) as doc:
@@ -278,37 +181,6 @@ def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[
     if not pages or not any(page.words for page in pages):
         raise RuntimeError(f"both bbox text paths returned no words for {pdf}")
     return pages
-def _dedupe_overprinted_words(words: list[Word]) -> list[Word]:
-    """Collapse near-identical glyph layers emitted as repeated words."""
-    buckets: dict[tuple[str, int, int], list[Word]] = {}
-    out: list[Word] = []
-    for word in words:
-        cx = 0.5 * (word.x0 + word.x1)
-        cy = 0.5 * (word.y0 + word.y1)
-        gx = int(cx)
-        gy = int(cy)
-        duplicate = False
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for other in buckets.get((word.text, gx + dx, gy + dy), []):
-                    if max(
-                        abs(word.x0 - other.x0),
-                        abs(word.y0 - other.y0),
-                        abs(word.x1 - other.x1),
-                        abs(word.y1 - other.y1),
-                    ) <= 0.8:
-                        duplicate = True
-                        break
-                if duplicate:
-                    break
-            if duplicate:
-                break
-        if duplicate:
-            continue
-        out.append(word)
-        buckets.setdefault((word.text, gx, gy), []).append(word)
-    return out
-
 def _readable_word_count(page: PageText) -> int:
     return sum(bool(re.search(r"[A-Za-z]{2}", word.text)) for word in page.words)
 
@@ -430,7 +302,7 @@ def _caption_starts(line: list[Word]) -> list[int]:
                 starts.append(idx)
             continue
         if lower in {"figure", "fig"} and idx + 1 < len(line):
-            if re.match(r"^\d+(?:[.\-]\d+)?[\.,:]?$", line[idx + 1].text):
+            if re.match(r"^\d+(?:[a-z]|[.\-]\d+)?[\.,:]?$", line[idx + 1].text, re.I):
                 starts.append(idx)
             continue
 
@@ -471,12 +343,12 @@ def _caption_starts(line: list[Word]) -> list[int]:
             starts.append(idx)
     return starts
 
-
 def _parse_caption_text(text: str) -> tuple[int | None, str] | None:
     text = repair_spaced_caption_text(text)
     match = FIGURE_RE.match(text)
     if match:
-        return int(re.sub(r"[.\-]", "", match.group(1))), match.group(2).strip()
+        number = match.group(1)
+        return (None if number[-1:].isalpha() else int(re.sub(r"[.\-]", "", number))), match.group(2).strip()
     match = COMPACT_FIGURE_RE.match(text)
     if match:
         title = match.group(2).strip()
@@ -668,6 +540,124 @@ def detect_rule_boxes(page_png: Path) -> tuple[list[tuple[int, int, int, int]], 
     return _merge_rule_boxes(v_boxes, "x"), _merge_rule_boxes(h_boxes, "y")
 
 
+def detect_raster_grid_frames(page_png: Path, page: PageText) -> list[tuple[float, float, float, float]]:
+    """Detect closed grid-plot frames drawn only in a page's raster content.
+
+    Siliup-style datasheets embed whole chart panels (frame, grid, curves AND
+    captions) as page-wide JPEGs, so neither the text layer nor the vector
+    drawings evidence any panel. Recover frames from the rendered page: extract
+    long horizontal/vertical strokes, cluster the horizontals by x-extent, and
+    accept a (top, bottom) line pair only when full-span vertical edges close
+    the rectangle at BOTH corners and at least one interior grid line lies
+    between them. Pages without closed gridded frames yield [].
+    """
+    img = cv2.imread(str(page_png), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return []
+    _, bw = cv2.threshold(img, 210, 255, cv2.THRESH_BINARY_INV)
+    height, width = bw.shape
+    closed = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    h_open = cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(60, width // 9), 1)))
+    v_open = cv2.morphologyEx(closed, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(60, height // 14))))
+
+    min_w, max_w = 0.14 * width, 0.48 * width
+    min_h, max_h = 0.08 * height, 0.40 * height
+    tol = max(6.0, 0.006 * width)
+
+    h_segments: list[tuple[float, float, list[float]]] = []
+    for contour in cv2.findContours(h_open, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(contour)
+        if not (min_w <= w <= max_w) or h > 30:
+            continue
+        # A thick blob is a run of merged dense grid lines; its outer edges are
+        # the candidate line positions. A thin one is the line itself.
+        ys = [y + 0.5 * h] if h <= 6 else [y + 1.0, y + h - 1.0]
+        h_segments.append((float(x), float(x + w), ys))
+    v_segments: list[tuple[float, float, float]] = []
+    for contour in cv2.findContours(v_open, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)[0]:
+        x, y, w, h = cv2.boundingRect(contour)
+        if min_h <= h <= max_h and w <= 12:
+            v_segments.append((float(y), float(y + h), x + 0.5 * w))
+
+    clusters: list[dict] = []
+    for x0, x1, ys in sorted(h_segments):
+        for cluster in clusters:
+            if abs(cluster["x0"] - x0) <= tol and abs(cluster["x1"] - x1) <= tol:
+                cluster["ys"].extend(ys)
+                break
+        else:
+            clusters.append({"x0": x0, "x1": x1, "ys": list(ys)})
+
+    frames: list[tuple[float, float, float, float]] = []
+    sx, sy = page.width_pt / width, page.height_pt / height
+    for cluster in clusters:
+        ys = sorted(cluster["ys"])
+        if len(ys) < 3:
+            continue
+        left, right = cluster["x0"], cluster["x1"]
+        for index, top in enumerate(ys):
+            for bottom in ys[index + 2:]:  # >=1 interior line: grid evidence
+                if not min_h <= bottom - top <= max_h:
+                    continue
+                if not 0.55 <= (right - left) / max(bottom - top, 1.0) <= 2.4:
+                    continue
+                if not all(
+                    any(
+                        abs(xc - edge_x) <= tol and abs(y0 - top) <= tol and abs(y1 - bottom) <= tol
+                        for y0, y1, xc in v_segments
+                    )
+                    for edge_x in (left, right)
+                ):
+                    continue
+                candidate = (left * sx, top * sy, right * sx, bottom * sy)
+                if not any(_bbox_iou(candidate, frame) >= 0.90 for frame in frames):
+                    frames.append(candidate)
+    return sorted(frames, key=lambda frame: (frame[1], frame[0]))
+
+
+def _raster_image_caption_recovery(
+    pdf: Path, page: PageText, dpi: int, tmpdir: Path
+) -> tuple[PageText, list[DiagramTitle], list[tuple[float, float, float, float]]] | None:
+    """Recover captions on raster-panel pages whose text layer has none.
+
+    Fires only for pages dominated by large embedded images (the panels AND
+    their captions are baked into the raster, so normal text/vector discovery
+    finds nothing). Requires OCR to be available, closed raster grid frames to
+    be positively detected, and a supported-kind caption 24-52 pt below an
+    owning frame; any missing link keeps the page a visible finder gap.
+    """
+    image_rects = _page_image_rects(pdf, page.page_num)
+    page_area = max(page.width_pt * page.height_pt, 1e-9)
+    coverage = sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in image_rects) / page_area
+    if coverage < 0.35:
+        return None
+    page_png = render_page(pdf, page.page_num, dpi, tmpdir)
+    frames = detect_raster_grid_frames(page_png, page)
+    if not frames:
+        return None
+    tsv = _tesseract_tsv(page_png)
+    if tsv is None:
+        return None
+    with Image.open(page_png) as rendered:
+        width_px, height_px = rendered.size
+    ocr_page = _page_text_from_tesseract_tsv(
+        tsv, page_num=page.page_num, width_pt=page.width_pt,
+        height_pt=page.height_pt, width_px=width_px, height_px=height_px,
+    )
+    recovered = frame_bound_short_caption_segments(
+        ocr_page, group_words_into_lines(ocr_page.words), frames, classify_chart,
+        lambda text: is_spec_table_header_title(text) or _is_gate_charge_axis_label(text, ocr_tolerant=True),
+        below_only=True,
+    )
+    if not recovered:
+        return None
+    titles = [
+        DiagramTitle(901 + index, text, bbox, text, frame)
+        for index, (text, bbox, frame) in enumerate(recovered)
+    ]
+    return ocr_page, titles, frames
+
+
 def px_to_pt_x(x_px: int, image_width: int, page: PageText) -> float:
     return x_px * page.width_pt / image_width
 
@@ -839,6 +829,45 @@ def _has_gate_charge_formula_below_caption(page: PageText, title: DiagramTitle) 
         if "fqg" in normalized or "fqgate" in normalized or "vgsfq" in normalized or "vgefq" in normalized:
             return True
     return False
+def _unambiguous_sibling_caption_direction(
+    page: PageText,
+    title: DiagramTitle,
+    grid_regions: list[tuple[float, float, float, float]],
+) -> str | None:
+    """Read the caption-to-plot direction off this page's other captions.
+
+    A caption printed BETWEEN two stacked grids is directionless on its own
+    (NCE0160G: Figure 9 sits 13 pt under Figure 7's grid and 15 pt over its
+    own), but numbered captions on one page share one layout. A sibling with a
+    grid on only one side fixes that layout; adopt it only when every decisive
+    sibling agrees.
+    """
+
+    tx0, ty0, tx1, ty1 = title.bbox_pt
+    directions: set[str] = set()
+    for line in group_words_into_lines(page.words):
+        text = line_text(line).strip()
+        if not (FIGURE_RE.match(text) or COMPACT_FIGURE_RE.match(text)):
+            continue
+        lx0, ly0, lx1, ly1 = line_bbox(line)
+        if abs(ly0 - ty0) <= 2.0 and abs(lx0 - tx0) <= 2.0:
+            continue
+        lcx = 0.5 * (lx0 + lx1)
+        has_above = False
+        has_below = False
+        for x0, y0, x1, y1 in grid_regions:
+            width = x1 - x0
+            if abs(lcx - 0.5 * (x0 + x1)) > max(width * 0.85, page.width_pt * 0.10):
+                continue
+            if y1 <= ly0 and ly0 - y1 <= 85.0:
+                has_above = True
+            if y0 >= ly1 and y0 - ly1 <= 85.0:
+                has_below = True
+        if has_above != has_below:
+            directions.add("above" if has_above else "below")
+    return next(iter(directions)) if len(directions) == 1 else None
+
+
 def choose_caption_panel_bbox(
     page: PageText,
     title: DiagramTitle,
@@ -883,6 +912,7 @@ def choose_caption_panel_bbox(
         breakdown_symbol_caption_direction(candidates, title) or caption_axis_direction(page, title, kind, _token_norm)))
     if kind not in {"gate_charge", "breakdown_voltage"} and evidenced_direction is None and not requires_plot_above and caption_leads_nearer_grid(candidates, ty0, ty1):
         evidenced_direction = "below"
+
     if (
         kind == "breakdown_voltage"
         and not semantic_candidates
@@ -924,6 +954,38 @@ def choose_caption_panel_bbox(
             best = (score, region)
     if best is None:
         return None
+
+    if (
+        kind == "gate_charge"
+        and evidenced_direction is None
+        and not requires_plot_above
+        and not (
+            _caption_prefers_plot_above(title)
+            and _has_gate_charge_axis_label_above_caption(page, title)
+        )
+    ):
+        # A directionless gate-charge caption falls back to the nearest grid,
+        # which silently binds the neighbour above when the caption's own
+        # raster chart produced no grid region at all (NCE0160G: Figure 9 sits
+        # 23 pt under Figure 7's frame and its own plot was undetected). The
+        # page's other numbered captions fix the layout; when every decisive
+        # sibling contradicts the chosen side, refuse the binding instead of
+        # serving the neighbour's chart.
+        chosen = best[1]
+        chosen_side = (
+            "above"
+            if chosen[3] <= ty0
+            else "below" if chosen[1] >= ty1 else None
+        )
+        if chosen_side is not None:
+            sibling_direction = _unambiguous_sibling_caption_direction(
+                page, title, grid_regions
+            )
+            if (
+                sibling_direction is not None
+                and sibling_direction != chosen_side
+            ):
+                return None
 
     x0, y0, x1, y1 = best[1]
     pad_x = min(12.0, (x1 - x0) * 0.04)
@@ -1319,7 +1381,11 @@ def process_page_texts(
                 )
                 caption_titles = [DiagramTitle(901 + index, text, bbox, text, frame) for index, (text, bbox, frame) in enumerate(recovered)]
                 recovered_numbers = {title.number for title in caption_titles}
-                if not caption_titles and not axis_label_spans: continue
+                if not caption_titles and not axis_label_spans:
+                    raster = _raster_image_caption_recovery(pdf, page, dpi, tmpdir)
+                    if raster is None: continue
+                    page, caption_titles, page_vector_frames = raster
+                    recovered_numbers = {title.number for title in caption_titles}
             page_png = render_page(pdf, page.page_num, dpi, tmpdir)
             with Image.open(page_png) as rendered:
                 width_px, height_px = rendered.size
@@ -1371,9 +1437,15 @@ def process_page_texts(
                     bbox = axis_label_bbox
                 if bbox is None: continue
                 bbox = expand_numbered_dual_y_gate_bbox(page, title, bbox)
-                if kind == "capacitances":
+                if kind == "capacitances" and not (
+                    title.owner_frame is not None
+                    and page.text_source == "tesseract_fallback"
+                ):
                     # Scoped to capacitance captions so gate-charge crops (and
                     # the Vpl parity corpus built on them) stay byte-identical.
+                    # Raster-recovered captions (OCR page text + owned closed
+                    # frame) keep their frame: page-wide rasters (Siliup) span
+                    # several panels, so the nearest image rect is NOT the panel.
                     if page_image_rects is None:
                         page_image_rects = _page_image_rects(pdf, page.page_num)
                     image_bbox = _caption_image_panel_bbox(page_image_rects, title, bbox)

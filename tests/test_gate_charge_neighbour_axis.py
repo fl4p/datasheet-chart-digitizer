@@ -20,7 +20,10 @@ from types import SimpleNamespace
 
 import pymupdf
 
-from datasheet_chart_digitizer.gate_charge_estimation import _local_y_ticks_for_plot
+from datasheet_chart_digitizer.gate_charge_estimation import (
+    _best_y_axis_for_panel,
+    _local_y_ticks_for_plot,
+)
 
 
 EPC2934C = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/epc/EPC2934C.pdf")
@@ -46,6 +49,33 @@ def _page(words, *, text_source: str = "pdftotext"):
 
 
 class NeighbourAxisColumnTests(unittest.TestCase):
+    def test_stacked_tick_run_is_rejected_even_when_an_x_axis_exists(self):
+        """A local x axis does not make vertically remote y labels local."""
+
+        panel = pymupdf.Rect(100.0, 100.0, 300.0, 300.0)
+        own_axis = _column(
+            (5, 4, 3, 2, 1, 0),
+            95.0,
+            row_ys=(110.0, 146.0, 182.0, 218.0, 254.0, 290.0),
+        )
+        stacked_foreign_axis = _column(
+            (30, 20, 3),
+            295.0,
+            row_ys=(20.0, 290.0, 600.0),
+        )
+        x_axis = [
+            (x - 3.0, 307.0, x + 3.0, 313.0, str(value))
+            for value, x in ((0, 110), (5, 155), (10, 200), (15, 245), (20, 290))
+        ]
+
+        axis = _best_y_axis_for_panel(
+            _page(own_axis + stacked_foreign_axis + x_axis), panel
+        )
+
+        self.assertIsNotNone(axis)
+        assert axis is not None
+        self.assertEqual([value for value, _y in axis[0]], [5, 4, 3, 2, 1, 0])
+
     def test_own_column_wins_over_an_equally_long_neighbour(self):
         """The EPC2934C geometry: two six-label columns, tie on count.
 
@@ -236,11 +266,8 @@ EPC2023 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/epc/EPC2023.pdf")
 
 @unittest.skipUnless(EPC2023.exists(), "local EPC2023 datasheet unavailable")
 class Epc2023StackedPanelTests(unittest.TestCase):
-    def test_a_stacked_panel_reading_is_not_served(self):
-        """EPC2023's frame spans several charts (505x1591). Its siblings all read
-        2.0-2.8 V; through that box the ticks come from a neighbouring 30..3 axis and
-        the answer is 9.25 V -- with no other diagnostic firing, because the wrong axis
-        is a perfectly good axis. The value is still produced; it must not be served."""
+    def test_stacked_axis_labels_do_not_expand_the_owned_gate_chart(self):
+        """The 30, 20, 3 labels from three rows must not beat Figure 7's 5..0 V."""
 
         from datasheet_chart_digitizer.gate_charge import (
             digitize_gate_charge,
@@ -251,22 +278,27 @@ class Epc2023StackedPanelTests(unittest.TestCase):
             r for r in digitize_gate_charge(EPC2023, dpi=220, finder_dpi=120)
             if r.vpl is not None
         )
-        self.assertGreater(panel.vpl, 5.0, "the wrong value is still produced ...")
-        self.assertIn("plot_box_aspect_implausible", panel.diagnostics)
-        self.assertNotEqual(panel.status, "ok")
-        self.assertIsNone(find_vpl_result(str(EPC2023)))
+        self.assertEqual(panel.status, "ok")
+        self.assertEqual(
+            [value for value, _pixel in panel.y_ticks_px],
+            [5.0, 4.0, 3.0, 2.0, 1.0, 0.0],
+        )
+        self.assertAlmostEqual(panel.vpl, 2.1912, delta=0.02)
+        self.assertNotIn("plot_box_aspect_implausible", panel.diagnostics)
+        self.assertLess(
+            panel.plot_box_px[3] - panel.plot_box_px[1],
+            1.75 * (panel.plot_box_px[2] - panel.plot_box_px[0]),
+        )
+        served = find_vpl_result(str(EPC2023))
+        self.assertIsNotNone(served)
+        assert served is not None
+        self.assertAlmostEqual(served.vpl, panel.vpl, delta=1e-9)
 
 
 @unittest.skipUnless(SUP90140E.exists(), "local SUP90140E datasheet unavailable")
 class Sup90140eStatusTests(unittest.TestCase):
-    def test_an_implausible_reading_is_not_reported_as_ok(self):
-        """status is a provenance claim and must not claim more than was done.
-
-        This panel produced 28.6 V for a part whose gate never leaves +-20 V, off two
-        ticks spanning 48% of the plot box, and reported status "ok" WITH
-        vpl_outside_expected_range already in its diagnostics. Every consumer that keys
-        on status -- fetlib's read_charts among them -- stored it as a clean reading.
-        """
+    def test_native_axis_recovers_the_owned_gate_chart(self):
+        """Discovery OCR must not replace a complete native 0..10 V axis."""
 
         from datasheet_chart_digitizer.gate_charge import (
             digitize_gate_charge,
@@ -276,13 +308,18 @@ class Sup90140eStatusTests(unittest.TestCase):
         results = digitize_gate_charge(SUP90140E, dpi=220, finder_dpi=120)
         panel = next(r for r in results if r.vpl is not None)
 
-        self.assertGreater(panel.vpl, 20.0, "the wrong value is still produced ...")
-        self.assertNotEqual(panel.status, "ok", "... it must simply not be called ok")
-        self.assertIn("vpl_outside_expected_range", panel.diagnostics)
-        self.assertIn("vpl_extrapolated_beyond_ticks", panel.diagnostics)
-
-        # and the scalar API, which serves only status == "ok", now serves nothing here
-        self.assertIsNone(find_vpl_result(str(SUP90140E)))
+        self.assertEqual(panel.status, "ok")
+        self.assertEqual(
+            [value for value, _pixel in panel.y_ticks_px],
+            [10.0, 8.0, 6.0, 4.0, 2.0, 0.0],
+        )
+        self.assertNotIn("plot_box_aspect_implausible", panel.diagnostics)
+        self.assertNotIn("vpl_extrapolated_beyond_ticks", panel.diagnostics)
+        self.assertLess(
+            panel.plot_box_px[3] - panel.plot_box_px[1],
+            1.75 * (panel.plot_box_px[2] - panel.plot_box_px[0]),
+        )
+        self.assertIsNotNone(find_vpl_result(str(SUP90140E)))
 
 
 @unittest.skipUnless(EPC2934C.exists(), "local EPC2934C datasheet unavailable")

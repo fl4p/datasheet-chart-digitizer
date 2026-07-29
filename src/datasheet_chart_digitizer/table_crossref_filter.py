@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
 
 def is_ruled_spec_crossref(words, bbox, horizontal_rules) -> bool:
     """Require both shallow-row geometry and neighboring numeric table values."""
+
     if not bbox_is_shallow_ruled_row(bbox, horizontal_rules):
         return False
     y0, y1 = bbox[1], bbox[3]

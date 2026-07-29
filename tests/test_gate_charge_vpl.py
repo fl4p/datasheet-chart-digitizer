@@ -64,6 +64,21 @@ class GateChargeVplTests(unittest.TestCase):
         self.assertFalse(estimation._reject_non_gate_context("Figure 8 Gate Charge Characteristics"))
         self.assertTrue(estimation._reject_non_gate_context("Figure 6 Source-Drain Diode Forward"))
 
+    def test_gate_charge_unit_requires_an_explicit_unit_token(self) -> None:
+        for false_context in ("Resistance", "Capacitance", "dynamic characteristics"):
+            with self.subTest(context=false_context):
+                self.assertIsNone(gate._gate_charge_unit(false_context))
+        for context, expected in (
+            ("Qg (nC)", "nC"),
+            ("100 n C", "nC"),
+            ("nanocoulombs", "nC"),
+            ("Qg [µC]", "uC"),
+            ("microcoulomb", "uC"),
+        ):
+            with self.subTest(context=context):
+                self.assertEqual(gate._gate_charge_unit(context), expected)
+        self.assertIsNone(gate._gate_charge_unit("nC and uC"))
+
     def test_refined_plot_context_rejects_non_gate_panels(self) -> None:
         cases = {
             "Normalized D-S Breakdown Voltage (a) vs Tj": "breakdown_voltage",
@@ -166,11 +181,11 @@ class GateChargeVplTests(unittest.TestCase):
     def test_initial_ramp_coverage_gate_is_independently_load_bearing(self) -> None:
         plot_box = (100, 80, 500, 380)
         source_complete = [(120, 350), (180, 290), (260, 240), (420, 100)]
-        source_truncated = [(121, 350), (180, 290), (260, 240), (420, 100)]
+        source_truncated = [(123, 350), (180, 290), (260, 240), (420, 100)]
 
         self.assertFalse(gate._curve_missing_initial_ramp(source_complete, plot_box))
         self.assertTrue(gate._curve_missing_initial_ramp(source_truncated, plot_box))
-        self.assertEqual(gate.MAX_CURVE_LEFT_GAP_FRACTION, 0.05)
+        self.assertEqual(gate.MAX_CURVE_LEFT_GAP_FRACTION, 0.055)
 
     def test_plateau_estimator_resamples_large_flat_x_gap(self) -> None:
         plateau_y = 180
@@ -202,6 +217,22 @@ class GateChargeVplTests(unittest.TestCase):
         resampled = estimation._resample_flat_x_gaps(curve, (0, 0, 240, 500))
 
         self.assertEqual(resampled, curve)
+
+    def test_horizontal_plateau_bridge_requires_source_ink_across_gap(self) -> None:
+        gray = np.full((120, 200), 255, dtype=np.uint8)
+        gray[50, :70] = 0
+
+        self.assertEqual(
+            trace._source_horizontal_plateau_bridge((10, 50), (100, 80), gray),
+            [],
+        )
+
+        gray[50, :110] = 0
+        bridge = trace._source_horizontal_plateau_bridge(
+            (10, 50), (100, 80), gray
+        )
+        self.assertEqual(bridge[0], (11, 50))
+        self.assertEqual(bridge[-1], (99, 50))
 
     def test_x_axis_refinement_rejects_row_above_panel(self) -> None:
         panel_rect = estimation.pymupdf.Rect(100.0, 200.0, 400.0, 500.0)
@@ -474,6 +505,21 @@ class GateChargeVplTests(unittest.TestCase):
 
         self.assertEqual(
             curve, gate._trim_terminal_flat_grid_capture(curve, (0, 0, 100, 120))
+        )
+
+    def test_curve_stops_at_first_upper_axis_reach(self) -> None:
+        curve = [(x, 100 - x) for x in range(0, 97, 4)]
+        curve.extend([(97, 8), (98, 3), (99, 8), (100, 2)])
+
+        trimmed = gate._trim_after_upper_axis_reach(curve, (0, 0, 100, 120))
+
+        self.assertEqual(trimmed[-1], (98, 3))
+
+    def test_curve_below_upper_axis_is_unchanged(self) -> None:
+        curve = [(x, 110 - x // 2) for x in range(0, 101, 4)]
+
+        self.assertEqual(
+            curve, gate._trim_after_upper_axis_reach(curve, (0, 0, 100, 120))
         )
 
     def test_regular_grid_rejects_partial_left_neighbor(self) -> None:
@@ -964,7 +1010,7 @@ class GateChargeVplTests(unittest.TestCase):
         self.assertEqual(result.x_tick_unit, "nC")
         self.assertIn("axis_ocr_bounded_dual_y", result.diagnostics)
 
-    def test_real_faint_vector_gate_curve_is_numeric(self) -> None:
+    def test_real_faint_vector_hxy_curve_is_not_served(self) -> None:
         pdf = (
             Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
             / "datasheets/hxy/SIS444DN-T1-GE3-HXY.pdf"
@@ -972,14 +1018,17 @@ class GateChargeVplTests(unittest.TestCase):
         if not pdf.exists():
             self.skipTest("SIS444DN regression PDF is not configured")
 
-        result = gate.find_vpl_result(pdf)
-
-        self.assertIsNotNone(result)
-        assert result is not None
+        result = gate.digitize_gate_charge(pdf)[0]
         self.assertAlmostEqual(result.vpl, 3.0, delta=0.5)
         self.assertEqual(result.trace_source, "vector")
         self.assertGreaterEqual(len(result.curve_px), 100)
         self.assertGreaterEqual(result.y_tick_count, 4)
+        self.assertEqual(result.status, "source_untrusted")
+        self.assertIn(
+            "shared_curve_template_provenance_untrusted",
+            result.diagnostics,
+        )
+        self.assertFalse(result.to_manifest()["physical_output_available"])
 
     def test_real_hxy_gate_caption_cannot_override_refined_non_gate_plot(self) -> None:
         pdf = (

@@ -10,6 +10,19 @@ from typing import Protocol
 
 import pymupdf
 
+try:
+    from .finder_grid_geometry import (
+        grid_rows_belong_to_same_panel,
+        grid_rule_widths_are_compatible,
+    )
+    from .vector_grid_frames import line_grid_frames
+except ImportError:  # pragma: no cover - direct script compatibility
+    from finder_grid_geometry import (
+        grid_rows_belong_to_same_panel,
+        grid_rule_widths_are_compatible,
+    )
+    from vector_grid_frames import line_grid_frames
+
 
 BBox = tuple[float, float, float, float]
 _SPEC_TABLE_MARKERS = {
@@ -42,7 +55,10 @@ _CAPTION_AXIS_TOKENS = {
     "transfer": {"vgs", "vgsv", "vge", "vgev"},
     "body_diode": {"vsd", "vsdv", "vfd", "vfdv", "vf", "vfv"},
     "capacitances": {"vds", "vdsv"},
-    "gate_charge": {"qg", "qgnc", "qgate", "qgatenc"},
+    # Some PDF text layers omit the subscript ``g`` entirely.  Bare ``Q`` is
+    # admitted only through _axis_unit_evidenced(), which still requires a
+    # local nC/uC unit-bearing numeric tick row.
+    "gate_charge": {"q", "qg", "qgnc", "qgate", "qgatenc"},
     "breakdown_voltage": {
         "tj", "tjc", "tjv", "junction", "junctiontemperature",
     },
@@ -55,51 +71,6 @@ _ALL_CAPTION_AXIS_TOKENS = (
     set().union(*_CAPTION_AXIS_TOKENS.values())
     | _BODY_DIODE_CURRENT_AXIS_TOKENS
 )
-
-
-def grid_rows_belong_to_same_panel(
-    words: list[_WordLike],
-    previous_y: float,
-    current_y: float,
-    x0: float,
-    x1: float,
-) -> bool:
-    """Bridge one missing grid row without crossing a figure caption."""
-
-    gap = current_y - previous_y
-    if gap <= 28.0:
-        return True
-    if gap > 74.0:
-        return False
-    caption_pad = min(42.0, max(16.0, 0.20 * (x1 - x0)))
-    for index, word in enumerate(words):
-        center_x = 0.5 * (word.x0 + word.x1)
-        center_y = 0.5 * (word.y0 + word.y1)
-        token = word.text.lower().rstrip(".:")
-        if (
-            x0 - caption_pad <= center_x <= x1 + caption_pad
-            and previous_y < center_y < current_y
-        ):
-            if token in {"figure", "fig", "diagram"} or re.match(
-                r"^(?:fig(?:ure)?|diagram)\.?\d", token
-            ):
-                return False
-            if re.fullmatch(r"\d+(?:[.\-]\d+)*", token) and index:
-                prefix = words[index - 1]
-                prefix_token = prefix.text.lower().rstrip(".:")
-                prefix_center_y = 0.5 * (prefix.y0 + prefix.y1)
-                if (
-                    prefix_token in {"figure", "fig", "diagram"}
-                    and -2.0 <= word.x0 - prefix.x1 <= 14.0
-                    and abs(prefix_center_y - center_y) <= 4.0
-                ):
-                    return False
-    return True
-
-
-def grid_rule_widths_are_compatible(first: float, second: float) -> bool:
-    """Keep wide enclosing cell rails out of a narrower plot-grid group."""
-    return max(first, second) / max(1.0, min(first, second)) <= 1.8
 
 
 def caption_continuation(
@@ -413,7 +384,10 @@ def _axis_unit_evidenced(
             compact,
         )
     elif kind == "gate_charge":
-        unit = re.search(r"(?:\(nc\)|nanocoulombs?)", compact)
+        unit = re.search(
+            r"(?:\((?:n|u)c\)|\[(?:n|u)c\]|nanocoulombs?)",
+            compact,
+        )
     elif kind == "body_diode":
         unit = re.search(r"(?:\((?:m?v|a)\)|\[(?:m?v|a)\])", compact)
     else:
@@ -460,6 +434,15 @@ def _axis_unit_evidenced(
     if unit is None:
         return False
     prefix = compact[: unit.start()]
+    if kind == "gate_charge":
+        aligned_ticks = [
+            word
+            for word in same_line
+            if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", word.text.strip())
+        ]
+        return "=" not in prefix and (
+            not re.search(r"\d", prefix) or len(aligned_ticks) >= 3
+        )
     return "=" not in prefix and not re.search(r"\d", prefix)
 
 
@@ -597,7 +580,13 @@ def words_in_bbox(words: list[_WordLike], bbox: BBox) -> list[_WordLike]:
 
 
 def bbox_is_shallow_ruled_row(bbox: BBox, horizontal_rules: list[BBox]) -> bool:
-    """Return whether two local rules enclose one shallow table row."""
+    """Return whether two local rules enclose one shallow table row.
+
+    Some specification tables print ``Fig. N`` cross-references inside a
+    parameter row. Their wording is indistinguishable from a real numbered
+    caption, but the text remains enclosed by the row's upper and lower rules.
+    A single nearby plot/grid rule is deliberately insufficient.
+    """
     x0, y0, x1, y1 = bbox
     width, height = x1 - x0, y1 - y0
     if width <= 0.0 or not 3.0 <= height <= 36.0:
@@ -615,7 +604,8 @@ def bbox_is_shallow_ruled_row(bbox: BBox, horizontal_rules: list[BBox]) -> bool:
         if not y0 - 4.0 <= upper <= split_y + 1.0:
             continue
         for lower in nearby:
-            if lower >= y1 and 5.0 <= lower - upper <= 28.0:
+            row_height = lower - upper
+            if lower >= y1 and 5.0 <= row_height <= 28.0:
                 return True
     return False
 
@@ -1048,6 +1038,12 @@ def page_vector_plot_frames(
             if any(bbox_iou(candidate, existing) >= 0.92 for existing in frames):
                 continue
             frames.append(candidate)
+
+    recovered = line_grid_frames(
+        drawings, min_width=min_width, max_width=max_width,
+        min_height=min_height, max_height=max_height, existing=frames,
+    )
+    frames.extend(recovered)
     return sorted(frames, key=lambda box: (box[1], box[0]))
 
 

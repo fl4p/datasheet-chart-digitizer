@@ -61,6 +61,8 @@ def _is_body_diode_chart_text(text: str) -> bool:
         or "forward voltage" in text
         or "body diode characteristics" in text
         or "body diode transfer characteristics" in text
+        or "reverse drain source characteristics" in text
+        or "reverse source drain characteristics" in text
     )
 
 
@@ -189,8 +191,15 @@ def classify_chart(title: str, text: str) -> str:
     if _is_body_diode_chart_text(haystack):
         return "body_diode"
     compact = re.sub(r"[^a-z0-9]+", "", haystack)
-    if "breakdown voltage" in haystack or (
+    if (
+        "breakdown voltage" in haystack
+        or (
+            "drain source breakdown" in haystack
+            and "temperature" in haystack
+        )
+        or (
         "vbrdss" in compact and "temperature" in haystack
+        )
     ):
         return "breakdown_voltage"
     if "transfer characteristics" in haystack:

@@ -12,6 +12,7 @@ import pymupdf
 
 from datasheet_chart_digitizer import find_charts
 from datasheet_chart_digitizer import gate_charge as gate
+from datasheet_chart_digitizer import gate_axis_ocr
 
 
 def _panel(*, kind: str = "gate_charge") -> find_charts.ChartPanel:
@@ -149,6 +150,7 @@ class GateChargeOcrTests(unittest.TestCase):
         ocr_page = find_charts.PageText(2, 600.0, 800.0, [], "tesseract_fallback")
         with (
             mock.patch.object(gate, "process_pdf", return_value=[_panel(kind="capacitance")]),
+            mock.patch.object(gate, "poppler_low_text_page_text", return_value=[]),
             mock.patch.object(gate, "run_tesseract_page_text", return_value=[ocr_page]) as ocr,
             mock.patch.object(gate, "process_page_texts", return_value=[_panel()]) as injected,
         ):
@@ -170,6 +172,43 @@ class GateChargeOcrTests(unittest.TestCase):
         self.assertTrue(gate._needs_dual_y_axis_ocr(panel, result))
         panel.diagram = 901
         self.assertFalse(gate._needs_dual_y_axis_ocr(panel, result))
+
+    def test_missing_initial_ramp_requests_bounded_axis_confirmation(self) -> None:
+        result = SimpleNamespace(diagnostics=("curve_missing_initial_ramp",))
+        self.assertTrue(gate._needs_bounded_axis_ocr(result))
+
+        result.diagnostics += ("axis_ocr_bounded_dual_y",)
+        self.assertFalse(gate._needs_bounded_axis_ocr(result))
+
+    def test_charge_unit_row_anchor_ignores_resistance_text(self) -> None:
+        candidates = [[
+            (120.0, 340.0, 190.0, 350.0, "Resistance"),
+            (200.0, 260.0, 230.0, 270.0, "Qg(nC)"),
+        ]]
+        band = gate_axis_ocr._charge_unit_tick_band(
+            candidates,
+            pymupdf.Rect(100.0, 200.0, 300.0, 400.0),
+            pymupdf.Rect(0.0, 0.0, 600.0, 800.0),
+        )
+        self.assertIsNotNone(band)
+        self.assertAlmostEqual(float(band.y0), 254.0)
+
+    def test_axis_quality_deduplicates_noisy_ocr_labels(self) -> None:
+        clean = [(5.0 - index, 530.0 + 33.0 * index) for index in range(6)]
+        noisy = [
+            (8.0, 317.0),
+            (8.0, 321.0),
+            (4.0, 513.0),
+            (3.0, 579.0),
+            (2.0, 612.0),
+            (2.0, 636.0),
+            (1.0, 668.0),
+            (0.0, 702.0),
+        ]
+        self.assertGreater(
+            gate_axis_ocr._axis_quality(clean),
+            gate_axis_ocr._axis_quality(noisy),
+        )
 
     def test_arithmetic_x_axis_extrapolates_omitted_zero(self) -> None:
         ticks = [(25.0, 350.0), (50.0, 400.0), (75.0, 450.0), (100.0, 500.0)]
