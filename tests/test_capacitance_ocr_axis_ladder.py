@@ -87,6 +87,36 @@ class DecadeLadderRepairTests(unittest.TestCase):
         ]
         self.assertEqual(_repair_ocr_decade_ladder(words, PLOT), words)
 
+    def test_rotated_title_noise_does_not_block_aligned_infineon_ladder(self) -> None:
+        # IAUTN15S6N025T p8: the raster's vertical "C [pF]" title contributes
+        # a stray farther-left "2" while the bottom superscript is read as
+        # punctuation. The five aligned decade tokens still provide four
+        # independent agreeing exponent anchors.
+        words = [
+            _gutter_word(93.0, "105"),
+            _gutter_word(133.0, "104"),
+            (30.0, 170.0, 34.0, 176.0, "2"),
+            _gutter_word(173.0, "103"),
+            _gutter_word(213.0, "102"),
+            _gutter_word(253.0, "10!"),
+        ]
+        repaired = _repair_ocr_decade_ladder(words, PLOT)
+        self.assertEqual(
+            [word[4] for word in repaired if word[0] == 46.0],
+            ["10⁵", "10⁴", "10³", "10²", "10¹"],
+        )
+        self.assertEqual(repaired[2][4], "2")
+
+    def test_in_column_numeric_noise_still_refuses_repair(self) -> None:
+        words = [
+            _gutter_word(93.0, "105"),
+            _gutter_word(133.0, "104"),
+            _gutter_word(173.0, "2"),
+            _gutter_word(213.0, "102"),
+            _gutter_word(253.0, "10!"),
+        ]
+        self.assertEqual(_repair_ocr_decade_ladder(words, PLOT), words)
+
     def test_non_uniform_spacing_refuses(self) -> None:
         words = [
             _gutter_word(93.0, "104"),
@@ -162,6 +192,66 @@ class RotatedUnitTests(unittest.TestCase):
 _REFRESH = Path(
     "/Users/fab/dev/pv/pwr-mosfet-lib/out/fugu2-100v-LS1p/coss-review-top50-2026-07-28-refresh"
 )
+_INFINEON = Path(
+    "/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/infineon"
+)
+
+
+@unittest.skipUnless(
+    (_INFINEON / "IAUCN10S7N021ATMA1.pdf").exists(),
+    "local Infineon raster-axis fixtures not available",
+)
+class InfineonRasterAxisEndToEndTests(unittest.TestCase):
+    def test_bounded_ocr_recovers_complete_reviewable_axes(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        from datasheet_chart_digitizer import find_charts
+        from datasheet_chart_digitizer import mosfet_capacitance
+
+        expected = {
+            "IAUCN10S7N021ATMA1": (
+                (0.0, 20.0, 40.0, 60.0, 80.0, 100.0),
+                (0.0, 1.0, 2.0, 3.0, 4.0, 5.0),
+            ),
+            "IAUTN15S6N025TATMA1": (
+                (0.0, 30.0, 60.0, 90.0, 120.0, 150.0),
+                (1.0, 2.0, 3.0, 4.0, 5.0),
+            ),
+        }
+        with TemporaryDirectory(prefix="infineon-raster-axis-") as tmp:
+            root = Path(tmp)
+            for part, (x_ticks, y_decades) in expected.items():
+                out = root / part
+                panels = find_charts.process_pdf(
+                    _INFINEON / f"{part}.pdf", out, dpi=200
+                )
+                panel = next(
+                    item for item in panels if item.kind == "capacitances"
+                )
+                chart = find_charts.asdict(panel)
+                result = mosfet_capacitance.process_chart(
+                    chart,
+                    out / panel.crop_png,
+                    out / "digitized",
+                    Path(panel.crop_png).with_suffix(""),
+                    _INFINEON,
+                )
+                calibration = result["axis_calibration"]
+                self.assertTrue(result["axis_calibration_trusted"], part)
+                self.assertEqual(tuple(calibration["x_ticks_v"]), x_ticks, part)
+                self.assertEqual(
+                    tuple(calibration["y_decades"]), y_decades, part
+                )
+                if part.startswith("IAUTN"):
+                    self.assertTrue(result["physical_output_available"], part)
+                else:
+                    self.assertEqual(
+                        result["status_reasons"],
+                        ["source_drawing_rescue_axis_center_review_required"],
+                        part,
+                    )
+                self.assertLess(panel.crop_box_pt[0], 320.0, part)
+                self.assertGreater(panel.crop_box_pt[3], 400.0, part)
 
 
 @unittest.skipUnless(_REFRESH.exists(), "local refresh packet not available")

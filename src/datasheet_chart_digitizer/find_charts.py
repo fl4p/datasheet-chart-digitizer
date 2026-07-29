@@ -1269,7 +1269,20 @@ def _append_panel(
     else:
         kind = classify_chart(title.title, text)
     rel_crop = Path(pdf.stem) / f"p{page.page_num:02d}_diagram_{title.number:02d}.png"
-    crop_box = crop_panel(page_png, page, bbox, out_dir / "crops" / rel_crop)
+    # This Infineon raster-only Figure 10 convention has no text boxes for
+    # expansion: the grid-derived bbox clips the left decade labels and the
+    # bottom axis title. Preserve that source context in the human-review crop.
+    crop_bbox = (
+        (bbox[0] - 18.0, bbox[1], bbox[2], bbox[3] + 10.0)
+        if (
+            kind == "capacitances"
+            and title.number == 10
+            and title.title.strip().casefold() == "typ. capacitances"
+            and not text
+        )
+        else bbox
+    )
+    crop_box = crop_panel(page_png, page, crop_bbox, out_dir / "crops" / rel_crop)
     panels.append(
         ChartPanel(
             pdf=str(pdf.resolve()),

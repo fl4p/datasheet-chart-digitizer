@@ -183,14 +183,19 @@ def _ocr_words_in_rect(
 _MIN_OCR_DECADE_LADDER = 4
 _MIN_OCR_DECADE_ANCHORS = 2
 _MAX_OCR_DECADE_SPACING_CV = 0.15
-_OCR_DECADE_TRAILING_JUNK = "°º*'\"`’~^"
+_MAX_OCR_DECADE_COLUMN_OFFSET_PT = 4.0
+_OCR_DECADE_TRAILING_JUNK = "°º*'\"`’~^!"
 _OCR_DECADE_CLEAN_RE = re.compile(r"10(\d)")
 _OCR_DECADE_MANGLED_RE = re.compile(r"[147][0oO68e](\d?)")
 _EXPONENT_SUPERSCRIPTS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_EXPLICIT_OCR_POWER_RE = re.compile(r"10[⁰¹²³⁴⁵⁶⁷⁸⁹]")
 
 
 def _repair_ocr_decade_ladder(
-    words: list[tuple[float, float, float, float, str]], plot_rect
+    words: list[tuple[float, float, float, float, str]],
+    plot_rect,
+    *,
+    minimum_anchors: int = _MIN_OCR_DECADE_ANCHORS,
 ) -> list[tuple[float, float, float, float, str]]:
     """Rewrite an OCR-mangled ``10^N`` decade column into explicit powers.
 
@@ -206,7 +211,8 @@ def _repair_ocr_decade_ladder(
     """
     band_x0, band_x1 = plot_rect.x0 - 42.0, plot_rect.x0 - 1.0
     band_y0, band_y1 = plot_rect.y0 - 8.0, plot_rect.y1 + 8.0
-    members: list[tuple[int, float, int | None]] = []
+    members: list[tuple[int, float, float, int | None]] = []
+    numeric_blockers: list[float] = []
     for index, (x0, y0, x1, y1, text) in enumerate(words):
         cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
         if not (band_x0 < cx < band_x1 and band_y0 < cy < band_y1):
@@ -217,36 +223,50 @@ def _repair_ocr_decade_ladder(
         clean = _OCR_DECADE_CLEAN_RE.fullmatch(token)
         mangled = _OCR_DECADE_MANGLED_RE.fullmatch(token)
         if clean is not None:
-            members.append((index, cy, int(clean.group(1))))
+            members.append((index, cx, cy, int(clean.group(1))))
         elif mangled is not None:
             claimed = mangled.group(1)
-            members.append((index, cy, int(claimed) if claimed else None))
+            members.append((index, cx, cy, int(claimed) if claimed else None))
         else:
-            # A numeric gutter token outside the 10^N shape (an arithmetic
-            # ladder such as 4000/2000, or a plain-decade 100000) proves this
-            # is not a mangled decade column; rewrite nothing.
-            return words
+            numeric_blockers.append(cx)
     if len(members) < _MIN_OCR_DECADE_LADDER:
         return words
-    members.sort(key=lambda item: item[1])
-    spacing = np.diff([cy for _index, cy, _exponent in members])
+    column_x = float(np.median([cx for _index, cx, _cy, _exponent in members]))
+    if any(
+        abs(cx - column_x) > _MAX_OCR_DECADE_COLUMN_OFFSET_PT
+        for _index, cx, _cy, _exponent in members
+    ):
+        return words
+    if any(
+        abs(cx - column_x) <= _MAX_OCR_DECADE_COLUMN_OFFSET_PT
+        for cx in numeric_blockers
+    ):
+        # An in-column numeric token outside the 10^N shape (an arithmetic
+        # ladder such as 4000/2000, or a plain-decade 100000) proves this is
+        # not a mangled decade column. Numeric fragments from the farther-left
+        # rotated axis title are outside the evidenced label column and do not.
+        return words
+    members.sort(key=lambda item: item[2])
+    spacing = np.diff([cy for _index, _cx, cy, _exponent in members])
     if np.any(spacing <= 0.0):
         return words
     if float(np.std(spacing)) > _MAX_OCR_DECADE_SPACING_CV * float(np.median(spacing)):
         return words
     anchors = [
         claimed + row
-        for row, (_index, _cy, claimed) in enumerate(members)
+        for row, (_index, _cx, _cy, claimed) in enumerate(members)
         if claimed is not None
     ]
     claimed_digits = [
-        claimed for _index, _cy, claimed in members if claimed is not None
+        claimed
+        for _index, _cx, _cy, claimed in members
+        if claimed is not None
     ]
     if len(set(claimed_digits)) != len(claimed_digits):
         # The same exposed exponent at two different rows is direct source
         # contradiction, even if one implied top exponent is out of range.
         return words
-    if len(anchors) < _MIN_OCR_DECADE_ANCHORS:
+    if len(anchors) < minimum_anchors:
         return words
     # A visibly mangled superscript can expose a contradictory digit (for
     # example ``10⁴`` OCRed as ``107``).  Discard only candidates that would
@@ -265,10 +285,147 @@ def _repair_ocr_decade_ladder(
     if bottom_exponent < 0 or top_exponent > 7:
         return words
     repaired = list(words)
-    for row, (index, _cy, _claimed) in enumerate(members):
+    for row, (index, _cx, _cy, _claimed) in enumerate(members):
         exponent = top_exponent - row
         x0, y0, x1, y1, _text = words[index]
         repaired[index] = (x0, y0, x1, y1, "10" + _EXPONENT_SUPERSCRIPTS[exponent])
+    return repaired
+
+
+def _replace_words_in_band(
+    words: list[tuple[float, float, float, float, str]],
+    replacements: list[tuple[float, float, float, float, str]],
+    *,
+    x_band: tuple[float, float],
+    y_band: tuple[float, float],
+) -> list[tuple[float, float, float, float, str]]:
+    """Replace one bounded OCR stratum without duplicating its coarse words."""
+
+    kept = [
+        word
+        for word in words
+        if not (
+            x_band[0] < (word[0] + word[2]) / 2.0 < x_band[1]
+            and y_band[0] < (word[1] + word[3]) / 2.0 < y_band[1]
+        )
+    ]
+    return kept + replacements
+
+
+def _bounded_ocr_x_ticks(
+    chart: dict[str, object], plot_rect
+) -> list[tuple[float, float, float, float, str]]:
+    """OCR only the horizontal numeric tick row.
+
+    The combined axis/title clip makes Tesseract read Infineon ticks such as
+    30/60/90 as ``0``/``So``/``30``. A tight single-line numeric crop reads
+    every label correctly. Shared position-fit residual and monotonicity gates
+    remain authoritative after this source-owned OCR replacement.
+    """
+
+    fitz = _load_fitz()
+    if fitz is None:
+        return []
+    clip = fitz.Rect(
+        plot_rect.x0 - 12.0,
+        plot_rect.y1 + 1.0,
+        plot_rect.x1 + 12.0,
+        plot_rect.y1 + 14.0,
+    )
+    try:
+        words = ocr_words_in_rect(
+            str(chart["pdf"]),
+            int(chart["page"]),
+            clip,
+            dpi=500.0,
+            psm=11,
+            whitelist="0123456789.-",
+            min_confidence=0.0,
+        )
+    except RuntimeError:
+        return []
+    normalized: list[tuple[float, float, float, float, str]] = []
+    numeric: list[tuple[float, float]] = []
+    for x0, y0, x1, y1, text in words:
+        token = text.strip().strip("‘’'`")
+        if re.fullmatch(r"\d+\.", token):
+            token = token[:-1]
+        if re.fullmatch(r"\d+(?:\.\d+)?", token):
+            numeric.append((float(token), (x0 + x1) / 2.0))
+            normalized.append((x0, y0, x1, y1, token))
+    numeric.sort(key=lambda item: item[1])
+    values = np.asarray([value for value, _pixel in numeric], dtype=float)
+    if len(values) < 5 or values[0] != 0.0 or np.any(np.diff(values) <= 0.0):
+        return []
+    steps = np.diff(values)
+    if float(np.std(steps)) > 0.05 * float(np.median(steps)):
+        return []
+    return normalized
+
+
+def _bounded_ocr_y_ladder(
+    chart: dict[str, object], plot_rect
+) -> list[tuple[float, float, float, float, str]]:
+    """Recover a decade column missed by the combined OCR clip.
+
+    A narrow numeric pass exposes all six IAUCN rows. One row is still read as
+    ``102`` instead of ``103``; a second page-segmentation mode independently
+    reads that row cleanly. The supplemental token may replace only a
+    position-matched row, and the resulting ladder needs three agreeing read
+    exponents (one fitted top exponent, hence overdetermined) before any
+    inferred rows are emitted.
+    """
+
+    fitz = _load_fitz()
+    if fitz is None:
+        return []
+    clip = fitz.Rect(
+        plot_rect.x0 - 19.0,
+        plot_rect.y0 - 8.0,
+        plot_rect.x0 - 1.0,
+        plot_rect.y1 + 8.0,
+    )
+
+    def run(psm: int):
+        return ocr_words_in_rect(
+            str(chart["pdf"]),
+            int(chart["page"]),
+            clip,
+            dpi=500.0,
+            psm=psm,
+            whitelist="0123456789!°º*^",
+            min_confidence=0.0,
+        )
+
+    try:
+        primary = run(11)
+        supplemental = run(3)
+    except RuntimeError:
+        return []
+    merged = list(primary)
+    for replacement in supplemental:
+        token = replacement[4].strip().rstrip(_OCR_DECADE_TRAILING_JUNK)
+        if _OCR_DECADE_CLEAN_RE.fullmatch(token) is None:
+            continue
+        rcx = (replacement[0] + replacement[2]) / 2.0
+        rcy = (replacement[1] + replacement[3]) / 2.0
+        candidates = [
+            (abs((word[1] + word[3]) / 2.0 - rcy), index)
+            for index, word in enumerate(merged)
+            if abs((word[0] + word[2]) / 2.0 - rcx) <= 4.0
+            and abs((word[1] + word[3]) / 2.0 - rcy) <= 4.0
+        ]
+        if candidates:
+            _distance, index = min(candidates)
+            merged[index] = replacement
+    repaired = _repair_ocr_decade_ladder(
+        merged, plot_rect, minimum_anchors=3
+    )
+    if sum(
+        _EXPLICIT_OCR_POWER_RE.fullmatch(word[4].strip()) is not None
+        for word in repaired
+    ) < _MIN_OCR_DECADE_LADDER:
+        return []
     return repaired
 
 
@@ -385,32 +542,89 @@ def infer_ocr_position_axis_calibration(
     words = _ocr_words_in_rect(chart, clip)
     if not words:
         raise RuntimeError("OCR found no words in the axis label bands")
-    words = _repair_ocr_decade_ladder(words, plot_rect)
-    words = _drop_ocr_x_tick_outlier(words, plot_rect)
+    base_words = _repair_ocr_decade_ladder(words, plot_rect)
     unit = _ocr_rotated_axis_unit(chart, plot_rect)
-    band_has_unit = any(
-        plot_rect.x0 - 42.0 < (w[0] + w[2]) / 2.0 < plot_rect.x0 - 1.0
-        and _ROTATED_UNIT_RE.fullmatch(w[4].strip())
-        for w in words
-    )
-    if unit is not None and not band_has_unit:
-        # The unit read from THIS chart's rotated axis title, injected as an
-        # in-band token so the shared fit sees the same evidence a horizontal
-        # label would provide.
-        words = words + [(
-            plot_rect.x0 - 30.0, plot_rect.y0 + 4.0,
-            plot_rect.x0 - 20.0, plot_rect.y0 + 10.0,
-            f"({'pF' if unit == 'pf' else 'nF'})",
-        )]
-    calibration = _fit_position_calibration(
-        _OcrWordsPage(words), transform, plot_rect, "position_ocr"
-    )
     doc = fitz.open(Path(str(chart["pdf"])))
     page = doc[int(chart["page"]) - 1]
-    calibration = _seat_linear_y_ticks_on_grid(
-        calibration, image, plot, page=page, transform=transform
+
+    def fit_attempt(
+        attempt_words: list[tuple[float, float, float, float, str]],
+    ) -> tuple[AxisCalibration | None, str | None]:
+        attempt_words = _drop_ocr_x_tick_outlier(attempt_words, plot_rect)
+        band_has_unit = any(
+            plot_rect.x0 - 42.0 < (w[0] + w[2]) / 2.0 < plot_rect.x0 - 1.0
+            and _ROTATED_UNIT_RE.fullmatch(w[4].strip())
+            for w in attempt_words
+        )
+        if unit is not None and not band_has_unit:
+            # The unit read from THIS chart's rotated axis title, injected as
+            # an in-band token so the shared fit sees the same evidence a
+            # horizontal label would provide.
+            attempt_words = attempt_words + [(
+                plot_rect.x0 - 30.0, plot_rect.y0 + 4.0,
+                plot_rect.x0 - 20.0, plot_rect.y0 + 10.0,
+                f"({'pF' if unit == 'pf' else 'nF'})",
+            )]
+        try:
+            calibration = _fit_position_calibration(
+                _OcrWordsPage(attempt_words),
+                transform,
+                plot_rect,
+                "position_ocr",
+            )
+        except RuntimeError as exc:
+            return None, str(exc)
+        calibration = _seat_linear_y_ticks_on_grid(
+            calibration, image, plot, page=page, transform=transform
+        )
+        calibration = _seat_signed_log_x_ticks_on_grid(
+            calibration, image, plot
+        )
+        return calibration, reject_bad_position_calibration(calibration, plot)
+
+    calibration, base_error = fit_attempt(base_words)
+    if calibration is not None and base_error is None:
+        return calibration
+
+    # The bounded multi-pass retry is a source-family stratum, not a generic
+    # second guess. Infineon's raster-only panels carry this exact caption and
+    # no chart-band text; broader use changed otherwise unrelated OCR charts
+    # in the negative corpus. Other families keep their established refusal.
+    bounded_retry_allowed = (
+        str(chart.get("title") or "").strip().casefold() == "typ. capacitances"
+        and not str(chart.get("text") or "").strip()
     )
-    return _seat_signed_log_x_ticks_on_grid(calibration, image, plot)
+    if not bounded_retry_allowed:
+        raise RuntimeError(base_error or "OCR position calibration was rejected")
+
+    retry_words = list(base_words)
+    if not any(
+        _EXPLICIT_OCR_POWER_RE.fullmatch(word[4].strip()) is not None
+        for word in retry_words
+    ):
+        y_words = _bounded_ocr_y_ladder(chart, plot_rect)
+        if y_words:
+            retry_words = _replace_words_in_band(
+                retry_words,
+                y_words,
+                x_band=(plot_rect.x0 - 42.0, plot_rect.x0 - 1.0),
+                y_band=(plot_rect.y0 - 8.0, plot_rect.y1 + 8.0),
+            )
+    x_words = _bounded_ocr_x_ticks(chart, plot_rect)
+    if len(x_words) >= 2:
+        retry_words = _replace_words_in_band(
+            retry_words,
+            x_words,
+            x_band=(plot_rect.x0 - 24.0, plot_rect.x1 + 12.0),
+            y_band=(plot_rect.y1 + 2.0, plot_rect.y1 + 24.0),
+        )
+    if retry_words != base_words:
+        calibration, retry_error = fit_attempt(retry_words)
+        if calibration is not None and retry_error is None:
+            return calibration
+        if retry_error is not None:
+            raise RuntimeError(retry_error)
+    raise RuntimeError(base_error or "OCR position calibration was rejected")
 
 
 def _endpoint_tick_coverage_error(
