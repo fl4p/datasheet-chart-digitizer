@@ -39,6 +39,8 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "st/STP40NF10.pdf": 5.61,
             "st/STP80NF12.pdf": 5.13,
             "toshiba/TPW4R50ANH,L1Q.pdf": 5.93,
+            "crmicro/CR6N70FA9K.pdf": 4.83,
+            "good_ark/GSFT7R515.pdf": 5.48,
         }
         if not all((root / relative).exists() for relative in cases):
             self.skipTest("requested Vpl regression PDFs are not configured")

@@ -611,19 +611,6 @@ def bounded_gate_axis_ocr(
     )
     horizontal_extra = min(60.0, 0.35 * plot.width) if geometry_retry else 0.0
     vertical_extra = 0.75 * plot.height if geometry_retry else 0.0
-    bottom = pymupdf.Rect(
-        max(page.rect.x0, plot.x0 - 15.0 - horizontal_extra),
-        max(page.rect.y0, plot.y1 - 6.0),
-        min(page.rect.x1, plot.x1 + 45.0),
-        min(page.rect.y1, plot.y1 + 65.0),
-    )
-    bottom_panel = pymupdf.Rect(
-        plot.x0 - 20.0 - horizontal_extra,
-        plot.y0 - 20.0,
-        min(page.rect.x1, plot.x1 + 75.0),
-        min(page.rect.y1, plot.y1 + 95.0),
-    )
-    contextual_words: list[Word] = []
     provisional_axis = bool(
         {
             "axis_assumed_0_10",
@@ -634,6 +621,31 @@ def bounded_gate_axis_ocr(
             "low_trace_confidence",
         }.intersection(result.diagnostics)
     )
+    # A loose first-pass frame can end below the printed tick row. Reach one
+    # label height upward while recovering provisional axes so the Qg ticks can
+    # re-seat both plot edges (GSFT7R515: row 514 pt, loose bottom 536 pt).
+    bottom_top_reach = (
+        30.0
+        if {
+            "axis_assumed_0_10",
+            "curve_missing_initial_ramp",
+        }.issubset(result.diagnostics)
+        and (px0 <= 1 or py0 <= 1)
+        else 6.0
+    )
+    bottom = pymupdf.Rect(
+        max(page.rect.x0, plot.x0 - 15.0 - horizontal_extra),
+        max(page.rect.y0, plot.y1 - bottom_top_reach),
+        min(page.rect.x1, plot.x1 + 45.0),
+        min(page.rect.y1, plot.y1 + 65.0),
+    )
+    bottom_panel = pymupdf.Rect(
+        plot.x0 - 20.0 - horizontal_extra,
+        plot.y0 - 20.0,
+        min(page.rect.x1, plot.x1 + 75.0),
+        min(page.rect.y1, plot.y1 + 95.0),
+    )
+    contextual_words: list[Word] = []
     try:
         raw_bottom = [
             _native_words_in_rect(page, bottom),

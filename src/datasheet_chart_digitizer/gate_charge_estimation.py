@@ -12,6 +12,11 @@ _OCR_Y_TICK_RAW_MAX = 50.0
 # ('12.0' and '9.6' share an axis but not a centre). Also the tolerance under which two
 # columns are "equally close" to a plot frame, so the two cannot drift apart.
 _Y_AXIS_COLUMN_TOLERANCE = 6.0
+# A loose provisional frame can sit inside the real axis (CR6N70FA9K needs up
+# to 48 pt of recovery), but a wider search silently accepts an adjacent panel
+# when this plot's labels are unreadable (GSFT7R515: Figure 4's 0.4..2.4 axis
+# is 79 pt beyond Figure 3's right frame).
+_LOCAL_Y_AXIS_MAX_EDGE_GAP = 48.0
 
 
 def _v_from_y_pixel(chart, rect: pymupdf.Rect, scale: float, y_px: float) -> float | None:
@@ -69,8 +74,8 @@ def _local_y_ticks_for_plot(
         cy = 0.5 * (wy0 + wy1)
         if cy < py0 - 0.04 * height or cy > py1 + 0.04 * height:
             continue
-        left_band = px0 - 82 <= cx <= px0 - 1
-        right_band = px1 + 1 <= cx <= px1 + 82
+        left_band = px0 - _LOCAL_Y_AXIS_MAX_EDGE_GAP <= cx <= px0 - 1
+        right_band = px1 + 1 <= cx <= px1 + _LOCAL_Y_AXIS_MAX_EDGE_GAP
         if not (left_band or right_band):
             continue
         value = _parse_numeric_label(text)

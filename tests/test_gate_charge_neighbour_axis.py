@@ -159,6 +159,26 @@ class NeighbourAxisColumnTests(unittest.TestCase):
 
         self.assertEqual([value for value, _y in ticks], [5.0, 4.0, 3.0, 2.0, 1.0, 0.0])
 
+    def test_loose_provisional_frame_can_recover_its_own_axis(self):
+        """A first-pass frame may sit inside the true plot by nearly one grid cell."""
+
+        page = _page(_column((5, 4, 3, 2, 1, 0), 54.0))
+
+        ticks = _local_y_ticks_for_plot(page, RECT, 1.0, PLOT_BOX)
+
+        self.assertEqual([value for value, _y in ticks], [5.0, 4.0, 3.0, 2.0, 1.0, 0.0])
+
+    def test_remote_column_alone_is_not_promoted_to_this_plot_axis(self):
+        """Unreadable own labels do not transfer ownership to the next panel."""
+
+        page = _page(
+            _column((2.4, 2.0, 1.6, 1.2, 0.8, 0.4), 379.0)
+        )
+
+        ticks = _local_y_ticks_for_plot(page, RECT, 1.0, PLOT_BOX)
+
+        self.assertEqual(ticks, [])
+
     def test_unreadable_text_layer_yields_no_ticks(self):
         """When the words cannot be read there is no axis, and the caller tests
         ``len(...) >= 2`` to decide whether one was measured. This used to return the
