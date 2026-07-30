@@ -116,6 +116,157 @@ def _curve_score(points: list[tuple[int, int]], h: int, w: int) -> float:
     )
 
 
+def _gate_curve_is_monotone(
+    points: list[tuple[int, int]],
+    plot_box: tuple[int, int, int, int],
+) -> bool:
+    """Check physical VGS(Qg) monotonicity on coarse raster bins."""
+
+    if len(points) < 8:
+        return False
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    bin_width = max(1.0, width / 24.0)
+    bins: dict[int, list[int]] = {}
+    for x, y in points:
+        index = min(23, max(0, int((x - x0) / bin_width)))
+        bins.setdefault(index, []).append(y)
+    coarse_y = [float(np.median(bins[index])) for index in sorted(bins)]
+    if len(coarse_y) < 6:
+        return False
+    tolerance = max(4.0, 0.025 * height)
+    highest_vgs_y = coarse_y[0]
+    for y in coarse_y[1:]:
+        if y - highest_vgs_y > tolerance:
+            return False
+        highest_vgs_y = min(highest_vgs_y, y)
+    return True
+
+
+def _repair_narrow_plateau_branch_excursion(
+    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
+) -> list[tuple[int, int]]:
+    """Recover one source-evidenced VGS plateau through VDS crossings.
+
+    Toshiba dual-Y raster plots draw falling VDS curves through the VGS Miller
+    plateau. Prove the plateau from the flattest source-supported window and
+    repair isolated crossings between source-seated neighbors. Terminal
+    notches are repaired only when material future VGS progress proves that
+    the same rising branch continues.
+    """
+
+    ordered = sorted(curve)
+    if len(ordered) < 12:
+        return ordered
+    x0, y0, x1, y1 = plot_box
+    width = max(1, x1 - x0)
+    height = max(1, y1 - y0)
+    repair_limit_x = x0 + 0.55 * width
+    plateau_search_start = x0 + 0.08 * width
+    search_indexes = [
+        index
+        for index, (x, _y) in enumerate(ordered)
+        if plateau_search_start <= x <= repair_limit_x
+    ]
+    if len(search_indexes) < 7:
+        return ordered
+
+    x_steps = np.diff([ordered[index][0] for index in search_indexes])
+    stride = max(1.0, float(np.median(x_steps)))
+    window_points = max(7, int(round(0.07 * width / stride)))
+    if len(search_indexes) < window_points:
+        return ordered
+
+    best: tuple[tuple[float, float, float, int], int, int, int] | None = None
+    first = search_indexes[0]
+    last = search_indexes[-1]
+    for start in range(first, last - window_points + 2):
+        stop = start + window_points - 1
+        window = ordered[start : stop + 1]
+        if window[-1][0] > repair_limit_x:
+            break
+        values = np.array([y for _x, y in window], dtype=float)
+        median = float(np.median(values))
+        score = (
+            float(np.median(np.abs(np.diff(values)))),
+            float(np.median(np.abs(values - median))),
+            float(np.ptp(values)),
+            start,
+        )
+        candidate = (score, start, stop, int(round(median)))
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+    if best is None or best[0][0] > 1.5:
+        return ordered
+
+    _score, window_start, window_stop, plateau_y = best
+    level_tolerance = 2
+    near_level = [
+        index
+        for index in range(first, last + 1)
+        if abs(ordered[index][1] - plateau_y) <= level_tolerance
+    ]
+    groups: list[list[int]] = []
+    for index in near_level:
+        if groups and index - groups[-1][-1] <= 5:
+            groups[-1].append(index)
+        else:
+            groups.append([index])
+    plateau_group = next(
+        (
+            group
+            for group in groups
+            if any(window_start <= index <= window_stop for index in group)
+        ),
+        None,
+    )
+    if plateau_group is None:
+        return ordered
+
+    plateau_start = plateau_group[0]
+    plateau_stop = plateau_group[-1]
+    repaired = list(ordered)
+    for index in range(plateau_start, plateau_stop + 1):
+        repaired[index] = (repaired[index][0], plateau_y)
+
+    minimum_excursion = max(4.0, 0.009 * height)
+    required_terminal_progress = max(6.0, 0.02 * height)
+    approach = range(2, max(2, plateau_start - 1))
+    exit_segment = range(
+        min(len(repaired) - 2, plateau_stop + 2), len(repaired) - 2
+    )
+    for _iteration in range(3):
+        changed = False
+        for index in (*approach, *exit_segment):
+            x, y = repaired[index]
+            xa, ya = repaired[index - 2]
+            xb, yb = repaired[index + 2]
+            if xb <= xa:
+                continue
+            if (
+                x > repair_limit_x
+                and (
+                    y - max(ya, yb) < minimum_excursion
+                    or repaired[index - 1][1]
+                    - min(
+                        point_y
+                        for _point_x, point_y in repaired[index:]
+                    )
+                    < required_terminal_progress
+                )
+            ):
+                continue
+            expected_y = ya + (x - xa) * (yb - ya) / (xb - xa)
+            if abs(y - expected_y) < minimum_excursion:
+                continue
+            repaired[index] = (x, int(round(expected_y)))
+            changed = True
+        if not changed:
+            break
+    return repaired
+
+
 def _candidate_masks(mask: np.ndarray) -> list[np.ndarray]:
     h, w = mask.shape
     n, labels, stats, _centroids = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
@@ -369,6 +520,16 @@ def _trace_monotone_upper_gate_curve(
         ),
     )
     mask = cv2.bitwise_and(mask, cv2.bitwise_not(vertical))
+    mask = cv2.morphologyEx(
+        mask,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (4, 4)),
+    )
+    frame_margin = max(3, int(round(0.008 * min(height, width))))
+    mask[:frame_margin, :] = 0
+    mask[-frame_margin:, :] = 0
+    mask[:, :frame_margin] = 0
+    mask[:, -frame_margin:] = 0
     mask[:, (mask > 0).sum(axis=0) / max(1, height) > 0.45] = 0
     centers_by_x = [_cluster_runs(mask[:, x]) for x in range(width)]
     start = next(
@@ -407,6 +568,7 @@ def _trace_monotone_upper_gate_curve(
         last_x = x
     if len(points) < max(20, int(0.12 * width)):
         return []
+    points = _bridge_source_supported_plateau_gaps(points, gray)
     return [(x0 + x, y0 + y) for x, y in points]
 
 

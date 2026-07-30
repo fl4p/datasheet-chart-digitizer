@@ -57,7 +57,7 @@
 - [dsdig top50-fugu2 refresh state](dsdig-top50-fugu2-refresh-state.md) — refreshed packet + Fab's 2nd-round feedback (18G/19F/6R) triaged in docs/worklists/current-top50-fugu2-refresh-feedback.md; all flags were fail-closed
 - [dsdig Siliup raster caption stratum](dsdig-siliup-raster-caption-stratum.md) — page-wide-JPEG pages recover panels via raster frames + OCR captions below_only; additions carry text_source=tesseract_fallback
 - [dsdig HXY shared-template exclusion](dsdig-hxy-shared-template-exclusion.md) — 92.84% share exact first-chart hashes and 90.43% share exact multi-curve bodies; withhold HXY Vpl as non-independent provenance
-- [dsdig Vpl stdout refusal fixes](dsdig-vpl-stdout-refusal-fixes.md) — original seven plus GSFT7R515 fixed; HY1915P axis OCR and XPQ1R00AQB curve identity remain independent REDs
+- [dsdig Vpl stdout refusal fixes](dsdig-vpl-stdout-refusal-fixes.md) — original seven, GSFT7R515, and XPQ1R00AQB fixed; HY1915P axis OCR remains the independent RED
 - [dsdig EPC color capacitance](dsdig-epc-color-capacitance.md) — printed legend fixes EPC C(V); source-hue overlays are human-review-only; EPC2091/EPC2032 guarded rescues passed full-corpus A/B
 - [dsdig orphaned-lane salvage](dsdig-orphaned-lane-salvage.md) — a dead agent's uncommitted file may silently REVERT landed work; classify every hunk, add the missing tests, commit HEAD+new-work only
 - [dsdig review tool is upstream-only](dsdig-review-tool-upstream-only.md) — review-tooling changes land in dsdig-verify-backlog/tools and are committed there; never a packet-local tools-local/ copy

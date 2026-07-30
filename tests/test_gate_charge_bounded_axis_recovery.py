@@ -41,6 +41,7 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "toshiba/TPW4R50ANH,L1Q.pdf": 5.93,
             "crmicro/CR6N70FA9K.pdf": 4.83,
             "good_ark/GSFT7R515.pdf": 5.48,
+            "toshiba/XPQ1R00AQB.pdf": 5.58,
         }
         if not all((root / relative).exists() for relative in cases):
             self.skipTest("requested Vpl regression PDFs are not configured")
@@ -76,6 +77,22 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
                 self.assertNotIn(
                     "gate_charge_unit_unresolved", result.diagnostics
                 )
+                if relative.endswith("XPQ1R00AQB.pdf"):
+                    self.assertEqual(result.panel.diagram, 814)
+                    self.assertTrue(
+                        gate_charge._gate_curve_is_monotone(
+                            list(result.curve_px), result.plot_box_px
+                        )
+                    )
+                    self.assertLessEqual(
+                        max(
+                            current[0] - previous[0]
+                            for previous, current in zip(
+                                result.curve_px, result.curve_px[1:]
+                            )
+                        ),
+                        8,
+                    )
 
     def test_sparse_source_connected_gate_curve_is_accepted(self) -> None:
         pdf = Path(

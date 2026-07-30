@@ -35,8 +35,10 @@ from .gate_charge_trace import (
     _detect_aligned_plot_frame,
     _detect_inner_plot_box,
     _detect_regular_grid_box,
+    _gate_curve_is_monotone,
     _mask_page_text,
     _pdf_to_px,
+    _repair_narrow_plateau_branch_excursion,
     _smooth_polyline,
     _trace_gate_curve,
     _trace_monotone_upper_gate_curve,
@@ -694,6 +696,9 @@ def _digitize_panel(
     missing_axis_origin = (
         bounded_dual_y_trace and not _curve_starts_at_axis_origin(curve, plot_box)
     ) or bool(panel_x_ticks and min(value for value, _x in panel_x_ticks) > 0.0)
+    non_monotone_gate_curve = (
+        bounded_dual_y_trace and not _gate_curve_is_monotone(curve, plot_box)
+    )
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
@@ -702,6 +707,8 @@ def _digitize_panel(
         diagnostics.append("curve_missing_initial_ramp")
     if missing_axis_origin:
         diagnostics.append("curve_missing_axis_origin")
+    if non_monotone_gate_curve:
+        diagnostics.append("non_monotone_gate_curve")
     if axis_assumed:
         diagnostics.append("axis_assumed_0_10")
     elif axis_grid_inferred:
@@ -743,6 +750,7 @@ def _digitize_panel(
         low_trace_confidence
         or missing_initial_ramp
         or missing_axis_origin
+        or non_monotone_gate_curve
         # A value the digitizer itself calls implausible, or one it had to extrapolate
         # off the end of its ticks, must not be reported as "ok". These two diagnostics
         # were computed and then dropped on the floor by the status: SUP90140E returned
@@ -935,124 +943,6 @@ def _trim_after_upper_axis_reach(
     return curve
 
 
-def _repair_narrow_plateau_branch_excursion(
-    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
-) -> list[tuple[int, int]]:
-    """Recover one source-evidenced VGS plateau through VDS crossings.
-
-    Toshiba dual-Y raster plots draw falling VDS curves through the VGS Miller
-    plateau.  A local endpoint search can choose two points on the same wrong
-    VDS stroke and manufacture a second plateau level.  Instead, prove the
-    printed plateau from the flattest source-supported window, extend only
-    through nearby same-level samples, and repair isolated approach/exit
-    crossings by interpolation between source points on both sides.  This is
-    bounded to the pre-terminal half and never touches the separately guarded
-    terminal bundle.
-    """
-
-    ordered = sorted(curve)
-    if len(ordered) < 12:
-        return ordered
-    x0, y0, x1, y1 = plot_box
-    width = max(1, x1 - x0)
-    height = max(1, y1 - y0)
-    repair_limit_x = x0 + 0.55 * width
-    plateau_search_start = x0 + 0.08 * width
-    search_indexes = [
-        index
-        for index, (x, _y) in enumerate(ordered)
-        if plateau_search_start <= x <= repair_limit_x
-    ]
-    if len(search_indexes) < 7:
-        return ordered
-
-    x_steps = np.diff([ordered[index][0] for index in search_indexes])
-    stride = max(1.0, float(np.median(x_steps)))
-    window_points = max(7, int(round(0.07 * width / stride)))
-    if len(search_indexes) < window_points:
-        return ordered
-
-    best: tuple[tuple[float, float, float, int], int, int, int] | None = None
-    first = search_indexes[0]
-    last = search_indexes[-1]
-    for start in range(first, last - window_points + 2):
-        stop = start + window_points - 1
-        window = ordered[start : stop + 1]
-        if window[-1][0] > repair_limit_x:
-            break
-        values = np.array([y for _x, y in window], dtype=float)
-        median = float(np.median(values))
-        score = (
-            float(np.median(np.abs(np.diff(values)))),
-            float(np.median(np.abs(values - median))),
-            float(np.ptp(values)),
-            start,
-        )
-        candidate = (score, start, stop, int(round(median)))
-        if best is None or candidate[0] < best[0]:
-            best = candidate
-    if best is None or best[0][0] > 1.5:
-        # A continuously rising source has no Miller plateau to repair.
-        return ordered
-
-    _score, window_start, window_stop, plateau_y = best
-    level_tolerance = 2
-    near_level = [
-        index
-        for index in range(first, last + 1)
-        if abs(ordered[index][1] - plateau_y) <= level_tolerance
-    ]
-    groups: list[list[int]] = []
-    for index in near_level:
-        # Up to four stride-sampled columns can be swallowed by one thick VDS
-        # crossing; keep the same-level source samples on both sides in one
-        # plateau group without extending the boundary to unrelated levels.
-        if groups and index - groups[-1][-1] <= 5:
-            groups[-1].append(index)
-        else:
-            groups.append([index])
-    plateau_group = next(
-        (
-            group
-            for group in groups
-            if any(window_start <= index <= window_stop for index in group)
-        ),
-        None,
-    )
-    if plateau_group is None:
-        return ordered
-
-    plateau_start = plateau_group[0]
-    plateau_stop = plateau_group[-1]
-    repaired = list(ordered)
-    for index in range(plateau_start, plateau_stop + 1):
-        repaired[index] = (repaired[index][0], plateau_y)
-
-    minimum_excursion = max(4.0, 0.009 * height)
-    approach = range(2, max(2, plateau_start - 1))
-    exit_segment = range(
-        min(len(repaired) - 2, plateau_stop + 2), len(repaired) - 2
-    )
-    for _iteration in range(3):
-        changed = False
-        for index in (*approach, *exit_segment):
-            x, y = repaired[index]
-            if x > repair_limit_x:
-                continue
-            xa, ya = repaired[index - 2]
-            xb, yb = repaired[index + 2]
-            if xb <= xa:
-                continue
-            expected_y = ya + (x - xa) * (yb - ya) / (xb - xa)
-            if abs(y - expected_y) < minimum_excursion:
-                continue
-            repaired[index] = (x, int(round(expected_y)))
-            changed = True
-        if not changed:
-            break
-    return repaired
-
-
 def _uses_bounded_dual_y_trace(
     panel: ChartPanel, page_text: PageText | None
 ) -> bool:
@@ -1061,7 +951,7 @@ def _uses_bounded_dual_y_trace(
     return (
         page_text is not None
         and page_text.text_source.startswith("tesseract")
-        and panel.diagram == 810
+        and panel.diagram < 900
         and re.sub(r"\s+", " ", panel.title.lower()).strip()
         == "dynamic input/output characteristics"
     )
@@ -1142,7 +1032,10 @@ def _select_dual_y_raster_curve(
 ) -> list[tuple[int, int]]:
     """Prefer the source-owned VGS branch proven to start at Qg=VGS=0."""
 
-    candidates = [curve for curve in curves if _curve_starts_at_axis_origin(curve, plot_box)] or curves
+    owned = [curve for curve in curves if _curve_starts_at_axis_origin(curve, plot_box)]
+    candidates = [
+        curve for curve in owned if _gate_curve_is_monotone(curve, plot_box)
+    ] or owned or curves
     best_score = max((_score_curve_in_plot(curve, plot_box) for curve in candidates), default=-1e9)
     evidenced = [curve for curve in candidates if _score_curve_in_plot(curve, plot_box) >= best_score - 0.5]
     return max(evidenced, key=lambda curve: (len(curve), _score_curve_in_plot(curve, plot_box)), default=[])

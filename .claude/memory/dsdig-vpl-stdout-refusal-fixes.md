@@ -1,6 +1,6 @@
 ---
 name: dsdig Vpl stdout refusal fixes
-description: stdout Vpl audits fixed the original seven plus GSFT7R515; HY1915P axis OCR and XPQ1R00AQB curve identity remain independent REDs
+description: stdout Vpl audits fixed the original seven, GSFT7R515, and XPQ1R00AQB; HY1915P axis OCR remains an independent RED
 created: 2026-07-29T05:25:08.725Z
 metadata:
   node_type: memory
@@ -47,15 +47,33 @@ columns to 48 pt and extending the narrowly triggered bounded bottom OCR band
 recovers the printed 0/6/10 V axis and serves 5.4801 V. The authoritative
 same-host sequential 304-PDF A/B is byte-identical.
 
-Two independent REDs remain. HY1915P traces the correct curve but calibrates
+HY1915P remains an independent RED: it traces the correct curve but calibrates
 it from false 25 V and 7 V OCR anchors, serving 10.2044 V instead of the
-source's roughly 5.5 V plateau. XPQ1R00AQB correctly calibrates the Toshiba
-right-side 0..10 V VGS axis but follows a VDS branch and then condition text,
-serving 1.3386 V instead of the roughly 5.5 V plateau.
+source's roughly 5.5 V plateau.
+
+XPQ1R00AQB was fixed on 2026-07-30. Toshiba's numbered dynamic-input/output
+trace path had been restricted to literal Figure 8.10, so XPQ Figure 8.14 used
+the ordinary raster candidate and followed a VDS branch plus condition text.
+The numbered-figure trace gate now covers diagrams below 900, candidate
+selection applies coarse VGS(Qg) monotonicity, and a 4x4 stroke opening removes
+the three-pixel grid while retaining the bold VGS curve. Source-backed plateau
+gap recovery preserves the full Miller span. Isolated terminal notches are
+interpolated only when source-seated neighbors bracket them and material future
+VGS progress proves the branch continues; otherwise terminal branch/grid
+capture still trims.
+
+XPQ now serves 5.5798 V with 99 raster points, 0 px maximum reverse, correct
+0..10 V right-axis calibration, and a source-faithful full curve. A
+user-requested concurrency-4 A/B left the frozen 304-PDF general corpus
+byte-identical; that corpus contains zero Toshiba dynamic-input/output rows.
+A separate complete seven-part Toshiba dual-axis A/B had four source-reviewed
+deltas: XPQ fixed; TJ40S04M3L moved from a source-floating -3.8320 V trace to
+the printed plateau center at -3.4977 V; TPHR8504PL1 moved 3.2940 to 3.2460 V
+on source; TK110U65Z kept 5.9653 V with only three source-seated point shifts.
 
 **Why:** all three values look numerically precise and self-report `status=ok`,
 yet source renders and full overlays prove axis or curve ownership is wrong.
 
-**How to apply:** keep HY1915P as an axis-OCR ownership case and XPQ1R00AQB as
-a dual-y curve-identity case; do not treat either as collateral from the
-GSFT7R515 neighbor-column fix. Agent review does not set `human_verified`.
+**How to apply:** keep HY1915P as the remaining axis-OCR ownership case. Treat
+XPQ1R00AQB as the dual-y monotone-identity regression fixture, including its
+full curve rather than only Vpl. Agent review does not set `human_verified`.

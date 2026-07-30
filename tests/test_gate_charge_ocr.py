@@ -173,6 +173,18 @@ class GateChargeOcrTests(unittest.TestCase):
         panel.diagram = 901
         self.assertFalse(gate._needs_dual_y_axis_ocr(panel, result))
 
+    def test_dual_y_trace_uses_numbered_figure_semantics_not_literal_810(self) -> None:
+        panel = _panel()
+        panel.title = "Dynamic Input/Output Characteristics"
+        page_text = find_charts.PageText(
+            panel.page, 600.0, 800.0, [], "tesseract_bounded"
+        )
+
+        panel.diagram = 814
+        self.assertTrue(gate._uses_bounded_dual_y_trace(panel, page_text))
+        panel.diagram = 901
+        self.assertFalse(gate._uses_bounded_dual_y_trace(panel, page_text))
+
     def test_missing_initial_ramp_requests_bounded_axis_confirmation(self) -> None:
         result = SimpleNamespace(diagnostics=("curve_missing_initial_ramp",))
         self.assertTrue(gate._needs_bounded_axis_ocr(result))
@@ -308,6 +320,28 @@ class GateChargeOcrTests(unittest.TestCase):
             curve,
         )
 
+    def test_isolated_terminal_notch_is_repaired_between_rising_neighbors(self) -> None:
+        curve = [
+            (
+                x,
+                300 - round(100 * x / 24)
+                if x < 24
+                else 200
+                if x <= 60
+                else 200 - (x - 60),
+            )
+            for x in range(0, 121, 4)
+        ]
+        notch = next(index for index, (x, _y) in enumerate(curve) if x == 96)
+        curve[notch] = (96, curve[notch][1] + 16)
+
+        repaired = gate._repair_narrow_plateau_branch_excursion(
+            curve, (0, 0, 120, 320)
+        )
+
+        self.assertGreater(curve[notch][1] - curve[notch - 1][1], 5)
+        self.assertLessEqual(repaired[notch][1], repaired[notch - 1][1])
+
     def test_raster_mask_selection_keeps_the_higher_scoring_curve(self) -> None:
         complete = [
             (x, int(round(90 - 0.7 * min(x, 45) - 0.1 * max(0, x - 75))))
@@ -332,6 +366,35 @@ class GateChargeOcrTests(unittest.TestCase):
 
         self.assertIs(selected, owned_vgs_branch)
         self.assertTrue(gate._curve_starts_at_axis_origin(selected, (0, 0, 100, 100)))
+
+    def test_dual_y_raster_selection_rejects_an_origin_starting_reversal(self) -> None:
+        wrong_vds_branch = [
+            (x, 96 - x if x <= 45 else 51 + (x - 45))
+            for x in range(0, 96)
+        ]
+        owned_vgs_branch = [
+            (x, 96 - min(x, 45) - max(0, x - 70))
+            for x in range(0, 96)
+        ]
+
+        selected = gate._select_dual_y_raster_curve(
+            [wrong_vds_branch, owned_vgs_branch],
+            (0, 0, 100, 100),
+            100,
+            100,
+        )
+
+        self.assertIs(selected, owned_vgs_branch)
+        self.assertFalse(
+            gate._gate_curve_is_monotone(
+                wrong_vds_branch, (0, 0, 100, 100)
+            )
+        )
+        self.assertTrue(
+            gate._gate_curve_is_monotone(
+                owned_vgs_branch, (0, 0, 100, 100)
+            )
+        )
 
     def test_dual_y_terminal_branch_switch_stops_without_inventing_a_flat(self) -> None:
         curve = [(x, 100 - x) for x in range(0, 81, 4)]
@@ -491,7 +554,7 @@ class ToshibaDualYAxisOcrRegression(unittest.TestCase):
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
         cases = {
             "toshiba/TK25S06N1L.pdf": (3.75, 1, 810),
-            "toshiba/TJ40S04M3L.pdf": (-3.86, -1, 810),
+            "toshiba/TJ40S04M3L.pdf": (-3.50, -1, 810),
             "toshiba/TPH3R70APL1,LQ.pdf": (3.97, 1, 810),
             "toshiba/TPN2R903PL.pdf": (3.07, 1, 810),
             "toshiba/TPHR8504PL1.pdf": (3.18, 1, 810),
@@ -545,6 +608,11 @@ class ToshibaDualYAxisOcrRegression(unittest.TestCase):
                     self.assertTrue(plateau)
                     self.assertLessEqual(max(plateau) - min(plateau), 0.03 * (y1 - y0))
                     self.assertLess(result.curve_px[-1][0], x0 + 0.9 * (x1 - x0))
+                if "TPN2R903" in rel:
+                    self.assertLess(
+                        result.curve_px[-1][0],
+                        plot_x0 + 0.88 * (plot_x1 - plot_x0),
+                    )
 
 
 if __name__ == "__main__":
