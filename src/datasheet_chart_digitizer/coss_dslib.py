@@ -4,21 +4,19 @@ Consumes a `capacitance_digitization.json` manifest (from `dsdig digitize-capaci
 and emits, per chart, a compact JSON suitable for machine consumption by downstream
 parts DBs (pwr-mosfet-lib `dslib/coss_curves.py` format: knot triples, low V -> high V).
 
-This is the machine-validated path for AUTO-digitized curves, so the acceptance gate is
-strict and monotone: a chart that cannot be fully validated is REJECTED with reasons —
-missing anchors, an untrusted axis fit, or a failed downstream check never degrade to a
-silently-exported curve.  Gates:
+This is the machine-validated path for AUTO-digitized curves. Coss, Crss, and Ciss each
+have an independent verdict: a curve that cannot be validated is REJECTED with reasons,
+without withholding another trace that passed its own gates. Gates:
 
   * axis_calibration_trusted is True (position-based axis fit agreed with gridlines)
-  * trace_validation_status == "pass" (semantic shape checks: rank order, spans)
-  * qoss_validation_status == "pass" (Qoss integral consistency)
-  * table anchors for Coss AND Crss exist (from the datasheet `.nop.csv` spec table)
-    and the digitized traces agree with them at the anchor Vds within tolerance
+  * semantic shape checks are routed to the trace(s) they cover
+  * qoss_validation_status == "pass" gates Coss (Qoss integral consistency)
+  * each trace has its own table anchor and agrees at the anchor Vds within tolerance
     (default 8% Coss / 15% Crss — curated curves historically land within ~2%).
 
 The exported curve keeps the digitizer's values (no snapping); anchor agreement is
-reported so a consumer can decide to snap.  Coss knots are selected with the adaptive
-log-space model (max_rel_error target), Crss is interpolated onto the same knots.
+reported so a consumer can decide to snap. Each trace gets its own adaptive log-space
+model (max_rel_error target). The legacy combined curve interpolates Crss onto Coss knots.
 
 Anchor voltages are additionally pinned as explicit knots: the adaptive knots are
 error-optimal for LOG-space interpolation, but dslib consumers interpolate LINEARLY,
@@ -27,10 +25,9 @@ knee high (measured +2.4% on IPP040N08NF2S at the 40 V anchor).  Since the ancho
 exactly the point every downstream cross-check probes, each anchor gets a knot carrying
 the digitized (not snapped) values there.
 
-Ciss is exported alongside as OPTIONAL (Vds_V, Ciss_pF) pairs (dslib `CISS_CURVES`
-format) with its own tri-state verdict (`ciss_status`: pass/absent/rejected) and its own
-anchor gate plus a Ciss>Crss consistency gate (downstream derives Cgs = Ciss - Crss).
-Ciss gates can only withhold the Ciss curve — they never rescue or degrade the triple.
+Coss, Crss, and Ciss are exported as independent (Vds_V, capacitance_pF) pairs. For
+backward compatibility, `curve` and aggregate `status` still carry a combined
+(Vds_V, Coss_pF, Crss_pF) curve only when both Coss and Crss pass.
 """
 
 from __future__ import annotations
@@ -54,6 +51,9 @@ from .coss_export import (
 ANCHOR_TOL_COSS = 0.08
 ANCHOR_TOL_CRSS = 0.15
 TINY_CRSS_ANCHOR_PF = 15.0
+# See the resolution gate below: quanta needed before an anchor
+# comparison on a LINEAR capacitance axis carries information at all.
+MIN_ANCHOR_RESOLUTION_PX = 4.0
 # Ciss is the largest, flattest trace (vector traces land within ~2%), so it gets the
 # strict Coss-grade gate.
 ANCHOR_TOL_CISS = 0.08
@@ -61,20 +61,23 @@ ANCHOR_TOL_CISS = 0.08
 
 @dataclass
 class DslibCossResult:
-    """One chart's export verdict. `status` is "pass" only when EVERY gate passed and a
-    curve was produced; any other outcome is "rejected" with machine-readable reasons.
+    """Independent trace verdicts plus the legacy combined Coss/Crss verdict.
 
-    Ciss is exported SEPARATELY (dslib CISS_CURVES pairs) and is strictly optional:
-    its gates can only withhold `ciss_curve`, never rescue or degrade the triple.
-    `ciss_status` is tri-state — "pass" (curve exported), "absent" (the chart carries
-    no Ciss evidence at all), or "rejected" (Ciss evidence exists but failed a gate).
-    Absence of evidence never exports a curve."""
+    `status` remains "pass" only when both Coss and Crss pass and `curve` was produced.
+    Consumers that support partial imports use the three per-trace statuses and pair
+    curves. `absent` is only used when a chart carries no evidence for that trace."""
 
     part: str
     diagram: str
     status: str                      # "pass" | "rejected"
     reasons: list = field(default_factory=list)
     curve: list = field(default_factory=list)   # [(Vds_V, Coss_pF, Crss_pF), ...]
+    coss_status: str = "rejected"    # "pass" | "rejected"
+    coss_reasons: list = field(default_factory=list)
+    coss_curve: list = field(default_factory=list)  # [(Vds_V, Coss_pF), ...]
+    crss_status: str = "rejected"    # "pass" | "rejected"
+    crss_reasons: list = field(default_factory=list)
+    crss_curve: list = field(default_factory=list)  # [(Vds_V, Crss_pF), ...]
     anchor_check: dict = field(default_factory=dict)
     qoss_pc: float | None = None
     knots: int = 0
@@ -83,7 +86,7 @@ class DslibCossResult:
     points_csv: str | None = None
     pdf: str | None = None
     ciss_status: str = "rejected"    # "pass" | "absent" | "rejected"
-    ciss_reasons: list = field(default_factory=lambda: ["chart_rejected"])
+    ciss_reasons: list = field(default_factory=list)
     ciss_curve: list = field(default_factory=list)  # [(Vds_V, Ciss_pF), ...]
 
 
@@ -91,13 +94,38 @@ def _interp_at(vds: np.ndarray, cap: np.ndarray, v: float, v_scale: float) -> fl
     return float(evaluate_coss_knots(np.asarray([v], float), vds, cap, v_scale)[0])
 
 
+def _trace_gate_reasons(row: dict) -> dict[str, list[str]]:
+    """Route semantic trace failures to the trace(s) they actually invalidate."""
+    out = {name: [] for name in ("Coss", "Crss", "Ciss")}
+    status = row.get("trace_validation_status")
+    if status == "pass":
+        return out
+    raw_reasons = list(row.get("trace_validation_reasons") or [])
+    if not raw_reasons:
+        raw_reasons = ["unspecified"]
+    for raw in raw_reasons:
+        reason = str(raw)
+        lower = reason.lower()
+        if (lower.startswith("ciss_coss_")
+                or lower in {"ciss_not_flatter_than_coss", "ciss_coss_rank_swap_count"}):
+            names = ("Ciss", "Coss")
+        elif lower.startswith(("crss_", "missing_crss")):
+            names = ("Crss",)
+        elif lower.startswith(("ciss_", "missing_ciss")):
+            names = ("Ciss",)
+        elif lower.startswith(("coss_", "missing_coss", "qoss_")):
+            names = ("Coss",)
+        else:
+            names = ("Coss", "Crss", "Ciss")
+        rendered = f"trace_validation:{status}:{reason}"
+        for name in names:
+            out[name].append(rendered)
+    return out
+
+
 def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
                max_knots: int = 48) -> DslibCossResult:
-    """Validate one manifest row and build its dslib knot triples.
-
-    Gate-first: every reason is collected (not short-circuited) so a rejection names
-    everything wrong with the chart, then the curve is only built on a clean slate.
-    """
+    """Validate one manifest row and build independently gated trace curves."""
     part = str(row.get("part") or "?")
     diagram = str(row.get("diagram") or "?")
     res = DslibCossResult(part=part, diagram=diagram, status="rejected",
@@ -105,125 +133,177 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
                           points_csv=_abs_or_none(row.get("points"), base_dir),
                           pdf=row.get("pdf"))
 
+    shared_reasons = []
     if row.get("axis_calibration_trusted") is not True:
-        res.reasons.append("axis_calibration_not_trusted")
-    if row.get("trace_validation_status") != "pass":
-        res.reasons.append(
-            f"trace_validation:{row.get('trace_validation_status')}"
-            f":{','.join(row.get('trace_validation_reasons') or [])}")
+        shared_reasons.append("axis_calibration_not_trusted")
+    res.coss_reasons.extend(shared_reasons)
+    res.crss_reasons.extend(shared_reasons)
+    res.ciss_reasons.extend(shared_reasons)
+    trace_reasons = _trace_gate_reasons(row)
+    res.coss_reasons.extend(trace_reasons["Coss"])
+    res.crss_reasons.extend(trace_reasons["Crss"])
+    res.ciss_reasons.extend(trace_reasons["Ciss"])
+
     if row.get("qoss_validation_status") != "pass":
-        res.reasons.append(f"qoss_validation:{row.get('qoss_validation_status')}"
-                           f":{row.get('qoss_validation_error')}")
+        res.coss_reasons.append(
+            f"qoss_validation:{row.get('qoss_validation_status')}"
+            f":{row.get('qoss_validation_error')}")
 
     anchors = row.get("anchors") or {}
-    for name in ("Coss", "Crss"):
+    for name, reasons in (("Coss", res.coss_reasons), ("Crss", res.crss_reasons)):
         a = anchors.get(name)
         if not a or not a.get("value_pf") or a.get("vds_v") is None:
-            res.reasons.append(f"missing_{name.lower()}_anchor")
+            reasons.append(f"missing_{name.lower()}_anchor")
+
+    # On a linear-C chart, a tiny Crss trace can have a useful SHAPE while its absolute
+    # vertical position is below the chart's resolution. Anchor the whole trace with one
+    # additive offset at the table value. Larger unresolved traces, Coss, and Ciss remain
+    # rejected: this correction is deliberately narrow and explicit in anchor_check.
+    cal = row.get("axis_calibration") or {}
+    below_resolution = set()
+    if cal.get("y_log") is not True:
+        pf_per_px = abs(float(cal.get("y_scale") or 0.0))
+        if pf_per_px > 0.0:
+            for name, reasons in (
+                    ("Coss", res.coss_reasons),
+                    ("Crss", res.crss_reasons),
+                    ("Ciss", res.ciss_reasons)):
+                a = anchors.get(name)
+                spec = (a or {}).get("value_pf")
+                if not spec:
+                    continue
+                px = float(spec) / pf_per_px
+                if px < MIN_ANCHOR_RESOLUTION_PX:
+                    below_resolution.add(name)
+                    if name != "Crss" or float(spec) > TINY_CRSS_ANCHOR_PF:
+                        reasons.append(
+                            f"{name.lower()}_below_axis_resolution:"
+                            f"{spec:g} pF = {px:.2f} px on a linear axis "
+                            f"({pf_per_px:.2f} pF/px, need "
+                            f"{MIN_ANCHOR_RESOLUTION_PX:g})")
 
     if res.points_csv is None or not Path(res.points_csv).exists():
-        res.reasons.append("missing_points_csv")
+        reason = "missing_points_csv"
+        res.coss_reasons.append(reason)
+        res.crss_reasons.append(reason)
+        res.ciss_reasons.append(reason)
+        _finish_aggregate(res)
         return res
 
-    try:
-        v_coss, c_coss = load_coss_points_csv(Path(res.points_csv), "Coss")
-        v_crss, c_crss = load_coss_points_csv(Path(res.points_csv), "Crss")
-    except ValueError as exc:
-        res.reasons.append(f"points_load:{exc}")
-        return res
+    traces = {}
+    for name, reasons in (
+            ("Coss", res.coss_reasons),
+            ("Crss", res.crss_reasons),
+            ("Ciss", res.ciss_reasons)):
+        try:
+            traces[name] = load_coss_points_csv(Path(res.points_csv), name)
+        except ValueError as exc:
+            if name == "Ciss" and not anchors.get("Ciss"):
+                res.ciss_status = "absent"
+                res.ciss_reasons = ["no_ciss_trace", "no_ciss_anchor"]
+            else:
+                reasons.append(f"{name.lower()}_points_load:{exc}")
 
     # Anchor agreement — digitized value at the spec-table Vds vs the table value.
     # Interpolate on the RAW cleaned samples (not the reduced knots) so the check
     # measures the digitization, not the knot reduction.
-    v_scale = max(float(v_coss[-1] - v_coss[0]) * 0.01, 1e-6)
-    crss_offset_pf = 0.0
-    for name, (vv, cc), tol in (("Coss", (v_coss, c_coss), ANCHOR_TOL_COSS),
-                                ("Crss", (v_crss, c_crss), ANCHOR_TOL_CRSS)):
+    scales = {
+        name: max(float(vv[-1] - vv[0]) * 0.01, 1e-6)
+        for name, (vv, _cc) in traces.items()
+    }
+    for name, tol, reasons in (
+            ("Coss", ANCHOR_TOL_COSS, res.coss_reasons),
+            ("Crss", ANCHOR_TOL_CRSS, res.crss_reasons)):
+        if name not in traces:
+            continue
+        vv, cc = traces[name]
         a = anchors.get(name)
         if not a or not a.get("value_pf"):
             continue
-        got = _interp_at(vv, cc, float(a["vds_v"]), v_scale)
+        got = _interp_at(vv, cc, float(a["vds_v"]), scales[name])
         spec = float(a["value_pf"])
         rel = got / spec - 1.0
         check: dict[str, object] = {"vds_v": float(a["vds_v"]),
                                     "spec_pf": spec,
                                     "digitized_pf": round(got, 4),
                                     "rel_error": round(rel, 4)}
-        if not math.isfinite(rel) or abs(rel) > tol:
+        offset_pf = 0.0
+        if name == "Crss" and name in below_resolution and 0.0 < spec <= TINY_CRSS_ANCHOR_PF:
+            offset_pf = spec - got
+        elif not math.isfinite(rel) or abs(rel) > tol:
             if name == "Crss" and 0.0 < spec <= TINY_CRSS_ANCHOR_PF and got <= spec:
-                crss_offset_pf = spec - got
-                check.update({
-                    "offset_pf": round(crss_offset_pf, 4),
-                    "corrected_digitized_pf": round(spec, 4),
-                    "rel_error": 0.0,
-                    "correction": "tiny_crss_anchor_offset",
-                })
+                offset_pf = spec - got
             else:
-                res.reasons.append(f"{name.lower()}_anchor_mismatch:{rel:+.1%} (tol {tol:.0%})")
+                reasons.append(
+                    f"{name.lower()}_anchor_mismatch:{rel:+.1%} (tol {tol:.0%})")
+        if offset_pf:
+            traces[name] = (vv, np.maximum(cc + offset_pf, 1e-12))
+            check.update({
+                "offset_pf": round(offset_pf, 4),
+                "corrected_digitized_pf": round(spec, 4),
+                "rel_error": 0.0,
+                "correction": "tiny_crss_anchor_offset",
+            })
+        elif name == "Crss" and name in below_resolution:
+            # The table anchor happens to equal the quantised trace exactly. Record that
+            # the unobservable absolute position was nevertheless anchored deliberately.
+            check.update({
+                "offset_pf": 0.0,
+                "corrected_digitized_pf": round(spec, 4),
+                "rel_error": 0.0,
+                "correction": "tiny_crss_anchor_offset",
+            })
         res.anchor_check[name] = check
 
-    if crss_offset_pf:
-        c_crss = np.maximum(c_crss + crss_offset_pf, 1e-12)
+    if not res.coss_reasons and "Coss" in traces:
+        res.coss_curve, res.source_points = _build_pair_curve(
+            traces["Coss"], anchors.get("Coss"),
+            max_rel_error=max_rel_error, max_knots=max_knots)
+        res.coss_status = "pass"
+    if not res.crss_reasons and "Crss" in traces:
+        res.crss_curve, _ = _build_pair_curve(
+            traces["Crss"], anchors.get("Crss"),
+            max_rel_error=max_rel_error, max_knots=max_knots)
+        res.crss_status = "pass"
 
-    if res.reasons:
-        return res
-
-    model = build_adaptive_coss_model(v_coss, c_coss, max_rel_error=max_rel_error,
-                                      max_knots=max_knots)
-    kv = np.asarray(model.vds, float)
-    kc = np.asarray(model.coss, float)
-    crss_scale = max(float(v_crss[-1] - v_crss[0]) * 0.01, 1e-6)
-    kx = evaluate_coss_knots(kv, v_crss, c_crss, crss_scale)
-    curve = [(float(v), _sig4(c), _sig4(x)) for v, c, x in zip(kv, kc, kx)]
-    curve = _pin_anchor_knots(curve, anchors, (v_coss, c_coss), (v_crss, c_crss),
-                              v_scale, crss_scale)
-    if curve[0][0] > 0:
-        # dslib curves start at Vds=0; consumers integrate Qoss/Eoss from 0 with a
-        # flat-C hold below the first knot — make that hold explicit.
-        curve.insert(0, (0.0, curve[0][1], curve[0][2]))
-    res.curve = curve
-    res.knots = len(curve)
-    res.source_points = model.source_points
     qm = row.get("qoss_metrics") or {}
     res.qoss_pc = qm.get("Qoss_pc")
-    res.status = "pass"
-    _export_ciss(res, row, (v_crss, c_crss), crss_scale,
+    _export_ciss(res, row, traces.get("Ciss"), traces.get("Crss"),
                  max_rel_error=max_rel_error, max_knots=max_knots)
+
+    if res.coss_status == "pass" and res.crss_status == "pass":
+        v_coss, c_coss = traces["Coss"]
+        v_crss, c_crss = traces["Crss"]
+        coss_scale, crss_scale = scales["Coss"], scales["Crss"]
+        kv = np.asarray([p[0] for p in res.coss_curve], float)
+        kc = np.asarray([p[1] for p in res.coss_curve], float)
+        kx = evaluate_coss_knots(kv, v_crss, c_crss, crss_scale)
+        curve = [(float(v), _sig4(c), _sig4(x)) for v, c, x in zip(kv, kc, kx)]
+        res.curve = _pin_anchor_knots(
+            curve, anchors, (v_coss, c_coss), (v_crss, c_crss),
+            coss_scale, crss_scale)
+        res.knots = len(res.curve)
+        res.status = "pass"
+
+    _finish_aggregate(res)
     return res
 
 
-def _export_ciss(res: DslibCossResult, row: dict, crss_pts, crss_scale: float, *,
+def _export_ciss(res: DslibCossResult, row: dict, ciss_pts, crss_pts, *,
                  max_rel_error: float, max_knots: int) -> None:
-    """Attempt the optional Ciss export onto a triple that already passed every gate.
-
-    Monotone by construction: every early exit leaves `ciss_curve` empty with an explicit
-    tri-state verdict — "absent" only when the chart carries NO Ciss evidence (neither a
-    digitized trace nor a spec-table anchor); any partial or failing evidence is
-    "rejected" with reasons. A Ciss trace that cannot be anchor-validated is never
-    exported. The triple's own status is deliberately untouched: Ciss gates can only
-    withhold Ciss."""
-    res.ciss_reasons = []
-    res.ciss_status = "rejected"
+    """Finish the independent optional Ciss verdict."""
     anchors = row.get("anchors") or {}
     a = anchors.get("Ciss") or {}
     have_anchor = bool(a.get("value_pf")) and a.get("vds_v") is not None
-    if res.points_csv is None:      # unreachable post-gate; keep the guard monotone
-        res.ciss_reasons.append("ciss_points_load:missing points csv")
+    if res.ciss_status == "absent":
         return
-
-    try:
-        v_ciss, c_ciss = load_coss_points_csv(Path(res.points_csv), "Ciss")
-    except ValueError as exc:
-        if have_anchor:
-            res.ciss_reasons.append(f"ciss_points_load:{exc}")
-        else:
-            res.ciss_status = "absent"
-            res.ciss_reasons = ["no_ciss_trace", "no_ciss_anchor"]
+    if ciss_pts is None:
         return
     if not have_anchor:
         res.ciss_reasons.append("missing_ciss_anchor")
         return
 
+    v_ciss, c_ciss = ciss_pts
     ciss_scale = max(float(v_ciss[-1] - v_ciss[0]) * 0.01, 1e-6)
     got = _interp_at(v_ciss, c_ciss, float(a["vds_v"]), ciss_scale)
     rel = got / float(a["value_pf"]) - 1.0
@@ -236,38 +316,53 @@ def _export_ciss(res: DslibCossResult, row: dict, crss_pts, crss_scale: float, *
             f"ciss_anchor_mismatch:{rel:+.1%} (tol {ANCHOR_TOL_CISS:.0%})")
         return
 
-    # Downstream consumers derive Cgs = Ciss - Crss; a crossing (Ciss <= Crss anywhere
-    # on the shared span) means at least one trace is mis-assigned — refuse.
-    v_crss, c_crss = crss_pts
-    lo, hi = max(v_ciss[0], v_crss[0]), min(v_ciss[-1], v_crss[-1])
-    if hi <= lo:
-        # No shared span at all: the crossing check below would degenerate into
-        # comparing two boundary-clamped constants and trivially pass — the exact
-        # anti-monotone false PASS this gate exists to prevent. Refuse instead.
-        res.ciss_reasons.append("ciss_crss_no_overlap")
-        return
-    vv = np.linspace(lo, hi, 200)
-    crss_i = evaluate_coss_knots(vv, v_crss, c_crss, crss_scale)
-    ciss_i = evaluate_coss_knots(vv, v_ciss, c_ciss, ciss_scale)
-    if not np.all(ciss_i > crss_i):
-        res.ciss_reasons.append("ciss_not_above_crss")
-        return
+    # Ciss remains independently exportable if Crss failed. Apply the physical
+    # Ciss>Crss cross-check when (and only when) Crss itself is accepted evidence.
+    if res.crss_status == "pass" and crss_pts is not None:
+        v_crss, c_crss = crss_pts
+        crss_scale = max(float(v_crss[-1] - v_crss[0]) * 0.01, 1e-6)
+        lo, hi = max(v_ciss[0], v_crss[0]), min(v_ciss[-1], v_crss[-1])
+        if hi <= lo:
+            res.ciss_reasons.append("ciss_crss_no_overlap")
+            return
+        vv = np.linspace(lo, hi, 200)
+        crss_i = evaluate_coss_knots(vv, v_crss, c_crss, crss_scale)
+        ciss_i = evaluate_coss_knots(vv, v_ciss, c_ciss, ciss_scale)
+        if not np.all(ciss_i > crss_i):
+            res.ciss_reasons.append("ciss_not_above_crss")
+            return
 
-    model = build_adaptive_coss_model(v_ciss, c_ciss, max_rel_error=max_rel_error,
-                                      max_knots=max_knots)
+    if res.ciss_reasons:
+        return
+    res.ciss_curve, _ = _build_pair_curve(
+        ciss_pts, a, max_rel_error=max_rel_error, max_knots=max_knots)
+    res.ciss_status = "pass"
+
+
+def _build_pair_curve(points, anchor, *, max_rel_error: float,
+                      max_knots: int) -> tuple[list, int]:
+    """Adaptive pair curve with an explicit zero hold and table-anchor knot."""
+    vv, cc = points
+    model = build_adaptive_coss_model(
+        vv, cc, max_rel_error=max_rel_error, max_knots=max_knots)
     pairs = [(float(v), _sig4(c)) for v, c in zip(model.vds, model.coss)]
-    va = float(a["vds_v"])
-    span = pairs[-1][0] - pairs[0][0]
-    if (v_ciss[0] <= va <= v_ciss[-1]
-            and not any(abs(p[0] - va) <= max(0.003 * span, 1e-3) for p in pairs)):
-        # Same linear-interp rationale as _pin_anchor_knots: the anchor V is exactly
-        # where downstream cross-checks probe, so it must be a knot.
-        pairs.append((va, _sig4(got)))
-        pairs.sort(key=lambda k: k[0])
+    if anchor and anchor.get("vds_v") is not None:
+        va = float(anchor["vds_v"])
+        span = pairs[-1][0] - pairs[0][0]
+        if (vv[0] <= va <= vv[-1]
+                and not any(abs(p[0] - va) <= max(0.003 * span, 1e-3)
+                            for p in pairs)):
+            scale = max(float(vv[-1] - vv[0]) * 0.01, 1e-6)
+            pairs.append((va, _sig4(_interp_at(vv, cc, va, scale))))
+            pairs.sort(key=lambda k: k[0])
     if pairs[0][0] > 0:
         pairs.insert(0, (0.0, pairs[0][1]))
-    res.ciss_curve = pairs
-    res.ciss_status = "pass"
+    return pairs, model.source_points
+
+
+def _finish_aggregate(res: DslibCossResult) -> None:
+    """Maintain legacy aggregate reasons without letting them drive trace verdicts."""
+    res.reasons = list(dict.fromkeys(res.coss_reasons + res.crss_reasons))
 
 
 def export_manifest(manifest_path: Path, out_dir: Path, *, max_rel_error: float = 0.02,
@@ -349,17 +444,22 @@ def main() -> None:
                               max_knots=args.max_knots)
     ok = 0
     for r in results:
-        if r.status == "pass":
+        passed = [name for name in ("Coss", "Crss", "Ciss")
+                  if getattr(r, f"{name.lower()}_status") == "pass"]
+        if passed:
             ok += 1
             ac = ", ".join(f"{k} {v['rel_error']:+.1%}" for k, v in r.anchor_check.items())
-            if r.ciss_status == "pass":
-                ciss = f"Ciss {len(r.ciss_curve)} knots"
-            else:
-                ciss = f"Ciss {r.ciss_status}: {'; '.join(r.ciss_reasons)}"
-            print(f"{r.part} d{r.diagram}: PASS {r.knots} knots "
-                  f"(from {r.source_points} samples; anchors: {ac}) [{ciss}]")
+            rejected = [
+                f"{name}: {'; '.join(getattr(r, f'{name.lower()}_reasons'))}"
+                for name in ("Coss", "Crss", "Ciss")
+                if getattr(r, f"{name.lower()}_status") == "rejected"
+            ]
+            suffix = f"; rejected {' | '.join(rejected)}" if rejected else ""
+            print(f"{r.part} d{r.diagram}: PASS {'/'.join(passed)} "
+                  f"(anchors: {ac}){suffix}")
         else:
-            print(f"{r.part} d{r.diagram}: REJECTED {'; '.join(r.reasons)}")
+            rejected = r.reasons + r.ciss_reasons
+            print(f"{r.part} d{r.diagram}: REJECTED {'; '.join(rejected)}")
     if not results:
         raise SystemExit("no capacitance charts in manifest")
     if ok == 0:

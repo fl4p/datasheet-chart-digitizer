@@ -114,6 +114,9 @@ class CossDslibExportTests(unittest.TestCase):
         res = export_row(row, self.base)
         self.assertEqual(res.status, "rejected")
         self.assertTrue(any(r.startswith("trace_validation:suspect") for r in res.reasons))
+        self.assertEqual(res.coss_status, "pass", res.coss_reasons)
+        self.assertEqual(res.crss_status, "rejected")
+        self.assertEqual(res.ciss_status, "pass", res.ciss_reasons)
 
     def test_failed_qoss_validation_is_rejected(self) -> None:
         row = _good_row()
@@ -122,6 +125,9 @@ class CossDslibExportTests(unittest.TestCase):
         res = export_row(row, self.base)
         self.assertEqual(res.status, "rejected")
         self.assertTrue(any(r.startswith("qoss_validation:fail") for r in res.reasons))
+        self.assertEqual(res.coss_status, "rejected")
+        self.assertEqual(res.crss_status, "pass", res.crss_reasons)
+        self.assertEqual(res.ciss_status, "pass", res.ciss_reasons)
 
     def test_missing_anchor_is_rejected_not_skipped(self) -> None:
         # Absence of evidence must never export a curve: no Crss table anchor -> reject.
@@ -161,6 +167,43 @@ class CossDslibExportTests(unittest.TestCase):
         at40 = [k for k in res.curve if k[0] == 40.0]
         self.assertEqual(len(at40), 1)
         self.assertAlmostEqual(at40[0][2], 8.0, delta=0.1)
+
+    def test_linear_axis_tiny_crss_uses_anchor_as_curve_offset(self) -> None:
+        # EPC2091: Crss=8.8 pF is only 0.91 px on its 9.69 pF/px linear panel.
+        # Its shape remains useful, but the absolute vertical position must come from
+        # the table anchor rather than sub-pixel chart placement.
+        row = _good_row()
+        row["axis_calibration"] = {
+            "y_log": False,
+            "y_scale": -9.69,
+        }
+        row["anchors"]["Crss"] = {"value_pf": 8.8, "vds_v": 40.0}
+
+        res = export_row(row, self.base)
+
+        self.assertEqual(res.crss_status, "pass", res.crss_reasons)
+        self.assertEqual(res.status, "pass", res.reasons)
+        check = res.anchor_check["Crss"]
+        self.assertEqual(check.get("correction"), "tiny_crss_anchor_offset")
+        self.assertAlmostEqual(check["offset_pf"],
+                               8.8 - _crss(40.0), delta=0.01)
+        at40 = [k for k in res.crss_curve if k[0] == 40.0]
+        self.assertEqual(len(at40), 1)
+        self.assertAlmostEqual(at40[0][1], 8.8, delta=0.1)
+
+    def test_crss_rejection_does_not_withhold_coss_or_ciss(self) -> None:
+        row = _good_row()
+        row["anchors"]["Crss"]["value_pf"] = _crss(40.0) * 2.0
+
+        res = export_row(row, self.base)
+
+        self.assertEqual(res.status, "rejected")
+        self.assertEqual(res.coss_status, "pass", res.coss_reasons)
+        self.assertTrue(res.coss_curve)
+        self.assertEqual(res.crss_status, "rejected")
+        self.assertEqual(res.crss_curve, [])
+        self.assertEqual(res.ciss_status, "pass", res.ciss_reasons)
+        self.assertTrue(res.ciss_curve)
 
     def test_missing_points_csv_is_rejected(self) -> None:
         row = _good_row("points/part/does_not_exist.points.csv")
@@ -278,13 +321,15 @@ class CossDslibExportTests(unittest.TestCase):
         self.assertIn("ciss_crss_no_overlap", res.ciss_reasons)
         self.assertEqual(res.ciss_curve, [])
 
-    def test_rejected_chart_marks_ciss_chart_rejected(self) -> None:
+    def test_shared_chart_rejection_is_reported_per_curve(self) -> None:
         row = _good_row()
         row["axis_calibration_trusted"] = False
         res = export_row(row, self.base)
         self.assertEqual(res.status, "rejected")
+        self.assertEqual(res.coss_status, "rejected")
+        self.assertEqual(res.crss_status, "rejected")
         self.assertEqual(res.ciss_status, "rejected")
-        self.assertEqual(res.ciss_reasons, ["chart_rejected"])
+        self.assertEqual(res.ciss_reasons, ["axis_calibration_not_trusted"])
         self.assertEqual(res.ciss_curve, [])
 
 
