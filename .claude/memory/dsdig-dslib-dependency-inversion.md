@@ -24,3 +24,33 @@ unresolved existing PDFs, pins the sample count, and runs without unrelated
 fontTools imports. Pushed tips verified on 2026-07-15: dsdig `main` at
 `3894959e02a557572803b9f40207ec3a94b5de85` and fetlib `master` at
 `bc4e7beb8986333d3911e2596a4955965842658b`.
+
+On 2026-07-30, a 2,239-part fetlib run under Homebrew Python 3.14 was still
+importing the global `3894959` package and emitted 270 unique gate-charge
+refusals. Nineteen refused parts were already covered by the newer committed
+bounded-axis regression corpus. Clean dsdig commit
+`c0e8d68dd3c69e1135b8a092f15eeb725a576c11` passed 28 focused tests plus 37
+subtests, and production-bridge replays recovered both `NCE0160G` and
+`GSFT7R515`. That exact clean commit was installed into the Python 3.14 user
+site, which precedes the stale global package and changes fetlib's
+`chart_digitizer_salt()` for future processes.
+
+This is a local runtime remediation, not a durable dependency update:
+`pwr-mosfet-lib/requirements.txt` remains pinned to `3894959` because `c0e8d68`
+was 20 commits ahead of `origin/main` and not yet available from the remote.
+After the dsdig commits are pushed, update the fetlib pin; until then, a package
+reinstall can reintroduce the stale runtime.
+
+Later on 2026-07-30, the actual local fetlib interpreter was confirmed as
+`/Users/fab/dev/venvs/fetlib/bin/python3` on Python 3.10.14. Dsdig's `>=3.11`
+metadata floor had existed since the initial commit, while all 55 current source
+modules compiled and imported under 3.10. After upgrading that venv from
+PyMuPDF 1.24.14 / Pillow 10.4.0 / OpenCV 4.10.0.84 to PyMuPDF 1.28.0 /
+Pillow 12.3.0 / OpenCV 5.0.0.93, the 31-test focused gate-charge suite passed
+under Python 3.10 and the metadata floor was lowered to `>=3.10`. The venv now
+has an editable install of this checkout; production `dslib.viz` bridge checks
+recover `NCE0160G` and `GSFT7R515` with bounded OCR.
+
+The editable install deliberately follows the checkout's working-tree files,
+including uncommitted edits; use a commit-pinned installation when a frozen
+runtime is required.

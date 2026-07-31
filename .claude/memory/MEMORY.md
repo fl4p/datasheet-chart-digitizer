@@ -14,7 +14,7 @@
 - [cv-anchor-assignment](cv-anchor-assignment.md) — dsdig #2 (8e978f6): Ciss/Coss/Crss trace assignment via anchor log-residuals + shape priors, conservative gates
 - [cv-crop-transform](cv-crop-transform.md) — dsdig #7 (d4773ce): persisted crop_box_pt, shared CropTransform for C(V)/BV
 - [vpl-finder-glyph-fallback](vpl-finder-glyph-fallback.md) — dsdig guarded PyMuPDF fallback; Vpl parity 61 matched / 0 missing
-- [dsdig-dslib-dependency-inversion](dsdig-dslib-dependency-inversion.md) — dsdig Vpl standalone 63/63; fetlib pins dsdig, dslib.viz.find_vpl defaults to it
+- [dsdig-dslib-dependency-inversion](dsdig-dslib-dependency-inversion.md) — fetlib can lag dsdig; local Python 3.10 venv uses current image dependencies and an editable dsdig checkout, while frozen deployments need a pushed pin
 - [chart-overlay-tick-labels](chart-overlay-tick-labels.md) — human overlays show consumed ticks/units; 8× crosshair crops are AI-internal only
 - [dsdig tick-center semantic evidence](dsdig-tick-center-semantic-evidence.md) — exact centering is not semantic identity; conflicting duplicates and long endpoint extrapolation fail closed
 - [dsdig Qoss metric sub-contract](dsdig-qoss-metric-subcontract.md) — C(V) and derived Qoss availability are separate; unsafe bundles are null + diagnostic-only with explicit reasons
