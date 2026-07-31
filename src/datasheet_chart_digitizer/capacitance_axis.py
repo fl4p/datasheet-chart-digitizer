@@ -157,9 +157,10 @@ def infer_position_axis_calibration(
     doc = fitz.open(Path(str(chart["pdf"])))
     page = doc[int(chart["page"]) - 1]
     calibration = _fit_position_calibration(page, transform, plot_rect, "position_text")
-    return _seat_linear_y_ticks_on_grid(
+    calibration = _seat_linear_y_ticks_on_grid(
         calibration, image, plot, page=page, transform=transform
     )
+    return _seat_regular_log_x_ticks_on_grid(calibration, image, plot)
 
 
 class _OcrWordsPage:
@@ -386,12 +387,12 @@ def _bounded_ocr_y_ladder(
         plot_rect.y1 + 8.0,
     )
 
-    def run(psm: int):
+    def run(psm: int, *, dpi: float = 500.0):
         return ocr_words_in_rect(
             str(chart["pdf"]),
             int(chart["page"]),
             clip,
-            dpi=500.0,
+            dpi=dpi,
             psm=psm,
             whitelist="0123456789!°º*^",
             min_confidence=0.0,
@@ -399,7 +400,11 @@ def _bounded_ocr_y_ladder(
 
     try:
         primary = run(11)
-        supplemental = run(3)
+        # PSM 6 at 400 dpi reads the six-row Infineon gutter as one uniform
+        # block.  On current tesseract PSM 3 returns no words for the same
+        # narrow clip, while this pass independently exposes clean 10^4,
+        # 10^3, and 10^2 anchors needed to repair the remaining mangled rows.
+        supplemental = run(6, dpi=400.0)
     except RuntimeError:
         return []
     merged = list(primary)
@@ -578,6 +583,9 @@ def infer_ocr_position_axis_calibration(
             calibration, image, plot, page=page, transform=transform
         )
         calibration = _seat_signed_log_x_ticks_on_grid(
+            calibration, image, plot
+        )
+        calibration = _seat_regular_log_x_ticks_on_grid(
             calibration, image, plot
         )
         return calibration, reject_bad_position_calibration(calibration, plot)
@@ -828,6 +836,72 @@ def _vertical_gridline_candidates(image: np.ndarray, plot: PlotBox) -> list[floa
 
 _SIGNED_LOG_X_LABEL_GRID_MAX_PX = 6.0
 _SIGNED_LOG_X_FIT_GRID_MAX_PX = 1.0
+
+
+def _seat_regular_log_x_ticks_on_grid(
+    calibration: AxisCalibration, image: np.ndarray, plot: PlotBox
+) -> AxisCalibration:
+    """Use a clear full-width log ladder's source rails, not glyph centers."""
+
+    values = calibration.x_ticks_v
+    labels = calibration.x_tick_label_px
+    if (
+        not calibration.x_log
+        or calibration.x_value_transform is not None
+        or len(values) < 3
+        or len(labels) != len(values)
+    ):
+        return calibration
+    numeric_values = np.asarray(values, dtype=float)
+    if np.any(numeric_values <= 0.0):
+        return calibration
+    steps = np.diff(np.log10(numeric_values))
+    if np.any(steps <= 0.0) or np.max(np.abs(steps - np.median(steps))) > 0.05:
+        return calibration
+    transposed = np.transpose(image, (1, 0, 2)) if image.ndim == 3 else image.T
+    transposed_plot = PlotBox(plot.y0, plot.x0, plot.y1, plot.x1)
+    try:
+        grid_fit = _major_horizontal_gridline_fit(
+            transposed, transposed_plot, len(values)
+        )
+    except RuntimeError:
+        return calibration
+    grid_pixels = np.asarray(grid_fit.centers, dtype=float)
+    label_gap = max(
+        abs(label - grid) for label, grid in zip(labels, grid_pixels)
+    )
+    if label_gap > max(16.0, 0.04 * plot.width):
+        return calibration
+    axis = fit_axis_ticks(
+        [
+            AxisTick(f"{value:g}", value, grid)
+            for value, grid in zip(values, grid_pixels)
+        ],
+        "capacitance regular log X grid",
+        model="log10",
+    )
+    errors = [
+        abs((math.log10(value) - axis.b) / axis.m - grid)
+        for value, grid in zip(values, grid_pixels)
+    ]
+    if max(errors) > 1.0:
+        return calibration
+    residual = float(np.sqrt(np.mean([
+        (axis.m * grid + axis.b - math.log10(value)) ** 2
+        for value, grid in zip(values, grid_pixels)
+    ])))
+    return replace(
+        calibration,
+        x_resid_v=residual,
+        x_scale=float(axis.m),
+        x_offset=float(axis.b),
+        x_source=f"{calibration.x_source}_grid_seated",
+        x_gridline_px=tuple(float(pixel) for pixel in grid_pixels),
+        x_grid_candidate_count=grid_fit.candidate_count,
+        x_grid_span_fraction=grid_fit.span_fraction,
+        x_grid_residual_px=max(errors),
+        x_label_to_grid_max_px=float(label_gap),
+    )
 
 
 def _seat_signed_log_x_ticks_on_grid(

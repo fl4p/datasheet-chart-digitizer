@@ -41,7 +41,50 @@ _PDF_QOSS_VINT_RES = (
 )
 
 
+# Anchors supplied by the caller (fetlib), keyed by part. When a table is installed it
+# is the ONLY anchor source: this module must not run a second, weaker spec-table parser
+# over PDFs the caller already parses properly. Its own scrapers stay for standalone use.
+#
+# Why: the scrapers here are case-sensitive on the printed symbol ("Coss" vs EPC's
+# "COSS"), so every EPC part yielded {} while the caller held Coss=557 pF @ 50 V for the
+# same device -- reported downstream as `missing_coss_anchor`, i.e. "the datasheet has no
+# Coss", which was never true. The value picker also reads a condition cell as a value
+# (Ciss=25 pF out of "VDS = 25 V" on hxy/toshiba renders).
+_SUPPLIED_ANCHORS: dict[str, dict] | None = None
+
+
+def install_anchor_table(table: dict[str, dict] | None) -> None:
+    """Install (or clear with None) the caller-supplied anchor table.
+
+    A part ABSENT from an installed table has no anchors -- it does NOT fall back to
+    scraping. Falling back would reintroduce exactly the silently-wrong values this
+    replaces, and a missing anchor is a rejected export, never a guessed curve."""
+    global _SUPPLIED_ANCHORS
+    _SUPPLIED_ANCHORS = table
+
+
+def supplied_anchor_table_installed() -> bool:
+    """Whether anchor identity is owned by the caller's evidence table."""
+    return _SUPPLIED_ANCHORS is not None
+
+
+def load_anchor_table(path: Path) -> dict[str, dict]:
+    import json
+    with Path(path).open() as fh:
+        return json.load(fh)
+
+
 def parse_capacitance_anchors(part: str, datasheet_root: Path) -> dict[str, CapAnchor]:
+    if _SUPPLIED_ANCHORS is not None:
+        entry = _SUPPLIED_ANCHORS.get(part) or {}
+        out: dict[str, CapAnchor] = {}
+        for name, a in (entry.get("anchors") or {}).items():
+            if name in _CAP_NAMES and a.get("value_pf") is not None \
+                    and a.get("vds_v") is not None:
+                out[name] = CapAnchor(name=name, value_pf=float(a["value_pf"]),
+                                      vds_v=float(a["vds_v"]))
+        return out
+
     csv_path = _anchor_csv_path(part, datasheet_root)
     if csv_path is None:
         return {}
@@ -200,6 +243,12 @@ def _pdf_capacitance_condition_vds(part: str, datasheet_root: Path) -> float | N
 
 
 def parse_output_charge_reference(part: str, datasheet_root: Path) -> OutputChargeReference:
+    if _SUPPLIED_ANCHORS is not None:
+        oc = (_SUPPLIED_ANCHORS.get(part) or {}).get("output_charge") or {}
+        return OutputChargeReference(
+            qoss_pc=oc.get("qoss_pc"), vint_v=oc.get("vint_v"),
+            coer_pf=oc.get("coer_pf"), cotr_pf=oc.get("cotr_pf"))
+
     csv_path = _anchor_csv_path(part, datasheet_root)
     if csv_path is None:
         return OutputChargeReference(qoss_pc=None, vint_v=None, coer_pf=None, cotr_pf=None)
@@ -353,4 +402,3 @@ def output_charge_reference_to_json(ref: OutputChargeReference) -> dict[str, flo
         "coer_pf": ref.coer_pf,
         "cotr_pf": ref.cotr_pf,
     }
-

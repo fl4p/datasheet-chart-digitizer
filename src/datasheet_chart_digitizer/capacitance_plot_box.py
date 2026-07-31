@@ -31,7 +31,14 @@ def find_closed_frame_plot_box(gray: np.ndarray) -> PlotBox:
         return recovered
     recovered = _sparse_closed_frame(gray)
     if recovered is None:
-        return _open_grid_extent(gray, detected) or detected
+        return (
+            _mutually_closed_inner_grid(gray, detected)
+            or _open_grid_extent(gray, detected)
+            or detected
+        )
+    mutually_closed = _mutually_closed_inner_grid(gray, detected)
+    if mutually_closed is not None:
+        return mutually_closed
     height, width = gray.shape
     same_left_and_rows = (
         abs(recovered.x0 - detected.x0) <= max(4, round(0.02 * width))
@@ -166,6 +173,76 @@ def _sparse_closed_frame(gray: np.ndarray) -> PlotBox | None:
     if not candidates:
         return None
     return max(candidates, key=lambda box: box.width * box.height)
+
+
+def _mutually_closed_inner_grid(
+    gray: np.ndarray, detected: PlotBox
+) -> PlotBox | None:
+    """Replace over-tall panel side rails with the plot's own closing rails.
+
+    Infineon raster panels put a rectangular panel border around the title,
+    conditions, plot, and axis labels.  The border and the plot grid both
+    survive vertical morphology, so the generic detector takes the border's
+    X extent while correctly taking the grid's Y extent from the majority of
+    verticals.  A side rail may own that mixed box only if it spans the same
+    Y interval as the horizontal grid rows.  Require at least six matching
+    verticals plus top/bottom horizontal closure before narrowing either side.
+    """
+
+    height, width = gray.shape
+    _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
+    row_tolerance = max(6.0, 0.025 * detected.height)
+    edge_tolerance = max(6.0, 0.015 * width)
+    verticals = _orthogonal_line_boxes(bw, vertical=True)
+    matching_verticals = [
+        box
+        for box in verticals
+        if abs(box[1] - detected.y0) <= row_tolerance
+        and abs(box[1] + box[3] - 1 - detected.y1) <= row_tolerance
+    ]
+    if len(matching_verticals) < 6:
+        return None
+
+    centers = sorted(
+        box[0] + (box[2] - 1) / 2.0 for box in matching_verticals
+    )
+    candidate = PlotBox(
+        int(round(centers[0])),
+        detected.y0,
+        int(round(centers[-1])),
+        detected.y1,
+    )
+    if (
+        candidate.width < 0.50 * width
+        or candidate.height < 0.45 * height
+        or (
+            abs(candidate.x0 - detected.x0) < 0.02 * width
+            and abs(candidate.x1 - detected.x1) < 0.02 * width
+        )
+    ):
+        return None
+
+    horizontals = _orthogonal_line_boxes(bw, vertical=False)
+    closing_rows = []
+    for x, y, box_width, box_height in horizontals:
+        center_y = y + (box_height - 1) / 2.0
+        right = x + box_width - 1
+        if (
+            detected.y0 - row_tolerance
+            <= center_y
+            <= detected.y1 + row_tolerance
+            and abs(x - candidate.x0) <= edge_tolerance
+            and abs(right - candidate.x1) <= edge_tolerance
+        ):
+            closing_rows.append(center_y)
+    if len(closing_rows) < 5:
+        return None
+    if (
+        min(abs(row - detected.y0) for row in closing_rows) > row_tolerance
+        or min(abs(row - detected.y1) for row in closing_rows) > row_tolerance
+    ):
+        return None
+    return candidate
 
 
 def _open_grid_extent(gray: np.ndarray, detected: PlotBox) -> PlotBox | None:

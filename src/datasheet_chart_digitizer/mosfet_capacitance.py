@@ -72,6 +72,7 @@ from .capacitance_refs import (
     output_charge_reference_to_json,
     parse_capacitance_anchors,
     parse_output_charge_reference,
+    supplied_anchor_table_installed,
 )
 from .capacitance_source_support import raster_source_support_diagnostics
 from .capacitance_traces import (
@@ -293,6 +294,31 @@ def process_chart(
             "untrusted text-order axis fallback; physical vds_V/cap_pF columns "
             "and Qoss validation are disabled"
         )
+    raster_seed_x: int | None = None
+    ciss_anchor = anchors.get("Ciss")
+    coss_anchor = anchors.get("Coss")
+    pair_anchor_vds = (
+        ciss_anchor.vds_v
+        if ciss_anchor is not None
+        and coss_anchor is not None
+        and ciss_anchor.vds_v > 0.0
+        and ciss_anchor.vds_v == coss_anchor.vds_v
+        else None
+    )
+    joint_pair_tracking = (
+        supplied_anchor_table_installed()
+        and axis_trusted
+        and axis_calibration is not None
+        and pair_anchor_vds is not None
+    )
+    if joint_pair_tracking and axis_calibration is not None:
+        seed_global_x = calibration_x_of_v(
+            axis_calibration, plot, pair_anchor_vds
+        )
+        raster_seed_x = min(
+            plot.width - 1,
+            max(0, int(round(seed_global_x - plot.x0))),
+        )
     extraction_method = "vector"
     vector_selection_method: str | None = None
     try:
@@ -301,7 +327,13 @@ def process_chart(
         )
     except Exception as vector_exc:
         extraction_method = "raster"
-        traces = extract_trace_components(gray, plot, anchors)
+        traces = extract_trace_components(
+            gray,
+            plot,
+            anchors,
+            seed_x=raster_seed_x,
+            joint_pair_tracking=joint_pair_tracking,
+        )
         vector_error = str(vector_exc)
     else:
         vector_error = None
@@ -556,6 +588,13 @@ def parse_args() -> argparse.Namespace:
         help="Directory containing <part>.pdf.nop.csv anchor tables; defaults to each chart PDF's directory",
     )
     parser.add_argument(
+        "--anchors",
+        type=Path,
+        help="JSON spec-table anchors supplied by the caller (e.g. fetlib's "
+             "dslib.coss_anchors). When given it REPLACES this tool's own .nop.csv "
+             "scraping entirely -- a part absent from the file simply has no anchors.",
+    )
+    parser.add_argument(
         "--debug-axis-overlays",
         action="store_true",
         help="Write axis calibration overlays with selected ticks/gridlines and fit residuals.",
@@ -565,6 +604,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if args.anchors:
+        from .capacitance_refs import install_anchor_table, load_anchor_table
+        table = load_anchor_table(args.anchors)
+        install_anchor_table(table)
+        print(f"anchors: using {len(table)} caller-supplied entries from {args.anchors} "
+              f"(built-in spec-table scraping disabled)")
     index_path = args.chart_index
     base_dir = index_path.parent
     out_dir = args.out or base_dir

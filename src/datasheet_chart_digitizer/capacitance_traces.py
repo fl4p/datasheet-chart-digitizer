@@ -11,6 +11,7 @@ from .capacitance_grid_mask import (
     _remove_frame_residual_rails,
     _remove_full_width_horizontal_rails,
 )
+from .capacitance_pair_tracking import bridge_flat_ciss_occlusions, track_ciss_coss_pair
 from .capacitance_types import CapAnchor, PlotBox, Trace
 from .capacitance_validation import UNPHYSICAL_VALUE_RISE_FRACTION, value_rise_fraction
 
@@ -20,6 +21,7 @@ SHARED_CISS_COSS_MIN_SPAN_FRACTION = 0.04
 SHARED_CISS_COSS_MIN_POINTS = 12
 SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
 COLUMN_RUN_CLUSTER_GAP_PX = 6.0
+UPPER_PAIR_MIN_SEPARATION_PX = 4.0
 CISS_COSS_IDENTITY_MIN_RANGE_RATIO = 1.5
 CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION = 0.03
 CISS_COSS_IDENTITY_MIN_SHARED_TAIL_POINTS = 12
@@ -281,9 +283,15 @@ def find_plot_box(gray: np.ndarray) -> PlotBox:
 
 
 def extract_trace_components(
-    gray: np.ndarray, plot: PlotBox, anchors: dict[str, CapAnchor] | None = None
+    gray: np.ndarray,
+    plot: PlotBox,
+    anchors: dict[str, CapAnchor] | None = None,
+    seed_x: int | None = None,
+    joint_pair_tracking: bool = False,
 ) -> list[Trace]:
-    mask, centers_by_x = _raster_source_centers_by_x(gray, plot)
+    mask, centers_by_x = _raster_source_centers_by_x(
+        gray, plot, preserve_close_upper_pair=joint_pair_tracking
+    )
 
     band_samples = [[], [], []]
     for centers in centers_by_x:
@@ -297,11 +305,19 @@ def extract_trace_components(
             + ", ".join(str(len(samples)) for samples in band_samples)
         )
 
-    assigned = _track_directional_traces(centers_by_x, plot, anchors or {})
+    assigned = _track_directional_traces(
+        centers_by_x,
+        plot,
+        anchors or {},
+        seed_x=seed_x,
+        joint_pair_tracking=joint_pair_tracking,
+    )
     assigned = _repair_leading_steep_coss(mask, centers_by_x, assigned, plot)
     assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
     assigned = _repair_leading_steep_crss(mask, assigned, plot)
     assigned = _repair_reseparated_upper_crossing(centers_by_x, assigned, plot)
+    if joint_pair_tracking:
+        assigned = bridge_flat_ciss_occlusions(assigned, plot)
 
     traces: list[Trace] = []
     for name in ["Ciss", "Coss", "Crss"]:
@@ -316,7 +332,10 @@ def extract_trace_components(
 
 
 def _raster_source_centers_by_x(
-    gray: np.ndarray, plot: PlotBox
+    gray: np.ndarray,
+    plot: PlotBox,
+    *,
+    preserve_close_upper_pair: bool = False,
 ) -> tuple[np.ndarray, list[list[float]]]:
     """Return the source-only raster mask and its per-column stroke centers."""
 
@@ -344,8 +363,13 @@ def _raster_source_centers_by_x(
     dark[-margin:, :] = 0
     dark[:, :margin] = 0
     dark[:, -margin:] = 0
-    mask = _trace_fragment_mask(dark, plot)
-    centers_by_x = [_cluster_column_runs(mask[:, x]) for x in range(mask.shape[1])]
+    mask = _trace_fragment_mask(dark, plot, preserve_flat_fragments=preserve_close_upper_pair)
+    centers_by_x = [
+        _cluster_column_runs(
+            mask[:, x], preserve_close_upper_pair=preserve_close_upper_pair
+        )
+        for x in range(mask.shape[1])
+    ]
     return mask, centers_by_x
 
 
@@ -411,22 +435,27 @@ def _interp_y(points: list[tuple[int, int]], x: int) -> float:
 
 
 def _track_directional_traces(
-    centers_by_x: list[list[float]], plot: PlotBox, anchors: dict[str, CapAnchor]
+    centers_by_x: list[list[float]],
+    plot: PlotBox,
+    anchors: dict[str, CapAnchor],
+    seed_x: int | None = None,
+    joint_pair_tracking: bool = False,
 ) -> dict[str, list[tuple[int, int]]]:
-    seed_x = _seed_x_from_anchors(centers_by_x, anchors)
-    specs = {
-        "Ciss": {"seed_index": 0, "candidate": "upper"},
-        "Coss": {"seed_index": 1, "candidate": "upper"},
-        "Crss": {"seed_index": -1, "candidate": "bottom"},
-    }
-    tracked: dict[str, list[tuple[int, int]]] = {}
-    for name, spec in specs.items():
+    if joint_pair_tracking:
+        tracked, chosen_seed = track_ciss_coss_pair(centers_by_x, plot, anchors, seed_x)
+        tracked["Crss"] = _track_one_trace(
+            centers_by_x, chosen_seed, -1, "bottom", plot
+        )
+        return tracked
+    chosen_seed = _seed_x_from_anchors(centers_by_x, anchors)
+    tracked = {}
+    for name, seed_index, candidate in (
+        ("Ciss", 0, "upper"),
+        ("Coss", 1, "upper"),
+        ("Crss", -1, "bottom"),
+    ):
         tracked[name] = _track_one_trace(
-            centers_by_x,
-            seed_x=seed_x,
-            seed_index=int(spec["seed_index"]),
-            candidate_kind=str(spec["candidate"]),
-            plot=plot,
+            centers_by_x, chosen_seed, seed_index, candidate, plot
         )
     return tracked
 
@@ -1351,18 +1380,34 @@ def _predict_y(points: list[tuple[int, float]], x: int) -> float:
     return y1 + (y1 - y0) * ((x - x1) / (x1 - x0))
 
 
-def _trace_fragment_mask(mask: np.ndarray, plot: PlotBox) -> np.ndarray:
+def _trace_fragment_mask(
+    mask: np.ndarray,
+    plot: PlotBox,
+    *,
+    preserve_flat_fragments: bool = False,
+) -> np.ndarray:
     num, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     cleaned = np.zeros_like(mask)
-    min_width = max(50, int(plot.width * 0.12))
+    min_width = max(
+        32 if preserve_flat_fragments else 50,
+        int(plot.width * (0.08 if preserve_flat_fragments else 0.12)),
+    )
     for component in range(1, num):
-        _, _, w, _, area = stats[component]
-        if area >= 80 and w >= min_width:
+        _, _, w, h, area = stats[component]
+        # A flat trace can be only one pixel tall after black-grid removal.
+        # Keep a full material-width stroke even when its area is below the
+        # generic fragment floor (NXP Ciss resumes after its printed label).
+        material_flat_stroke = (
+            preserve_flat_fragments and h <= 3 and area >= min_width
+        )
+        if w >= min_width and (area >= 80 or material_flat_stroke):
             cleaned[labels == component] = 1
     return cleaned
 
 
-def _cluster_column_runs(column: np.ndarray) -> list[float]:
+def _cluster_column_runs(
+    column: np.ndarray, *, preserve_close_upper_pair: bool = False
+) -> list[float]:
     ys = np.where(column > 0)[0]
     if len(ys) == 0:
         return []
@@ -1385,13 +1430,25 @@ def _cluster_column_runs(column: np.ndarray) -> list[float]:
     if not centers:
         return []
 
+    ordered_centers = sorted(centers)
     clustered: list[list[float]] = []
-    for center in sorted(centers):
+    for index, center in enumerate(ordered_centers):
         # Merge antialias fragments of one stroke, but keep two nearby source
         # curves distinct after a crossing.  The prior 14 px tolerance merged
         # PSMN6R1's visibly re-separated Ciss/Coss tail into one centerline and
         # fabricated a sustained shared span.
-        if clustered and center - clustered[-1][-1] <= COLUMN_RUN_CLUSTER_GAP_PX:
+        distinct_upper_pair = (
+            preserve_close_upper_pair
+            and index == 1
+            and len(ordered_centers) >= 3
+            and center - ordered_centers[0] >= UPPER_PAIR_MIN_SEPARATION_PX
+            and ordered_centers[2] - center >= 2 * COLUMN_RUN_CLUSTER_GAP_PX
+        )
+        if (
+            clustered
+            and center - clustered[-1][-1] <= COLUMN_RUN_CLUSTER_GAP_PX
+            and not distinct_upper_pair
+        ):
             clustered[-1].append(center)
         else:
             clustered.append([center])

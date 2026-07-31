@@ -1,11 +1,17 @@
 # top50-fugu2-gan-ls packet — Fab round-3 feedback (2026-07-29)
 
-Status: 3 fixes IMPLEMENTED with tests; 1 slice OPEN (plot-box x seating).
+Status: round-4 feedback IMPLEMENTED for all 9 flagged/rework capacitance charts.
 
 Source of record: `.vibe-drops/a3f6a2d1-top50-fugu2-gan-ls-001.review (2).json`
 (exported 2026-07-29T07:16Z, 22 items; dropped three times byte-identically as
 `288b47b6`/`a3f6a2d1`/`d841b07c`). Packet built at `08d4eda` = HEAD, so every
 flag below reproduces on the current tree — no staleness discount this round.
+
+Round-4 source:
+`.vibe-drops/c903de50-fugu2-100v-LS2p-gan-coss-scalar-top50-001.review (3).json`
+(exported 2026-07-30T07:37:58.612Z). It contains 9 actionable failures; all
+nine now reproduce cleanly from their PDFs with the caller-supplied anchor
+table. No agent review changed `human_verified`.
 
 Verdicts: **15 green · 5 rework · 1 flagged · 1 rework (dup)**.
 
@@ -124,7 +130,7 @@ the `text_order_normalized_plot_extent` fallback and reaches a real
 Fab's "y-axis ticks wrong" is resolved — the decade lines now land on the
 printed rules.
 
-**B2 — plot-box x seating (OPEN, next slice).** The only remaining refusal is
+**B2 — plot-box x seating (FIXED in round 4).** The only remaining refusal was
 `all_traces_left_edge_gap`, and it is the guard working correctly. `find_plot_box`
 returns `x0=36, x1=721` (the **panel border**) with `y0=125, y1=769` (the
 **plot frame**): the y extent is right, the x extent is not. The panel-border
@@ -132,12 +138,12 @@ verticals span y 38..894 and so overrun the horizontal rules' extent
 (125..769), yet they still set x0/x1, putting 0 V at the panel edge instead of
 the y-axis at x≈165. Traces then start ~19% inside the box.
 
-Fixing it should clear the refusal and make these four panels servable. The
-principled rule is mutual closure — a vertical may only bound the plot box if it
-spans about the same y range as the horizontal rules do, and vice versa. NOT
-done here on purpose: `find_plot_box` in `capacitance_traces.py` is the most
-widely shared box detector in the library, so it needs its own slice and its own
-full-corpus A/B rather than riding along with three unrelated changes.
+The fix is the positive-evidence mutual-closure pass in
+`capacitance_plot_box.py`: at least six verticals must share the detected
+horizontal-grid extent, and at least five horizontal rules including top and
+bottom must close on their outer pair. IAUTN12S5N017/018 now seat on
+`[137,110,578,671]` / `[144,113,607,692]`; both are `status: ok`, axis trusted,
+trace validation pass.
 
 ## C. Crss "gap" at 30..35 V — 1 part — FIXED (was a SERVED WRONG VALUE)
 
@@ -248,13 +254,11 @@ Follow-up (not done): read SI-suffix and comma-grouped Y tick ladders
 (`10K`/`1K`, `10,000`/`1,000`) so these panels calibrate instead of only failing
 closed. That is additive recovery, not a correctness fix.
 
-## Not covered: the raster-page Infineon fig10 variant (packet 931613a3)
+## Raster-page Infineon fig10 variant — FIXED in round 4
 
 A later packet flagged four more Infineon fig10 panels as axis-untrusted
 (IAUTN15S6N025G/A/T, IAUCN10S7N021A — "no review labels / cropped source y
-labels"). Checked end-to-end, clean HEAD vs this tree: **byte-identical, all
-four still `overlay-review-required` with `y_decades=None`.** Same family, a
-different root cause, NOT fixed here.
+labels"). The round-4 packet specifically re-flagged IAUCN10S7N021ATMA1.
 
 On those parts page 8 carries 32 words in total and **zero** words in the chart
 band (y 100..400) — the panels are pure raster with no text layer, so no ladder
@@ -264,10 +268,14 @@ calibration is trusted), the same presentation as §C of
 `current-top50-fugu2-refresh-feedback.md`. My fixed group DID have a text layer;
 there the bug was the fabricated decade 0.
 
-Recovery for these needs OCR tick recovery for this Infineon raster page variant
-(the tesseract stratum), not the text parser. Diagnosed, not claimed.
+The bounded OCR retry now uses Tesseract PSM 6 at 400 dpi as the supplemental
+pass. It reads the narrow six-row gutter that PSM 3 left empty and supplies
+independent 10^4/10^3/10^2 anchors. IAUC now has a trusted `position_ocr` axis
+and passing traces. It intentionally remains `overlay-review-required` only for
+`source_drawing_rescue_axis_center_review_required`; physical calibration is no
+longer absent.
 
-## Verification summary
+## Verification summary (round 3)
 
 - Finder A/B: 1175 PDFs, 6730 shared panels — **0 added, 0 dropped, 0 bbox
   deltas, 0 kind changes** (third cycle; the first two are recorded above).
@@ -291,7 +299,7 @@ measure the wrong tree — an earlier "3 failures pre-exist at clean HEAD" readi
 here was wrong for exactly that reason. The A/B drivers were unaffected because
 they set `sys.path` explicitly.
 
-## D. Coss snaps onto Ciss — 2 parts — CORRECTLY FAIL-CLOSED, recovery open
+## D. Coss snaps onto Ciss — 2 parts — FIXED in round 4
 
 `toshiba/TPH2R70AR5/fig811` (rework): "coss snaps to Ciss. Ciss not centered on
 bold curve line, distracted by grid?"; `toshiba/TPM2R20AR5/fig811` (rework):
@@ -306,17 +314,58 @@ even names the unclaimed branch. Extraction holds them merged to ~1.66 V
 (shared spans x 108-228, 232-262), a little past the point where the lower
 branch is resolvable, which is what Fab is seeing.
 
-Work needed is recovery, not detection: claim the lower branch as Coss as soon
-as two stroke centers resolve. Same family as the v5 bridge-anchor work in
-`dsdig-cv-shared-collapse-crossing-correction`. No wrong values served.
+The raster extractor now has an anchor-gated joint Ciss/Coss tracker. It makes
+exclusive two-branch assignments, preserves incoming identities through a
+one-stroke merge/crossing, and claims the newly visible second upper branch as
+soon as the third (Crss) band proves it is a source curve. The stronger path is
+enabled only when the caller installed same-voltage Ciss+Coss anchors and the
+axis is trusted; standalone/no-anchor extraction retains the legacy path.
+TPH2R70AR5 and TPM2R20AR5 now both return `status: ok` with trace validation
+pass and no Coss-to-Ciss snap.
+
+## E. NXP GaN Ciss/Coss identity — 2 parts — FIXED in round 4
+
+GAN3R2-100CBEAZ and GANE3R9-150QBAZ have the topology the old independent
+trackers could not represent: Coss is above Ciss at low voltage, crosses it
+once, and is below it afterward; Ciss is the flatter branch. The joint tracker
+uses the caller anchors at 50 V / 75 V to seed identity and chooses the
+trajectory-continuous permutation at the crossing. A bounded flat-Ciss bridge
+also restores the short fragment erased by a printed label. Both targets are
+`status: ok`, trace validation pass, and visually follow the source curves.
+
+## F. Onsemi log-X glyph-center bias — 2 parts — FIXED in round 4
+
+NTMFS3D6N10MCLT1G fig08 and NVMFWS3D6N10MCLT1G fig07 parsed the correct
+0.1/1/10/100 V values but fitted their inward-shifted text glyph centers.
+Regular positive log ladders now transpose the existing major-gridline fitter
+and seat on full-height source rails when the ladder is regular and the
+label-to-grid gap is bounded. The recovered rail centers are
+`[50.5,222.0,393.5,565.5]` and `[50.5,221.5,392.5,563.5]`; both outputs are
+`status: ok`.
+
+## Verification summary (round 4)
+
+- Direct PDF rebuild with the 9-entry `dslib.coss_anchors` table: 8 `ok`; IAUC
+  has a trusted OCR axis and passing traces but retains its intentional
+  source-drawing overlay-review reason. All nine overlays were source-reviewed.
+- Frozen capacitance corpus:
+  `ea75c795b706c887bedb2ebfffdb562767ae02928ca53b2e3f4663410b7e31b8`
+  (1093 inputs = 941 rows + 152 unchanged errors). Baseline/candidate have
+  **0 status changes and 0 physical-output transitions**. Positive-evidence
+  seating changed 48 plot boxes/47 raster traces; regular log-grid seating
+  changed 158 axis calibrations. The 18N20 family confirms the apparently broad
+  plot-box class is the same real nested-panel defect: it moves from an
+  untrusted outer-panel box to the inner grid with a trusted axis.
+- Focused tests cover mutual closure, bounded OCR, regular log-X seating,
+  exclusive branch ownership, merge/crossing identity, early separation,
+  flat-fragment retention, and bounded occlusion repair.
 
 ## Open slices, in priority order
 
-1. **Plot-box mutual closure** (B2) — unblocks 4 Infineon panels; touches the
-   shared `find_plot_box`, so it needs its own full-corpus A/B.
-2. **Stroke-preserving rail blanking for mixed-darkness grids** (C residual) —
+1. **Stroke-preserving rail blanking for mixed-darkness grids** (C residual) —
    CRMicro-style charts where horizontal rules are trace-dark but the vertical
    grid is light. Would let the captured segments be recovered rather than only
    refused. Also owns the goford bottom-frame sub-case still open in
    `current-top50-fugu2-refresh-feedback.md` §B.
-3. **Shared-collapse early separation** (D) — Toshiba log-log low-V branches.
+2. **SI/comma Y ladders** (C2 follow-up) — recover panels labelled
+   `10K`/`1K` or `10,000`/`1,000` instead of only refusing fabricated decades.

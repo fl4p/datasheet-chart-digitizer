@@ -54,7 +54,7 @@
 - [dsdig review overlay cache-bypass naming](dsdig-review-overlay-cache-bypass.md) — re-submitted overlays use unique suffixes (overlay.review-v2.webp); base overlay.webp can serve stale cached image
 - [viz-review shared channel path](viz-review-channel-path.md) — /tmp/claude-channels/viz-review.ndjson
 - [dsdig review-packet staleness](dsdig-review-packet-staleness.md) — reproduce flagged items on the CURRENT tree first; 9/10 top50-fugu2 flags were already fixed at HEAD, only STP310N10F7 needed code
-- [dsdig top50-fugu2 refresh state](dsdig-top50-fugu2-refresh-state.md) — refreshed packet + Fab's 2nd-round feedback (18G/19F/6R) triaged in docs/worklists/current-top50-fugu2-refresh-feedback.md; all flags were fail-closed
+- [dsdig top50-fugu2 refresh state](dsdig-top50-fugu2-refresh-state.md) — feedback state through 2026-07-30 round 4; mutual plot closure, raster OCR axis, log-X grid seating, and anchor-gated joint Ciss/Coss tracking
 - [dsdig Siliup raster caption stratum](dsdig-siliup-raster-caption-stratum.md) — page-wide-JPEG pages recover panels via raster frames + OCR captions below_only; additions carry text_source=tesseract_fallback
 - [dsdig HXY shared-template exclusion](dsdig-hxy-shared-template-exclusion.md) — 92.84% share exact first-chart hashes and 90.43% share exact multi-curve bodies; withhold HXY Vpl as non-independent provenance
 - [dsdig Vpl stdout refusal fixes](dsdig-vpl-stdout-refusal-fixes.md) — original seven, GSFT7R515, and XPQ1R00AQB fixed; HY1915P axis OCR remains the independent RED

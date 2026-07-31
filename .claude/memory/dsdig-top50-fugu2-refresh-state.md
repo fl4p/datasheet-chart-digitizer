@@ -1,6 +1,6 @@
 ---
 name: dsdig-top50-fugu2-refresh-state
-description: State of the top50-fugu2 refreshed capacitance review packet (2026-07-28) and its human feedback triage
+description: State of top50-fugu2 capacitance feedback through the 2026-07-30 round-4 digitizer fixes
 metadata: 
   node_type: memory
   type: project
@@ -33,3 +33,22 @@ worklist and packet rather than re-deriving the state.
 (review-html/top50-fugu2-ls-missing-curves/...-001.html, Import JSON re-seeds by id);
 follow [[dsdig-collateral-acceptance-discipline]] and [[dsdig-review-packet-staleness]]
 for any finder/digitizer change.
+
+On 2026-07-30 the round-4 review source
+`.vibe-drops/c903de50-fugu2-100v-LS2p-gan-coss-scalar-top50-001.review (3).json`
+flagged nine capacitance outputs. The digitizer fixes are complete: mutual plot-grid
+closure for IAUT outer-panel boxes; PSM6/400-dpi bounded OCR for raster-only IAUC axes;
+source-grid seating for regular log-X ladders; and a caller-anchor-gated joint Ciss/Coss
+tracker for the Toshiba early-separation and NXP GaN crossing cases. Direct rebuilds give
+eight `ok`; IAUC has a trusted axis and passing traces but intentionally retains
+`source_drawing_rescue_axis_center_review_required`. No agent review sets
+`human_verified`. The detailed evidence and corpus A/B are in
+`docs/worklists/current-top50-fugu2-gan-ls-round3.md`.
+
+**Why:** these four mechanisms close the round-3 open mutual-closure/early-separation
+slices and the later raster-axis and curve-identity feedback without globally enabling
+the stronger pair tracker.
+
+**How to apply:** run production reviews with the caller's `dslib.coss_anchors` table;
+joint pair tracking deliberately requires same-voltage Ciss+Coss anchors plus a trusted
+axis, while standalone/no-anchor runs retain the legacy tracker.

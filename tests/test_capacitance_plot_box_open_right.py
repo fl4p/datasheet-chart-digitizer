@@ -11,6 +11,25 @@ from datasheet_chart_digitizer.capacitance_types import PlotBox
 
 
 class OpenSidePlotBoxTests(unittest.TestCase):
+    def test_panel_border_does_not_own_plot_grid_x_extent(self) -> None:
+        gray = np.full((820, 650), 255, dtype=np.uint8)
+        # Outer panel border encloses title/conditions/labels.
+        cv2.rectangle(gray, (30, 34), (618, 783), 0, 3)
+        # The data grid has its own shorter, mutually closing rails.
+        for x in (*range(136, 580, 37), 579):
+            cv2.line(gray, (x, 110), (x, 671), 0, 2)
+        for y in (110, 250, 390, 530, 671):
+            cv2.line(gray, (136, y), (579, y), 0, 2)
+
+        detected = find_plot_box(gray)
+        self.assertEqual((30, 618), (detected.x0, detected.x1))
+
+        recovered = find_capacitance_plot_box(gray)
+
+        self.assertEqual(136, recovered.x0)
+        self.assertEqual(579, recovered.x1)
+        self.assertEqual((detected.y0, detected.y1), (recovered.y0, recovered.y1))
+
     def test_common_grid_row_endpoint_extends_occluded_right_frame(self) -> None:
         gray = np.full((500, 700), 255, dtype=np.uint8)
         for x in (120, 220, 300, 380, 460, 540, 620):
