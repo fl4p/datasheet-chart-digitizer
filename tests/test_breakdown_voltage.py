@@ -663,6 +663,48 @@ class TemperatureTickSignRecoveryUnit(unittest.TestCase):
         )
         self.assertEqual(ticks, [(-60.0, 24.0)])
 
+    def test_separate_textual_minus_is_owned_by_adjacent_tick(self):
+        ticks = bv._owned_temperature_x_ticks(
+            self._page(
+                [
+                    (15.0, 100.0, 19.0, 110.0, "-"),
+                    (20.0, 100.0, 28.0, 110.0, "60"),
+                ],
+                [],
+            ),
+            CropTransform(0.0, 0.0, 1.0, 1.0),
+            (200, 200),
+            bv.PlotBox(20, 20, 148, 100),
+        )
+        self.assertEqual(ticks, [(-60.0, 21.5)])
+
+    def test_multiple_textual_minuses_refuse_as_ambiguous(self):
+        words = [
+            (14.0, 100.0, 18.5, 110.0, "-"),
+            (15.0, 100.0, 19.0, 110.0, "-"),
+            (20.0, 100.0, 28.0, 110.0, "60"),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "ambiguous textual-minus"):
+            bv._owned_temperature_x_ticks(
+                self._page(words, []),
+                CropTransform(0.0, 0.0, 1.0, 1.0),
+                (200, 200),
+                bv.PlotBox(20, 20, 148, 100),
+            )
+
+    def test_textual_and_drawn_minus_refuse_as_ambiguous(self):
+        words = [
+            (15.0, 100.0, 19.0, 110.0, "-"),
+            (20.0, 100.0, 28.0, 110.0, "60"),
+        ]
+        with self.assertRaisesRegex(RuntimeError, "ambiguous minus-sign"):
+            bv._owned_temperature_x_ticks(
+                self._page(words, [self._dash(15.0)]),
+                CropTransform(0.0, 0.0, 1.0, 1.0),
+                (200, 200),
+                bv.PlotBox(20, 20, 148, 100),
+            )
+
     def test_fully_unsigned_progression_remains_fail_closed(self):
         with self.assertRaisesRegex(RuntimeError, "monotone"):
             bv._fit_axis(

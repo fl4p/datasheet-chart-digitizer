@@ -19,6 +19,7 @@ UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
 MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 MAX_CRSS_PEER_X_SPAN_DEFICIT = 0.06
 MAX_TRACE_LEFT_EDGE_GAP_FRACTION = 0.03
+MAX_VECTOR_TRACE_LEFT_EDGE_GAP_FRACTION = 0.06
 MAX_PEER_LEFT_START_DEFICIT = 0.03
 MAX_PEER_RIGHT_END_DEFICIT = 0.06
 PEER_ENDPOINT_COMPARISON_ABS_TOL = 1e-9
@@ -111,7 +112,16 @@ def trace_validation_summary(
     }
     if len(left_starts) == 3:
         earliest = min(left_starts.values())
-        if earliest > MAX_TRACE_LEFT_EDGE_GAP_FRACTION:
+        maximum_left_gap = (
+            MAX_VECTOR_TRACE_LEFT_EDGE_GAP_FRACTION
+            if extraction_method == "vector"
+            else MAX_TRACE_LEFT_EDGE_GAP_FRACTION
+        )
+        if earliest > maximum_left_gap:
+            # Exact source-owned vector paths can intentionally begin just
+            # inside the first labeled tick (TI 2N7002L starts near 0.25 V on
+            # a 0.2 V frame). Raster paths retain the stricter completeness
+            # gate because their endpoint ownership is inferred.
             reasons.append("all_traces_left_edge_gap")
         else:
             late_names = [

@@ -134,15 +134,25 @@ class CapacitanceTraceValidationTests(unittest.TestCase):
         self.assertEqual("pass", summary["status"])
         self.assertNotIn("Crss_peer_relative_short_x_span", summary["reasons"])
 
-    def test_uniform_material_left_gap_refuses(self) -> None:
+    def test_uniform_material_raster_left_gap_refuses(self) -> None:
         summary = trace_validation_summary(
             _diagnostics(ciss_span=0.92, coss_span=0.92, crss_span=0.92),
-            "vector",
+            "raster",
             left_start_fractions={"Ciss": 0.041, "Coss": 0.041, "Crss": 0.041},
         )
 
         self.assertEqual("suspect", summary["status"])
         self.assertIn("all_traces_left_edge_gap", summary["reasons"])
+
+    def test_source_owned_vector_small_common_left_inset_passes(self) -> None:
+        summary = trace_validation_summary(
+            _diagnostics(ciss_span=0.81, coss_span=0.81, crss_span=0.81),
+            "vector",
+            left_start_fractions={"Ciss": 0.058, "Coss": 0.058, "Crss": 0.058},
+        )
+
+        self.assertEqual("pass", summary["status"])
+        self.assertNotIn("all_traces_left_edge_gap", summary["reasons"])
 
     def test_differential_ciss_late_start_refuses(self) -> None:
         summary = trace_validation_summary(

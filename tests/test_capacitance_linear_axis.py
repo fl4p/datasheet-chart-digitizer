@@ -194,7 +194,7 @@ class LinearCapacitanceAxisTests(unittest.TestCase):
             self.assertEqual(result["extraction_method"], "vector")
             self.assertEqual(
                 result["vector_selection_method"],
-                "exact_color_components_short_source_span",
+                "legend_exact_color_components_short_source_span",
             )
 
             with (out / result["points"]).open() as handle:

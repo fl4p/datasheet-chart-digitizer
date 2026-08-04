@@ -1111,8 +1111,9 @@ def _owned_temperature_x_ticks(
     img_h, _img_w = image_shape
     x_band = (plot.y1 + 0.004 * img_h, plot.y1 + 0.080 * img_h)
     drawings = page.get_drawings()
+    page_words = list(page.get_text("words"))
     ticks: list[tuple[float, float]] = []
-    for word in page.get_text("words"):
+    for word in page_words:
         text = str(word[4]).strip().replace("\N{MINUS SIGN}", "-")
         fused = _split_fused_numeric_run(text)
         if fused:
@@ -1143,6 +1144,20 @@ def _owned_temperature_x_ticks(
         value = float(text)
         if value >= 0:
             word_rect = tuple(float(item) for item in word[:4])
+            word_h = float(word[3] - word[1])
+            textual_minuses = [
+                other
+                for other in page_words
+                if str(other[4]).strip().replace("\N{MINUS SIGN}", "-") == "-"
+                and 0 <= float(word[0] - other[2]) <= 0.45 * word_h
+                and abs(float((other[1] + other[3] - word[1] - word[3]) / 2))
+                <= 0.15 * word_h
+                and 0.75 * word_h <= float(other[3] - other[1]) <= 1.25 * word_h
+            ]
+            if len(textual_minuses) > 1:
+                raise RuntimeError(
+                    "X axis (Tj): ambiguous textual-minus ownership"
+                )
             candidates = [
                 drawing
                 for drawing in drawings
@@ -1152,7 +1167,18 @@ def _owned_temperature_x_ticks(
                 raise RuntimeError(
                     "X axis (Tj): ambiguous drawn-minus glyph ownership"
                 )
-            if candidates:
+            if len(candidates) + len(textual_minuses) > 1:
+                raise RuntimeError(
+                    "X axis (Tj): ambiguous minus-sign ownership"
+                )
+            if textual_minuses:
+                minus = textual_minuses[0]
+                value = -abs(value)
+                cx, _ = transform.to_px(
+                    (minus[0] + word[2]) / 2,
+                    (word[1] + word[3]) / 2,
+                )
+            elif candidates:
                 glyph = candidates[0]["rect"]
                 value = -abs(value)
                 cx, _ = transform.to_px((glyph.x0 + word[2]) / 2, (word[1] + word[3]) / 2)
