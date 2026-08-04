@@ -62,3 +62,4 @@
 - [dsdig orphaned-lane salvage](dsdig-orphaned-lane-salvage.md) — a dead agent's uncommitted file may silently REVERT landed work; classify every hunk, add the missing tests, commit HEAD+new-work only
 - [dsdig review tool is upstream-only](dsdig-review-tool-upstream-only.md) — review-tooling changes land in dsdig-verify-backlog/tools and are committed there; never a packet-local tools-local/ copy
 - [Codex instruction loading stops at git root](codex-instruction-loading-git-root.md) — sub-repos need their own root AGENTS.md; verify with `codex debug prompt-input` + move-away control
+- [dsdig worktree pytest imports main tree](dsdig-worktree-pytest-imports-main-tree.md) — .venv editable install is pinned to the main checkout; worktree pytest baselines need PYTHONPATH or they measure the wrong tree
