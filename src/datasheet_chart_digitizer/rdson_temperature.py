@@ -30,6 +30,7 @@ from .capacitance_vector import (
 from .crop_transform import CropTransform
 from .chart_classifier import is_rdson_chart_title, rdson_formula_direction
 from .diode_forward_voltage import (
+    TextLabel,
     _full_span_grid_lines,
     _page_labels,
     _select_axis,
@@ -54,9 +55,15 @@ from .find_charts import (
     run_text_bbox,
     words_in_bbox,
 )
-from .finder_caption_geometry import caption_axis_direction, caption_leads_nearer_grid
+from .finder_caption_geometry import (
+    caption_axis_direction,
+    caption_leads_nearer_grid,
+    page_vector_plot_frames,
+)
 from .numeric_axis import NumericAxis, axis_to_json, tick_aligned_plot
 from .overlay import draw_axis_ticks, draw_plot_frame
+from .rds_source_labels import VGS_RE as _VGS_RE
+from .rds_source_labels import vgs_label_rows as _vgs_label_rows
 
 REFERENCE_TEMPERATURE_C = 25.0
 MAX_AXIS_RESIDUAL_PX = 1.5
@@ -105,7 +112,6 @@ _RDS_FORMULA_VARIABLE_RE = re.compile(
 _RDS_DIRECTION_CLAUSE_RE = re.compile(
     r"\b(?:vs\.?|with|variation|as\s+a\s+function\s+of)\b", re.I
 )
-_VGS_RE = re.compile(r"V\s*GS\s*=\s*(\d+(?:\.\d+)?)\s*V", re.I)
 _ID_RE = re.compile(r"I\s*D\s*=\s*(\d+(?:\.\d+)?)\s*A", re.I)
 _ABSOLUTE_MOHM_AXIS_RE = re.compile(
     r"(?:m\s*[ΩΩ]|m(?:illi)?\s*ohms?)", re.I
@@ -270,6 +276,7 @@ def _digitize_rds_panel(
     thresholds: dict[str, float],
     result_metadata: dict[str, object] | None = None,
     min_stroke_width: float = 0.8,
+    preserve_same_style: bool = False,
 ) -> dict[str, object]:
     """Digitize one already-owned and calibrated RDS panel."""
     if (
@@ -287,10 +294,20 @@ def _digitize_rds_panel(
     binding_error = None
     try:
         traces = _extract_vector_traces(
-            panel, crop_path, calibration.plot, min_stroke_width=min_stroke_width
+            panel,
+            crop_path,
+            calibration.plot,
+            min_stroke_width=min_stroke_width,
+            preserve_same_style=preserve_same_style,
         )
-        legend = _legend_entries(panel, traces)
-        curves = _bind_and_calibrate_curves(traces, legend, calibration)
+        if preserve_same_style:
+            curves = _calibrate_positioned_vgs_traces(
+                _bind_two_positioned_vgs_traces(panel, traces),
+                calibration,
+            )
+        else:
+            legend = _legend_entries(panel, traces)
+            curves = _bind_and_calibrate_curves(traces, legend, calibration)
         reasons = validation(panel, calibration, curves)
     except CurveBindingError as error:
         curves = []
@@ -397,7 +414,8 @@ def _rdson_temperature_titles(page: PageText) -> list[DiagramTitle]:
     relaxed = [
         title
         for title in _rdson_titles_matching(page, _RDS_NORMALIZED_TITLE_STEM_RE)
-        if _RDS_DIRECTION_CLAUSE_RE.search(title.title) is None
+        if title.number < 9000
+        and _RDS_DIRECTION_CLAUSE_RE.search(title.title) is None
     ]
     relaxed.extend(
         title for title in find_caption_titles(page)
@@ -468,7 +486,7 @@ def _nearby_rdson_formula_evidence(
 def _rdson_titles_matching(
     page: PageText, title_pattern: re.Pattern[str]
 ) -> list[DiagramTitle]:
-    """Split numbered captions and retain only titles matching one RDS family."""
+    """Split numbered captions and unnumbered two-column chart titles."""
     titles: list[DiagramTitle] = []
     lines = group_words_into_lines(page.words)
     for line_index, line in enumerate(lines):
@@ -529,6 +547,45 @@ def _rdson_titles_matching(
                     line_text=text,
                 )
             )
+    if titles or any(
+        re.match(r"(?i)^(?:Figure|Fig\.?|Diagram)\s+\d+", line_text(line))
+        for line in lines
+    ):
+        return sorted(titles, key=lambda title: (title.bbox_pt[1], title.bbox_pt[0]))
+    # Some datasheets use bare titles below two side-by-side charts. Text
+    # extraction merges both titles into one line, so bind each half-page
+    # segment independently. Requiring the complete family title pattern keeps
+    # axis labels and prose from becoming synthetic captions.
+    for line_index, line in enumerate(lines):
+        for side, bounds in enumerate(
+            ((0.0, page.width_pt / 2), (page.width_pt / 2, page.width_pt))
+        ):
+            local = [
+                word
+                for word in line
+                if bounds[0] <= 0.5 * (word.x0 + word.x1) < bounds[1]
+            ]
+            if not local:
+                continue
+            text = line_text(local).strip()
+            if title_pattern.fullmatch(text) is None:
+                continue
+            bbox = line_bbox(local)
+            if any(
+                existing.title == text
+                and max(existing.bbox_pt[0], bbox[0])
+                < min(existing.bbox_pt[2], bbox[2])
+                for existing in titles
+            ):
+                continue
+            titles.append(
+                DiagramTitle(
+                    number=9000 + 2 * line_index + side,
+                    title=text,
+                    bbox_pt=bbox,
+                    line_text=text,
+                )
+            )
     return sorted(titles, key=lambda title: (title.bbox_pt[1], title.bbox_pt[0]))
 
 
@@ -550,16 +607,31 @@ def _build_panel(
     ]
     regions = infer_grid_regions_from_h_rules(page, horizontal_pt)
     tcx = 0.5 * (title.bbox_pt[0] + title.bbox_pt[2])
+    source_regions = (
+        page_vector_plot_frames(pdf, page.page_num, page)
+        if title.number >= 9000
+        else regions
+    )
     candidates = [
         region
-        for region in regions
+        for region in source_regions
         if min(
             abs(title.bbox_pt[1] - region[3]),
             abs(region[1] - title.bbox_pt[3]),
         ) <= 100.0
         and abs(0.5 * (region[0] + region[2]) - tcx) <= 100.0
     ]
-    direction = caption_axis_direction(page, title, "rds_on", _token_norm)
+    if title.number >= 9000:
+        candidates = [
+            region
+            for region in candidates
+            if _region_has_temperature_axis(page, region)
+        ]
+    direction = (
+        None
+        if title.number >= 9000
+        else caption_axis_direction(page, title, "rds_on", _token_norm)
+    )
     formula_direction, formula_side = _nearby_rdson_formula_evidence(page, title)
     if direction is None and formula_direction is not None:
         direction = formula_side
@@ -646,6 +718,26 @@ def _build_panel(
     return panel, crop_path, region
 
 
+def _region_has_temperature_axis(
+    page: PageText, region: tuple[float, float, float, float]
+) -> bool:
+    """Require a bare-title candidate frame to own its Tj/C axis text."""
+
+    local_text = " ".join(
+        word.text
+        for word in words_in_bbox(
+            page.words,
+            (
+                max(0.0, region[0] - 42.0),
+                max(0.0, region[1] - 8.0),
+                min(page.width_pt, region[2] + 8.0),
+                min(page.height_pt, region[3] + 42.0),
+            ),
+        )
+    )
+    return _TEMPERATURE_AXIS_RE.search(local_text.replace("º", "°")) is not None
+
+
 def _directional_grid_candidates(
     candidates: list[tuple[float, float, float, float]],
     title: DiagramTitle,
@@ -659,6 +751,21 @@ def _directional_grid_candidates(
         return above, direction
     if direction == "below":
         return below, direction
+    if title.number >= 9000 and above and below:
+        ranked = sorted(
+            [
+                (title.bbox_pt[1] - region[3], "above", region)
+                for region in above
+            ]
+            + [
+                (region[1] - title.bbox_pt[3], "below", region)
+                for region in below
+            ],
+            key=lambda item: item[0],
+        )
+        if len(ranked) == 1 or ranked[1][0] - ranked[0][0] >= 8.0:
+            _gap, side, region = ranked[0]
+            return [region], side
     if above and below:
         return [], None
     scored = [
@@ -693,21 +800,145 @@ def calibrate_panel(
     x1, y1 = transform.to_px(grid_region_pt[2], grid_region_pt[3])
     hint = PlotBox(round(x0), 0, round(x1), round(y1))
     with pymupdf.open(panel.pdf) as document:
-        labels = _page_labels(document[panel.page - 1], transform)
-    raw_x = _select_axis(labels, hint, "x")
+        page = document[panel.page - 1]
+        labels = _page_labels(page, transform)
+        vector_x, _vector_y = _vector_full_span_grid_lines(
+            page, transform, hint
+        )
+    raw_x = _select_axis(_fuse_owned_x_tick_minuses(labels, hint), hint, "x")
     raw_y = _select_axis(labels, hint, "y")
-    major_x, major_y = _full_span_grid_lines(gray, hint)
+    raster_x, raster_y = _full_span_grid_lines(gray, hint)
+    major_x = (
+        vector_x
+        if raw_x.residual_px > MAX_AXIS_RESIDUAL_PX
+        and len(vector_x) >= len(raw_x.ticks)
+        else raster_x
+    )
+    major_y = raster_y
     x_axis = _snap_axis_to_grid(raw_x, major_x, "X axis", authoritative=True)
     y_axis = _snap_axis_to_grid(raw_y, major_y, "Y axis", authoritative=True)
     plot = tick_aligned_plot(x_axis, y_axis, hint)
     return PanelCalibration(plot, x_axis, y_axis, hint)
 
 
+def _vector_full_span_grid_lines(
+    page,
+    transform: CropTransform,
+    hint: PlotBox,
+) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Read full-span neutral grid rails directly from source vector geometry."""
+
+    vertical: list[float] = []
+    horizontal: list[float] = []
+    for drawing in page.get_drawings():
+        if drawing.get("type") not in {"s", "fs"}:
+            continue
+        color = drawing.get("color")
+        if (
+            isinstance(color, tuple)
+            and len(color) >= 3
+            and max(float(value) for value in color[:3])
+            - min(float(value) for value in color[:3])
+            > 0.08
+        ):
+            continue
+        for item in drawing.get("items", []):
+            if item[0] == "l":
+                x0, y0 = transform.to_px(float(item[1].x), float(item[1].y))
+                x1, y1 = transform.to_px(float(item[2].x), float(item[2].y))
+                if (
+                    abs(x1 - x0) <= 1.5
+                    and abs(y1 - y0) >= 0.65 * hint.height
+                    and hint.x0 - 10 <= 0.5 * (x0 + x1) <= hint.x1 + 10
+                    and hint.y0 - 10 <= min(y0, y1)
+                    and max(y0, y1) <= hint.y1 + 10
+                ):
+                    vertical.append(0.5 * (x0 + x1))
+                elif (
+                    abs(y1 - y0) <= 1.5
+                    and abs(x1 - x0) >= 0.65 * hint.width
+                    and hint.y0 - 10 <= 0.5 * (y0 + y1) <= hint.y1 + 10
+                    and hint.x0 - 10 <= min(x0, x1)
+                    and max(x0, x1) <= hint.x1 + 10
+                ):
+                    horizontal.append(0.5 * (y0 + y1))
+                continue
+            rect = None
+            if item[0] == "re":
+                rect = item[1]
+            elif item[0] == "qu" and item[1].is_rectangular:
+                rect = item[1].rect
+            if rect is None:
+                continue
+            x0, y0 = transform.to_px(float(rect.x0), float(rect.y0))
+            x1, y1 = transform.to_px(float(rect.x1), float(rect.y1))
+            if (
+                abs(x1 - x0) >= 0.65 * hint.width
+                and abs(y1 - y0) >= 0.65 * hint.height
+                and hint.x0 - 10 <= min(x0, x1)
+                and max(x0, x1) <= hint.x1 + 10
+                and hint.y0 - 10 <= min(y0, y1)
+                and max(y0, y1) <= hint.y1 + 10
+            ):
+                vertical.extend((x0, x1))
+                horizontal.extend((y0, y1))
+
+    def merged(values: list[float]) -> tuple[float, ...]:
+        result: list[float] = []
+        for value in sorted(values):
+            if result and value - result[-1] <= 1.5:
+                result[-1] = 0.5 * (result[-1] + value)
+            else:
+                result.append(value)
+        return tuple(result)
+
+    return merged(vertical), merged(horizontal)
+
+
+def _fuse_owned_x_tick_minuses(
+    labels: list[TextLabel], hint: PlotBox
+) -> list[TextLabel]:
+    """Join a source text minus immediately left of its X-axis tick value."""
+
+    fused = list(labels)
+    y_tolerance = max(100.0, 0.25 * hint.height)
+    for index, label in enumerate(labels):
+        if re.fullmatch(r"\d+(?:\.\d+)?", label.text) is None:
+            continue
+        if not (
+            hint.x0 - 0.18 * hint.width <= label.cx <= hint.x1 + 0.18 * hint.width
+            and abs(label.cy - hint.y1) <= y_tolerance
+        ):
+            continue
+        candidates = [
+            other
+            for other in labels
+            if other.text in {"-", "\N{MINUS SIGN}"}
+            and abs(other.cy - label.cy) <= 1.0
+            and 0 <= label.x0 - other.x1 <= max(6.0, 0.025 * hint.width)
+        ]
+        if len(candidates) > 1:
+            raise RuntimeError("X axis: ambiguous textual-minus ownership")
+        if candidates:
+            minus = candidates[0]
+            fused[index] = TextLabel(
+                f"-{label.text}",
+                (minus.x0 + label.x1) / 2,
+                label.cy,
+                minus.x0,
+                label.x1,
+            )
+    return fused
+
+
 def _style_key(color: object) -> tuple[float, float, float] | None:
     if not isinstance(color, tuple) or len(color) < 3:
         return None
     rgb = tuple(round(float(value), 4) for value in color[:3])
-    if sum(rgb) < 0.15 or max(rgb) < 0.4 or max(rgb) - min(rgb) > 0.45:
+    # Printed comparison curves sometimes use 50% neutral gray against black.
+    # Full-span geometry later rejects grid rails, so retain source mid-gray
+    # strokes while still excluding pale grid/background artwork.
+    if sum(rgb) < 0.15 or max(rgb) < 0.7 or max(rgb) - min(rgb) > 0.45:
         return rgb
     return None
 
@@ -890,29 +1121,7 @@ def _legend_entries(
     panel: ChartPanel, traces: list[VectorTrace]
 ) -> list[LegendEntry]:
     """Bind each local VGS legend row to its adjacent stroke style."""
-    page_text = run_text_bbox(Path(panel.pdf))[panel.page - 1]
-    lines = group_words_into_lines(words_in_bbox(page_text.words, panel.bbox_pt))
-    rows: list[tuple[float, float, float]] = []
-    for line in lines:
-        before = len(rows)
-        for index in range(len(line) - 4):
-            words = line[index : index + 5]
-            text = " ".join(word.text for word in words)
-            match = _VGS_RE.fullmatch(text)
-            if match is None:
-                continue
-            bbox = line_bbox(words)
-            rows.append(
-                (float(match.group(1)), bbox[0], 0.5 * (bbox[1] + bbox[3]))
-            )
-        if len(rows) == before:
-            text = line_text(line)
-            for match in _VGS_RE.finditer(text):
-                bbox = line_bbox(line)
-                rows.append(
-                    (float(match.group(1)), bbox[0], 0.5 * (bbox[1] + bbox[3]))
-                )
-    rows = list(dict.fromkeys(rows))
+    rows = _vgs_label_rows(panel)
     if not rows:
         raise CurveBindingError(
             DIAG_LEGEND_VGS_MISSING, "legend: no local VGS labels"
@@ -922,6 +1131,7 @@ def _legend_entries(
         return [LegendEntry(gate_voltage, traces[0].style_key, row_y)]
 
     entries: list[LegendEntry] = []
+    ambiguous = False
     with pymupdf.open(panel.pdf) as document:
         drawings = document[panel.page - 1].get_drawings()
         for gate_voltage, label_x0, row_y in rows:
@@ -945,17 +1155,142 @@ def _legend_entries(
                     matches.append(style)
             unique = sorted(set(matches))
             if len(unique) != 1:
-                raise CurveBindingError(
-                    DIAG_CURVE_BINDING,
-                    f"legend: ambiguous stroke binding for VGS={gate_voltage:g} V"
-                )
+                ambiguous = True
+                continue
             entries.append(LegendEntry(gate_voltage, unique[0], row_y))
+    if ambiguous:
+        positioned = _bind_two_positioned_label_rows(rows, traces)
+        if positioned is None:
+            raise CurveBindingError(
+                DIAG_CURVE_BINDING,
+                "legend: ambiguous stroke binding for positioned VGS labels",
+            )
+        entries = positioned
     if len({entry.style_key for entry in entries}) != len(entries):
         raise CurveBindingError(
             DIAG_CURVE_BINDING,
             "legend: stroke style reused by multiple VGS labels"
         )
     return entries
+
+
+def _bind_two_positioned_label_rows(
+    rows: list[tuple[float, float, float]], traces: list[VectorTrace]
+) -> list[LegendEntry] | None:
+    """Bind two inline VGS labels by their stable hot-side vertical ordering."""
+
+    if (
+        len(rows) != 2
+        or len(traces) != 2
+        or len({row[0] for row in rows}) != 2
+        or len({trace.style_key for trace in traces}) != 2
+    ):
+        return None
+    ordered_rows = sorted(rows, key=lambda row: row[2])
+    if ordered_rows[1][2] - ordered_rows[0][2] < 5.0:
+        return None
+
+    lo = max(min(x for x, _y in trace.points_px) for trace in traces)
+    hi = min(max(x for x, _y in trace.points_px) for trace in traces)
+    if hi <= lo:
+        return None
+    xs = np.linspace(lo + 0.80 * (hi - lo), hi, 32)
+    sampled = [_trace_y_at_x(trace, xs) for trace in traces]
+    delta = sampled[1] - sampled[0]
+    if (
+        float(np.min(np.abs(delta))) < 2.0
+        or not (np.all(delta > 0) or np.all(delta < 0))
+    ):
+        return None
+    ordered_traces = sorted(
+        traces,
+        key=lambda trace: float(
+            np.median(sampled[traces.index(trace)])
+        ),
+    )
+    return [
+        LegendEntry(gate_voltage, trace.style_key, row_y)
+        for (gate_voltage, _label_x0, row_y), trace in zip(
+            ordered_rows, ordered_traces
+        )
+    ]
+
+
+def _bind_two_positioned_vgs_traces(
+    panel: ChartPanel,
+    traces: list[VectorTrace],
+) -> list[tuple[float, VectorTrace]]:
+    """Bind two same-style curves by stable source-label vertical ordering."""
+
+    rows = _vgs_label_rows(panel)
+    if (
+        len(rows) != 2
+        or len(traces) != 2
+        or len({row[0] for row in rows}) != 2
+    ):
+        raise CurveBindingError(
+            DIAG_CURVE_BINDING,
+            "positioned VGS binding requires two distinct labels and two traces",
+        )
+    ordered_rows = sorted(rows, key=lambda row: row[2])
+    if ordered_rows[1][2] - ordered_rows[0][2] < 5.0:
+        raise CurveBindingError(
+            DIAG_CURVE_BINDING,
+            "positioned VGS label rows are not visibly separated",
+        )
+    lo = max(min(x for x, _y in trace.points_px) for trace in traces)
+    hi = min(max(x for x, _y in trace.points_px) for trace in traces)
+    if hi <= lo:
+        raise CurveBindingError(
+            DIAG_CURVE_BINDING,
+            "positioned VGS traces have no common X span",
+        )
+    xs = np.linspace(lo, hi, 48)
+    try:
+        sampled = [_trace_y_at_x(trace, xs) for trace in traces]
+    except CurveBindingError as error:
+        raise CurveBindingError(DIAG_CURVE_BINDING, str(error)) from error
+    delta = sampled[1] - sampled[0]
+    if (
+        float(np.min(np.abs(delta))) < 2.0
+        or not (np.all(delta > 0) or np.all(delta < 0))
+    ):
+        raise CurveBindingError(
+            DIAG_CURVE_BINDING,
+            "positioned VGS trace ordering is not visibly stable",
+        )
+    order = sorted(
+        range(2),
+        key=lambda index: float(np.median(sampled[index])),
+    )
+    return [
+        (row[0], traces[trace_index])
+        for row, trace_index in zip(ordered_rows, order)
+    ]
+
+
+def _calibrate_positioned_vgs_traces(
+    bindings: list[tuple[float, VectorTrace]],
+    calibration: PanelCalibration,
+) -> list[dict[str, object]]:
+    """Calibrate already-bound VGS traces without requiring distinct styles."""
+
+    return [
+        {
+            "gate_voltage_v": gate_voltage,
+            "style_rgb": list(trace.style_key),
+            "trace_source": "pdf_vector",
+            "points_px": [list(point) for point in trace.points_px],
+            "points": [
+                [
+                    float(calibration.x_axis.value(x)),
+                    float(calibration.y_axis.value(y)),
+                ]
+                for x, y in trace.points_px
+            ],
+        }
+        for gate_voltage, trace in sorted(bindings)
+    ]
 
 
 def _bind_and_calibrate_curves(
@@ -1009,7 +1344,7 @@ def _absolute_validation_reasons(
     )
     if not (
         calibration.x_axis.model == "linear"
-        and min(x_ticks) < 0 < max(x_ticks)
+        and min(x_ticks) <= 0 < max(x_ticks)
         and title_identity
         and _TEMPERATURE_AXIS_RE.search(panel.text.replace("º", "°"))
     ):
@@ -1062,7 +1397,7 @@ def _validation_reasons(
     )
     if not (
         calibration.x_axis.model == "linear"
-        and min(x_ticks) < 0 < max(x_ticks)
+        and min(x_ticks) <= 0 < max(x_ticks)
         and title_identity
         and _TEMPERATURE_AXIS_RE.search(panel.text.replace("º", "°"))
     ):

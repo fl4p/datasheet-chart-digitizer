@@ -11,6 +11,7 @@ import numpy as np
 from datasheet_chart_digitizer.capacitance_types import PlotBox
 from datasheet_chart_digitizer.find_charts import ChartPanel, DiagramTitle, PageText, Word
 from datasheet_chart_digitizer.numeric_axis import AxisTick, NumericAxis
+from datasheet_chart_digitizer.rds_source_labels import _subscript_vgs_rows
 from datasheet_chart_digitizer.rdson_temperature import (
     DIAG_ABSOLUTE_LIMIT_LABELS,
     DIAG_AXIS_IDENTITY,
@@ -27,7 +28,10 @@ from datasheet_chart_digitizer.rdson_temperature import (
     VectorTrace,
     _RDS_TITLE_RE,
     _bind_absolute_typ_max_curves,
+    _bind_two_positioned_label_rows,
+    _bind_two_positioned_vgs_traces,
     _rdson_temperature_panel_owned,
+    _region_has_temperature_axis,
     _bind_and_calibrate_curves,
     _draw_overlay,
     _directional_grid_candidates,
@@ -100,6 +104,22 @@ def _curve(
 
 
 class RdsonTemperatureUnitTests(unittest.TestCase):
+    def test_subscript_vgs_row_survives_split_source_baselines(self):
+        words = [
+            Word("V", 111.0, 405.0, 115.3, 411.0),
+            Word("GS", 115.3, 408.2, 121.5, 412.1),
+            Word("=", 123.3, 405.0, 127.1, 411.0),
+            Word("7.5", 128.9, 405.0, 137.9, 411.0),
+            Word("V", 139.9, 405.0, 144.3, 411.0),
+            Word("10", 78.2, 408.0, 92.3, 414.4),
+        ]
+
+        rows = _subscript_vgs_rows(words)
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], 7.5)
+        self.assertAlmostEqual(rows[0][1], 111.0)
+
     def test_unresolved_caption_adopts_one_immediately_following_grid(self):
         title = DiagramTitle(
             8,
@@ -162,6 +182,40 @@ class RdsonTemperatureUnitTests(unittest.TestCase):
             ([above], "above"),
         )
 
+    def test_bare_title_uses_clearly_nearer_source_frame(self):
+        title = DiagramTitle(
+            9008,
+            "On-Resistance vs. Junction Temperature",
+            (80, 570, 270, 580),
+            "On-Resistance vs. Junction Temperature",
+        )
+        above = (90, 372, 258, 521)
+        below = (91, 589, 259, 740)
+
+        self.assertEqual(
+            _directional_grid_candidates([above, below], title, None),
+            ([below], "below"),
+        )
+
+    def test_bare_title_candidate_requires_owned_temperature_axis(self):
+        page = PageText(
+            1,
+            600,
+            800,
+            [
+                Word("ID", 100, 200, 110, 208),
+                Word("Drain", 112, 200, 140, 208),
+                Word("Current", 142, 200, 180, 208),
+                Word("TJ", 100, 500, 110, 508),
+                Word("Junction", 112, 500, 150, 508),
+                Word("Temperature", 152, 500, 210, 508),
+                Word("(°C)", 212, 500, 230, 508),
+            ],
+        )
+
+        self.assertFalse(_region_has_temperature_axis(page, (90, 100, 250, 210)))
+        self.assertTrue(_region_has_temperature_axis(page, (90, 400, 250, 510)))
+
     def test_title_match_accepts_common_normalized_rdson_temperature_phrasings(self) -> None:
         accepted = [
             "On Resistance vs Temperature",
@@ -205,6 +259,18 @@ class RdsonTemperatureUnitTests(unittest.TestCase):
         self.assertEqual(
             [(title.number, title.title) for title in titles],
             [(9, "Normalized drain-source on resistance")],
+        )
+
+    def test_bare_normalized_stem_without_temperature_clause_is_not_a_caption(self):
+        words = []
+        x = 45.0
+        for text in "Normalized On Resistance".split():
+            words.append(Word(text, x, 100, x + 24, 108))
+            x += 26
+
+        self.assertEqual(
+            _rdson_temperature_titles(PageText(1, 612, 792, words)),
+            [],
         )
 
     def test_compact_temperature_formula_title_is_retained_and_owned(self) -> None:
@@ -382,6 +448,75 @@ class RdsonTemperatureUnitTests(unittest.TestCase):
         with self.assertRaisesRegex(CurveBindingError, "mismatch"):
             _bind_and_calibrate_curves([trace], [], _calibration())
         self.assertEqual(DIAG_CURVE_BINDING, "legend_curve_binding_ambiguous")
+
+    def test_two_positioned_distinct_style_rows_bind_by_stable_vertical_order(self):
+        rows = [(4.5, 20.0, 10.0), (2.5, 20.0, 30.0)]
+        traces = [
+            VectorTrace((1.0, 0.0, 0.0), tuple((x, 20) for x in range(10, 91))),
+            VectorTrace((0.0, 0.0, 0.0), tuple((x, 60) for x in range(10, 91))),
+        ]
+
+        entries = _bind_two_positioned_label_rows(rows, traces)
+
+        self.assertIsNotNone(entries)
+        assert entries is not None
+        self.assertEqual(
+            [(entry.gate_voltage_v, entry.style_key) for entry in entries],
+            [(4.5, (1.0, 0.0, 0.0)), (2.5, (0.0, 0.0, 0.0))],
+        )
+
+    def test_positioned_distinct_style_rows_refuse_crossing_traces(self):
+        rows = [(4.5, 20.0, 10.0), (2.5, 20.0, 30.0)]
+        traces = [
+            VectorTrace(
+                (1.0, 0.0, 0.0),
+                tuple((x, x) for x in range(10, 91)),
+            ),
+            VectorTrace(
+                (0.0, 0.0, 0.0),
+                tuple((x, 160 - x) for x in range(10, 91)),
+            ),
+        ]
+
+        self.assertIsNone(_bind_two_positioned_label_rows(rows, traces))
+
+    def test_same_style_positioned_rows_require_distinct_vgs_values(self):
+        traces = [
+            VectorTrace((0.0, 0.0, 0.0), tuple((x, 20) for x in range(10, 91))),
+            VectorTrace((0.0, 0.0, 0.0), tuple((x, 60) for x in range(10, 91))),
+        ]
+        duplicate_rows = [(4.5, 20.0, 10.0), (4.5, 20.0, 30.0)]
+
+        with patch(
+            "datasheet_chart_digitizer.rdson_temperature._vgs_label_rows",
+            return_value=duplicate_rows,
+        ), self.assertRaises(CurveBindingError) as caught:
+            _bind_two_positioned_vgs_traces(_panel(), traces)
+
+        self.assertEqual(caught.exception.diagnostic, DIAG_CURVE_BINDING)
+        self.assertIn("distinct labels", str(caught.exception))
+
+    def test_same_style_positioned_rows_refuse_unstable_trace_order(self):
+        traces = [
+            VectorTrace(
+                (0.0, 0.0, 0.0),
+                tuple((x, x) for x in range(10, 91)),
+            ),
+            VectorTrace(
+                (0.0, 0.0, 0.0),
+                tuple((x, 100 - x) for x in range(10, 91)),
+            ),
+        ]
+        rows = [(4.5, 20.0, 10.0), (2.5, 20.0, 30.0)]
+
+        with patch(
+            "datasheet_chart_digitizer.rdson_temperature._vgs_label_rows",
+            return_value=rows,
+        ), self.assertRaises(CurveBindingError) as caught:
+            _bind_two_positioned_vgs_traces(_panel(), traces)
+
+        self.assertEqual(caught.exception.diagnostic, DIAG_CURVE_BINDING)
+        self.assertIn("not visibly stable", str(caught.exception))
 
     def test_empty_curve_set_cannot_validate_ok(self):
         self.assertEqual(

@@ -20,8 +20,16 @@ from .diode_forward_voltage import (
     _select_axis,
     _snap_axis_to_grid,
 )
-from .find_charts import ChartPanel, DiagramTitle, PageText, process_pdf
+from .find_charts import (
+    ChartPanel,
+    DiagramTitle,
+    PageText,
+    process_pdf,
+    run_text_bbox,
+)
+from .finder_caption_geometry import page_vector_plot_frames
 from .chart_classifier import rdson_formula_direction
+from .numeric_axis import AxisTick, NumericAxis
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .rdson_temperature import (
     MAX_AXIS_RESIDUAL_PX,
@@ -29,6 +37,7 @@ from .rdson_temperature import (
     PanelCalibration,
     _digitize_rds_panel,
     _rdson_titles_matching,
+    _vgs_label_rows,
 )
 
 MIN_CURRENT_SPAN_FRACTION = 0.70
@@ -78,6 +87,10 @@ def _digitize_pdf(
             continue
         try:
             crop_path = out_dir / panel.crop_png
+            preserve_same_style = (
+                Path(panel.pdf).exists()
+                and len(_vgs_label_rows(panel)) == 2
+            )
             results.append(_digitize_rds_panel(
                 panel, crop_path, calibrate_panel(panel, crop_path), out_dir,
                 overlay_group="rdson_current_overlays",
@@ -94,6 +107,7 @@ def _digitize_pdf(
                     "minimum_rdson_span_fraction": MIN_RDS_SPAN_FRACTION,
                     "maximum_local_drop_fraction": MAX_LOCAL_DROP_FRACTION,
                 },
+                preserve_same_style=preserve_same_style,
             ))
         except Exception as error:
             if not fail_closed:
@@ -179,9 +193,20 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     with pymupdf.open(panel.pdf) as document:
         labels = _page_labels(document[panel.page - 1], transform)
     height, width = gray.shape
-    broad = PlotBox(int(0.20 * width), int(0.02 * height), int(0.96 * width), int(0.86 * height))
+    hint = _owned_vector_plot_hint(panel, transform, gray.shape)
+    broad = hint or PlotBox(
+        int(0.20 * width),
+        int(0.02 * height),
+        int(0.96 * width),
+        int(0.86 * height),
+    )
     raw_x = _select_axis(labels, broad, "x")
-    raw_y = _select_axis(labels, broad, "y")
+    raw_y = _select_axis(
+        labels,
+        broad,
+        "y",
+        clamp_to_hint_frame=hint is not None,
+    )
     tick_box = PlotBox(
         round(min(tick.pixel for tick in raw_x.ticks)),
         round(min(tick.pixel for tick in raw_y.ticks)),
@@ -203,7 +228,69 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     )
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
+    if _rdson_y_scale_to_mohm(panel) == 1000.0:
+        y_axis = NumericAxis(
+            y_axis.model,
+            y_axis.m * 1000.0,
+            y_axis.b * 1000.0,
+            tuple(
+                AxisTick(
+                    tick.text,
+                    tick.value * 1000.0,
+                    tick.pixel,
+                    tick.normalized_text,
+                )
+                for tick in y_axis.ticks
+            ),
+            y_axis.residual_px,
+            y_axis.candidate_residuals_px,
+        )
     return PanelCalibration(plot, x_axis, y_axis, tick_box)
+
+
+def _owned_vector_plot_hint(
+    panel: ChartPanel,
+    transform: CropTransform,
+    image_shape: tuple[int, ...],
+) -> PlotBox | None:
+    """Return the unique native plot frame substantially owned by this panel."""
+
+    page = run_text_bbox(Path(panel.pdf))[panel.page - 1]
+    owned: list[tuple[float, tuple[float, float, float, float]]] = []
+    px0, py0, px1, py1 = panel.bbox_pt
+    for frame in page_vector_plot_frames(
+        Path(panel.pdf), panel.page, page
+    ):
+        fx0, fy0, fx1, fy1 = frame
+        intersection = max(0.0, min(px1, fx1) - max(px0, fx0)) * max(
+            0.0, min(py1, fy1) - max(py0, fy0)
+        )
+        fraction = intersection / max(1e-9, (fx1 - fx0) * (fy1 - fy0))
+        if fraction >= 0.75:
+            owned.append((fraction, frame))
+    if len(owned) != 1:
+        return None
+    _fraction, frame = owned[0]
+    x0, y0 = transform.to_px(frame[0], frame[1])
+    x1, y1 = transform.to_px(frame[2], frame[3])
+    height, width = image_shape[:2]
+    if not (
+        0 <= x0 < x1 <= width - 1 + 2
+        and 0 <= y0 < y1 <= height - 1 + 2
+    ):
+        return None
+    return PlotBox(round(x0), round(y0), round(x1), round(y1))
+
+
+def _rdson_y_scale_to_mohm(panel: ChartPanel) -> float:
+    """Return the explicit source-unit conversion into the plugin's mOhm contract."""
+
+    local = _local_axis_text(panel).replace("Ω", "Ω")
+    if re.search(r"\bm\s*Ω", local, re.I):
+        return 1.0
+    if re.search(r"(?<![A-Za-z])Ω", local):
+        return 1000.0
+    return 1.0
 
 
 def _axis_identity_is_evidenced(panel: ChartPanel) -> bool:
@@ -212,7 +299,10 @@ def _axis_identity_is_evidenced(panel: ChartPanel) -> bool:
     has_current_axis = "draincurrent" in compact or "ida" in compact
     has_rdson_axis = (
         "rdson" in compact or "dson" in compact
-    ) and any(unit in compact for unit in ("mω", "mΩ", "mΩ", "m\uf057"))
+    ) and (
+        any(unit in compact for unit in ("mω", "mΩ", "mΩ", "m\uf057"))
+        or _rdson_y_scale_to_mohm(panel) == 1000.0
+    )
     return _is_rdson_current_panel(panel) and has_current_axis and has_rdson_axis
 
 
@@ -230,7 +320,7 @@ def _validation_reasons(
         calibration.x_axis.model == "linear"
         and calibration.y_axis.model == "linear"
         and min(x_ticks) <= 0.0 < max(x_ticks)
-        and min(y_ticks) <= 0.0 < max(y_ticks)
+        and 0.0 <= min(y_ticks) < max(y_ticks)
         and _axis_identity_is_evidenced(panel)
     ):
         reasons.append(DIAG_AXIS_IDENTITY)
