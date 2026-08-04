@@ -87,6 +87,15 @@ class TwoTemperatureOrderUnit(unittest.TestCase):
 
         self.assertTrue(tc.validate_two_curve_order(cold, hot))
 
+    def test_accepts_source_resolved_early_crossover_on_high_current_axis(self):
+        currents = np.linspace(1.0, 600.0, 1000)
+        cold = list(zip(3.0 + 0.002 * currents, currents))
+        hot = list(
+            zip(3.0 + 0.002 * currents - 0.15 + 0.02 * currents, currents)
+        )
+
+        self.assertTrue(tc.validate_two_curve_order(cold, hot))
+
     def test_refuses_label_bound_hot_curve_on_the_right_at_low_current(self):
         cold, hot = _two_temperature_curves(
             lambda currents: np.full_like(currents, 0.2)
@@ -307,6 +316,11 @@ class TemperatureFitUnit(unittest.TestCase):
         text = "T = 150 °C j T 25 °C = j"
 
         self.assertEqual(tc._temperatures(text), [25.0, 150.0])
+
+    def test_temperature_parser_keeps_epc_labels_before_reordered_condition(self):
+        text = "500 25˚C 125˚C = 3 V V DS"
+
+        self.assertEqual(tc._temperatures(text), [25.0, 125.0])
 
     def test_transfer_semantics_reject_capacitance_panel(self):
         chart = {

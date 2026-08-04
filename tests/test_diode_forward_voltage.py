@@ -27,7 +27,9 @@ from datasheet_chart_digitizer.diode_forward_voltage import (
     calibrate_panel,
     digitize_pdf,
 )
+from datasheet_chart_digitizer.diode_legend_color import temperatures_from_source_words
 from datasheet_chart_digitizer.find_charts import ChartPanel, process_pdf
+from datasheet_chart_digitizer.finder_types import Word
 from datasheet_chart_digitizer.numeric_axis import AxisTick, NumericAxis, fit_numeric_axis, tick_aligned_plot
 
 
@@ -36,6 +38,34 @@ class NumericAxisTests(unittest.TestCase):
         text = "T = -55°C C T = 25°C C 1 Current T = 125°C C"
 
         self.assertEqual(_temperatures(text), [-55.0, 25.0, 125.0])
+
+    def test_source_temperature_words_keep_complete_split_and_ocr_degree_labels(self):
+        words = [
+            Word("-55℃", 20, 10, 40, 18),
+            Word("25", 20, 30, 31, 38),
+            Word("°C", 33, 29, 43, 39),
+            Word("175", 20, 50, 35, 58),
+            Word("o", 34, 47, 38, 52),
+            Word("C", 36, 50, 42, 58),
+            Word("-", 10, 70, 18, 78),
+            Word("40°C", 20, 70, 40, 78),
+        ]
+
+        self.assertEqual(
+            temperatures_from_source_words(words),
+            [-55.0, -40.0, 25.0, 175.0],
+        )
+
+    def test_source_temperature_words_do_not_join_axis_tick_to_nearby_unit(self):
+        words = [
+            Word("10", 10, 10, 20, 18),
+            Word("150", 50, 15, 65, 23),
+            Word("°C", 67, 14, 77, 24),
+            Word("25", 50, 35, 60, 43),
+            Word("°C", 62, 34, 72, 44),
+        ]
+
+        self.assertEqual(temperatures_from_source_words(words), [25.0, 150.0])
 
     def test_overlay_crosshairs_are_centered_on_axis_tick_intersections(self):
         x_axis = NumericAxis(

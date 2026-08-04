@@ -90,10 +90,17 @@ def validate_two_curve_order(
     hi = min(max(values) for values in positive)
     if hi <= lo:
         raise RuntimeError("transfer curves have no common positive-current range")
-    probes = lo + np.asarray((0.12, 0.18)) * (hi - lo)
+    # Probe the actual threshold region.  On high-current GaN charts, 12–18%
+    # of a 500–600 A axis is already well above an early ZTC crossover.
+    probes = lo + np.asarray((0.005, 0.01)) * (hi - lo)
     cold_probe, hot_probe = inverse_vgs(cold, probes), inverse_vgs(hot, probes)
-    gates = [float(v) for curve in (cold, hot) for v, i in curve if i > 0]
-    margin = max(1e-3, 0.005 * (max(gates) - min(gates)))
+    gate_steps = [
+        abs(float(right_v) - float(left_v))
+        for curve in (cold, hot)
+        for (left_v, left_i), (right_v, right_i) in zip(curve, curve[1:])
+        if left_i > 0 and right_i > 0 and abs(right_v - left_v) > 1e-12
+    ]
+    margin = max(1e-3, float(np.median(gate_steps)) if gate_steps else 1e-3)
     if np.any(cold_probe - hot_probe <= margin):
         raise RuntimeError(
             "label-bound hot transfer curve is not visibly left of the cold "
@@ -113,9 +120,13 @@ def validate_two_curve_order(
         if sign and end - start >= 5 and (not robust or robust[-1] != sign):
             robust.append(sign)
         start = end
-    if robust not in ([-1], [-1, 1]):
+    # The explicit threshold probes above already establish the initial
+    # hot-left state.  On a 600 A chart, that source-resolved region can occupy
+    # fewer than five samples of this deliberately coarse whole-range grid, so
+    # the first robust run may legitimately begin with the post-ZTC +1 state.
+    if robust not in ([-1], [-1, 1], [1]):
         raise RuntimeError(
             "label-bound transfer curves have contradictory or multiple robust "
             "temperature-order reversals"
         )
-    return robust == [-1, 1]
+    return robust in ([-1, 1], [1])

@@ -56,14 +56,14 @@ from .capacitance_vector import (
 from .capacitance_vector import _chain_vector_components
 from .crop_transform import CropTransform
 from .chart_classifier import compact_formula_chart_kind
+from .source_color_binding import bind_two_source_color_legend
 from .transfer_temperature_order import inverse_vgs as _inverse_vgs
 from .transfer_temperature_order import bind_opposite_outer_labels, validate_two_curve_order
-
-TEMP_RE = re.compile(
-    r"(?<![\w.])([+-]?\d+(?:\.\d+)?)\s*°?\s*C"
-    r"(?!\s*(?:=(?!\s*j\b)|C\b)|[A-Za-z])",
-    re.IGNORECASE,
+from .transfer_temperature_labels import (
+    normalize_temperature_text as _normalize_temperature_text,
+    temperatures as _temperatures,
 )
+
 POSITIONED_TEMP_LINE_RE = re.compile(
     r"^\s*(?:T\s*(?:C|J)\s*=\s*)?"
     r"(?P<temperature>[+-]?\d+(?:\.\d+)?)\s*°?\s*C"
@@ -696,6 +696,14 @@ def _extract_two_curves_legacy(
     edges = _vector_curve_edges(page.get_drawings(), rect)
     candidates: list[list[tuple[int, int]]] = []
     for run in _split_monotone_edge_runs(edges, rect.width):
+        y_span = max(
+            max(edge.p0[1], edge.p1[1]) for edge in run
+        ) - min(min(edge.p0[1], edge.p1[1]) for edge in run)
+        # A source curve clipped at the top frame can finish with a long,
+        # reversed horizontal segment.  The drawing-order splitter correctly
+        # separates that tail, but it is not an independent transfer branch.
+        if y_span < 0.08 * rect.height:
+            continue
         points = _run_points(run, transform, plot)
         if len(points) < 8:
             continue
@@ -739,38 +747,6 @@ def _extract_panel_curves(
     y_axis = _snap_axis_to_grid(y_axis, major_y, "Y axis (ID)", authoritative=True)
     pixel_curves = _extract_curves(page, transform, plot, fitz, expected_count)
     return plot, x_axis, y_axis, pixel_curves
-
-
-def _normalize_temperature_text(text: str) -> str:
-    normalized = (
-        text.replace("−", "-")
-        .replace("–", "-")
-        .replace("‑", "-")
-        # Some TI PDFs encode the printed degree sign as a private-use glyph.
-        # Normalize that exact glyph before applying the strict label grammar.
-        .replace("\uf0b0", "°")
-    )
-    # pdftotext can place the subscript C from ``TC`` after its temperature,
-    # yielding ``25°C C``. Collapse only that duplicated unit glyph.
-    return re.sub(r"(°?\s*C)\s+C\b", r"\1", normalized, flags=re.I)
-
-
-def _temperatures(text: str) -> list[float]:
-    normalized = _normalize_temperature_text(text)
-    contextual = {
-        float(value)
-        for value in re.findall(
-            r"\bT\s*(?:C|J)?\s*=\s*([+-]?\d+(?:\.\d+)?)\s*°?\s*C?",
-            normalized,
-            flags=re.I,
-        )
-    }
-    if 2 <= len(contextual) <= 6:
-        return sorted(contextual)
-    values = sorted({float(v) for v in TEMP_RE.findall(normalized)})
-    if not 2 <= len(values) <= 6:
-        raise RuntimeError(f"expected 2..6 temperature labels, found {values}")
-    return values
 
 
 def _positioned_temperature_labels(
@@ -843,6 +819,9 @@ def _positioned_temperature_labels(
         # Mixing bare labels with conditioned labels, or using different
         # conditions, leaves curve-family ownership ambiguous.
         return []
+    # Some vector PDFs paint the same legend text twice at the exact same
+    # coordinates.  This is one source label, not evidence for another curve.
+    candidates = list(dict.fromkeys(candidates))
     return [
         (temperature, rect) for temperature, rect, _condition in candidates
     ]
@@ -866,6 +845,29 @@ def _label_curve_distance(
     return min(
         math.hypot(center_x - x, center_y - y)
         for x, y in curve
+    )
+
+
+def _bind_two_temperature_legend_styles(
+    page,
+    transform: CropTransform,
+    plot: PlotBox,
+    pixel_curves: list[list[tuple[int, int]]],
+    labels: list[tuple[float, tuple[float, float, float, float]]],
+) -> list[tuple[float, int]] | None:
+    """Bind detached two-temperature legend swatches to source curves."""
+    return bind_two_source_color_legend(
+        page,
+        transform,
+        plot,
+        pixel_curves,
+        labels,
+        drawing_candidate=lambda drawing, rect, owned_transform, owned_plot: (
+            _source_drawing_transfer_candidate(
+                drawing, rect, owned_transform, owned_plot, 2
+            )
+        ),
+        is_curve_color=_is_curve_stroke_color,
     )
 
 
@@ -977,6 +979,7 @@ def _assign_temperatures(
     positioned_labels: list[
         tuple[float, tuple[float, float, float, float]]
     ] | None = None,
+    source_bindings: list[tuple[float, int]] | None = None,
     plot: PlotBox | None = None,
 ) -> list[TransferCurve]:
     """Assign temperature identities from source labels, then validate ZTC."""
@@ -1030,7 +1033,7 @@ def _assign_temperatures(
         raise RuntimeError(
             "two-curve temperature assignment requires owned positioned labels"
         )
-    bindings = _bind_two_temperature_labels(
+    bindings = source_bindings or _bind_two_temperature_labels(
         pixel_curves, positioned_labels, temperatures, plot
     )
     assigned = [
@@ -1310,6 +1313,17 @@ def process_chart(
                 if len(temperatures) == 2
                 else None
             )
+            source_bindings = (
+                _bind_two_temperature_legend_styles(
+                    page,
+                    transform,
+                    plot,
+                    pixel_curves,
+                    positioned_labels,
+                )
+                if positioned_labels is not None
+                else None
+            )
         except RuntimeError:
             if source_semantics_recovered:
                 assert semantic_refusal is not None
@@ -1334,6 +1348,7 @@ def process_chart(
             temperatures,
             pixel_curves=pixel_curves,
             positioned_labels=positioned_labels,
+            source_bindings=source_bindings,
             plot=plot,
         )
     except RuntimeError:

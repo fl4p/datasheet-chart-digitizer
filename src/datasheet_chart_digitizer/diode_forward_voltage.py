@@ -23,12 +23,22 @@ from .capacitance_traces import find_plot_box
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
     _chain_vector_components,
+    _is_curve_stroke_color,
     _is_neutral_gray_stroke,
     _resample_vector_trace_pixels,
     _vector_curve_edges,
 )
 from .crop_transform import CropTransform
-from .find_charts import ChartPanel, process_pdf
+from .diode_legend_color import (
+    colored_temperature_bindings,
+    temperatures_from_source_words,
+)
+from .find_charts import (
+    ChartPanel,
+    process_pdf,
+    run_text_bbox,
+    words_in_bbox,
+)
 from .gate_charge_trace import _detect_regular_grid_box, _projection_line_centers
 from .numeric_axis import (
     AxisTick,
@@ -142,7 +152,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     crop_path = out_dir / panel.crop_png
     calibration = calibrate_panel(panel, crop_path)
     voltage_on_y = _voltage_on_y_axis(calibration)
-    temperatures = _temperatures(panel.text)
+    temperatures = _panel_temperatures(panel)
     extracted = _extract_vector_curve_series(
         panel,
         crop_path,
@@ -158,12 +168,38 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         else {}
     )
     identities = [style_identities.get(curve.dash_pattern) for curve in extracted]
+    color_bindings = None
+    if not style_identities and len(extracted) == len(temperatures) == 2:
+        color_bindings = colored_temperature_bindings(
+            panel,
+            crop_path,
+            calibration,
+            curves_px,
+            drawing_candidate=(
+                lambda drawing, rect, owned_transform, owned_plot:
+                _source_drawing_diode_candidate(
+                    drawing,
+                    rect,
+                    owned_transform,
+                    owned_plot,
+                    curve_spans_x=voltage_on_y,
+                    expected_curve_count=2,
+                )
+            ),
+            is_curve_color=_is_curve_stroke_color,
+        )
+        if color_bindings is not None:
+            identities = [None] * len(extracted)
+            for temperature, curve_index in color_bindings:
+                identities[curve_index] = CurveIdentity(temperature, "typical")
     assigned, crossover = _assign_temperatures(
         curves_px,
         calibration,
         temperatures,
         voltage_on_y=voltage_on_y,
-        curve_identities=identities if style_identities else None,
+        curve_identities=identities
+        if style_identities or color_bindings is not None
+        else None,
     )
     overlay = _draw_overlay(crop_path, calibration, assigned, panel)
     overlay_path = (
@@ -172,7 +208,9 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(overlay_path), overlay)
     diagnostics = [
-        "temperature_and_limit_identity_bound_by_source_legend_style"
+        "temperature_identity_bound_by_source_legend_color"
+        if color_bindings is not None
+        else "temperature_and_limit_identity_bound_by_source_legend_style"
         if style_identities
         else "temperature_identity_stable_over_low_mid_shared_current"
     ]
@@ -1129,6 +1167,42 @@ def _join_vector_path_records(
     ]
 
 
+def _source_drawing_diode_candidate(
+    drawing: dict,
+    rect: pymupdf.Rect,
+    transform: CropTransform,
+    plot: PlotBox,
+    *,
+    curve_spans_x: bool,
+    expected_curve_count: int,
+) -> list[tuple[int, int]] | None:
+    """Reproduce one already-extracted diode curve from one source drawing."""
+
+    components = _chain_vector_components(
+        _vector_curve_edges([drawing], rect, min_stroke_width=0.4)
+    )
+    if not components:
+        return None
+    component = max(components, key=len)
+    if not _vector_group_span_status(
+        component, rect, curve_spans_x, expected_curve_count
+    )[0]:
+        return None
+    raw = [
+        tuple(round(value) for value in transform.to_px(x, y))
+        for x, y in component
+    ]
+    if curve_spans_x:
+        return _resample_vector_trace_pixels(raw, plot)
+    transposed_plot = PlotBox(plot.y0, plot.x0, plot.y1, plot.x1)
+    return [
+        (x, y)
+        for y, x in _resample_vector_trace_pixels(
+            [(y, x) for x, y in raw], transposed_plot
+        )
+    ]
+
+
 def _legend_temperature_styles(
     panel: ChartPanel,
     crop_path: Path,
@@ -1195,12 +1269,30 @@ def _legend_temperature_styles(
 
 
 def _temperatures(text: str) -> list[float]:
-    normalized = text.replace("−", "-").replace("º", "°").replace("℃", "°C")
+    normalized = (
+        text.replace("−", "-")
+        .replace("º", "°")
+        .replace("˚", "°")
+        .replace("℃", "°C")
+    )
     values = {
         float(value)
-        for value in re.findall(r"(-?\d+)\s*°?\s*C\b", normalized, re.I)
+        for value in re.findall(
+            r"(-?\d+)\s*(?:°|[oO])?\s*C\b", normalized, re.I
+        )
     }
     return sorted(value for value in values if -100 <= value <= 250)
+
+
+def _panel_temperatures(panel: ChartPanel) -> list[float]:
+    """Read temperature tokens owned by this panel's source-text geometry."""
+
+    page = run_text_bbox(Path(panel.pdf))[panel.page - 1]
+    words = words_in_bbox(page.words, panel.bbox_pt)
+    values = temperatures_from_source_words(words)
+    if values:
+        return values
+    return _temperatures(panel.text)
 
 
 def _assign_temperatures(
