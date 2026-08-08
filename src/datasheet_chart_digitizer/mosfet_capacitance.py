@@ -365,6 +365,7 @@ def process_chart(
         traces,
         axis_calibration if axis_trusted else None,
         shared_spans,
+        anchors,
     )
     diagnostics = trace_semantic_diagnostics(traces, plot)
     validation = trace_validation_summary(
@@ -407,10 +408,10 @@ def process_chart(
              for name in ("Ciss", "Coss", "Crss")},
             served_min_pf,
         )
-        for name, (pixels, pf_per_px) in sorted(unresolved.items()):
+        for name, (pixels, pf_per_px, deciding_pf) in sorted(unresolved.items()):
             anchor = anchors[name]
             reason = anchor_resolution_reason(
-                name, pixels, pf_per_px, float(anchor.value_pf)
+                name, pixels, pf_per_px, float(anchor.value_pf), deciding_pf
             )
             if reason not in status_reasons:
                 status_reasons.append(reason)
