@@ -8,10 +8,13 @@ for, and its anchor residual is -92.7%. It reported status=ok.
 """
 from __future__ import annotations
 
+import re
 import unittest
 
 from datasheet_chart_digitizer.capacitance_validation import (
     MIN_ANCHOR_RESOLUTION_PX,
+    TINY_CRSS_ANCHOR_PF,
+    anchor_resolution_reason,
     unresolved_anchor_traces,
 )
 
@@ -58,6 +61,46 @@ class ServedCurveDecidesResolvability(unittest.TestCase):
         # served curve must not change that
         self.assertEqual({}, unresolved_anchor_traces(
             True, PF_PER_PX, {"Crss": 88.0}, {"Crss": 0.001}))
+
+    def test_the_reason_reports_the_quantity_it_measured(self) -> None:
+        # SUP70060E: anchor 95 pF = 4.95 px, served floor 57.9 pF = 3.02 px.
+        # The message used to pair the ANCHOR's value with the FLOOR's pixel
+        # count -- "95 pF = 3.02 px" -- naming a quantity that is in neither
+        # place. The reason string is all a human reviewer sees, so the pF and
+        # the px it quotes together must be the same measurement.
+        pf_per_px = 19.21
+        (pixels, _, deciding_pf) = unresolved_anchor_traces(
+            False, pf_per_px, {"Crss": 95.0}, {"Crss": 57.9})["Crss"]
+        reason = anchor_resolution_reason(
+            "Crss", pixels, pf_per_px, 95.0, deciding_pf)
+        quoted_pf, quoted_px = re.search(
+            r"([\d.]+) pF = ([\d.]+) px", reason).groups()
+        self.assertAlmostEqual(
+            float(quoted_pf) / pf_per_px, float(quoted_px), places=1,
+            msg=f"pF and px in {reason!r} are different measurements")
+        self.assertIn("curve_floor", reason)
+        self.assertIn("anchor 95 pF", reason)  # not lost, just not conflated
+
+    def test_the_reason_falls_back_to_the_anchor_when_that_is_all_there_is(self) -> None:
+        (pixels, _, deciding_pf) = unresolved_anchor_traces(
+            False, 19.06, {"Crss": 16.0})["Crss"]
+        reason = anchor_resolution_reason("Crss", pixels, 19.06, 16.0, deciding_pf)
+        quoted_pf, quoted_px = re.search(
+            r"([\d.]+) pF = ([\d.]+) px", reason).groups()
+        self.assertAlmostEqual(float(quoted_pf), 16.0, places=1)
+        self.assertAlmostEqual(float(quoted_px), 16.0 / 19.06, places=1)
+
+    def test_the_tiny_crss_exemption_still_keys_on_the_anchor(self) -> None:
+        # The export offset is derived from the SPEC-TABLE value, so how far the
+        # trace falls afterwards must not grant or revoke the exemption.
+        anchor = TINY_CRSS_ANCHOR_PF - 1.0
+        self.assertIn(
+            "_offset_corrected_at_export",
+            anchor_resolution_reason("Crss", 0.3, 11.3, anchor, 0.5))
+        self.assertNotIn(
+            "_offset_corrected_at_export",
+            anchor_resolution_reason(
+                "Crss", 0.3, 11.3, TINY_CRSS_ANCHOR_PF + 1.0, 0.5))
 
     def test_the_threshold_is_the_documented_one(self) -> None:
         just_under = (MIN_ANCHOR_RESOLUTION_PX - 0.01) * PF_PER_PX
