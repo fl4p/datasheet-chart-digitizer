@@ -64,6 +64,46 @@ QOSS_CHARGE_INTEGRAL_STATUSES = frozenset(
 )
 COER_ENERGY_INTEGRAL_STATUS = "pass_coer_energy"
 COSS_ANCHOR_ONLY_STATUS = "coss_anchor_only"
+# The ONLY charge-path outcomes a weaker tier may follow: the ones meaning "there
+# was nothing to compare against". This is an ALLOWLIST on purpose. A denylist
+# would let any future status fall through by default, and the statuses that must
+# not fall through are exactly the ones carrying evidence -- `graph_table_inconsistent`
+# (the curve was compared to a table figure and disagreed),
+# `unreliable_extrapolation`, `chart_clipped_table_authoritative`. Overwriting one
+# of those with a weaker verdict makes the check vanish precisely when it has
+# evidence and that evidence is bad. Measured: IPLT60R160CM8 went
+# graph_table_inconsistent -> coer_reference_condition_voltage_unavailable and
+# dropped out of the regression harness's expected-inconsistent set.
+QOSS_NO_REFERENCE_STATUSES = frozenset(
+    {
+        "reference_unavailable",
+        "chart_clipped_reference_unavailable",
+    }
+)
+
+
+def weaker_tier_may_follow(qoss_status: str | None) -> bool:
+    """True only when the charge path found no reference to compare against.
+
+    `None` means the charge metrics could not be built at all, which is also an
+    absence of comparison rather than a failed one.
+    """
+    return qoss_status is None or qoss_status in QOSS_NO_REFERENCE_STATUSES
+
+
+def integral_reference_available(output_ref: object) -> bool:
+    """Whether ANY output-charge figure exists to validate an integral against.
+
+    Co(tr) counts. It was invisible to the tier selector while `validate_axis`
+    checked it, so a Co(tr)-only part whose charge check FAILED (measured: Co_tr
+    +69% against a 25% tolerance) fell through to the anchor-only tier and was
+    served on one anchor point. Kept here, next to the tier definitions, so the
+    call site cannot quietly disagree with the rule.
+    """
+    return any(
+        getattr(output_ref, name, None) is not None
+        for name in ("qoss_pc", "coer_pf", "cotr_pf")
+    )
 QOSS_SERVABLE_STATUSES = frozenset(
     QOSS_CHARGE_INTEGRAL_STATUSES
     | {COER_ENERGY_INTEGRAL_STATUS, COSS_ANCHOR_ONLY_STATUS}
@@ -247,9 +287,12 @@ def trace_validation_summary(
 
 
 def unresolved_anchor_traces(
-    y_log: object, y_scale: object, anchor_pf: dict[str, float | None]
+    y_log: object,
+    y_scale: object,
+    anchor_pf: dict[str, float | None],
+    served_min_pf: dict[str, float | None] | None = None,
 ) -> dict[str, tuple[float, float]]:
-    """Traces whose spec anchor spans too few pixels to be resolvable.
+    """Traces that fall below the axis's resolution somewhere along their span.
 
     Only linear capacitance axes can hit this: on a log axis every decade gets
     the same pixel budget.  Returns ``{name: (pixels, pf_per_px)}`` so callers
@@ -268,9 +311,20 @@ def unresolved_anchor_traces(
         return {}
     unresolved: dict[str, tuple[float, float]] = {}
     for name, value in anchor_pf.items():
-        if not value:
+        # The anchor is stated at ONE voltage; the served curve keeps falling past
+        # it. Judging resolvability on the anchor alone missed traces that are
+        # resolvable where the anchor sits and sub-pixel further along -- measured:
+        # HYG065N10LS1P's Crss anchor is 7.8 px but its curve reaches 0.57 px,
+        # worse than the 0.84 px case this rule was written for, and its anchor
+        # residual is -92.7%. So the deciding quantity is the MINIMUM of the two:
+        # the anchor when that is all we have, the served curve's own floor when
+        # the caller supplies it.
+        floor_pf = min(
+            (v for v in (value, (served_min_pf or {}).get(name)) if v), default=None
+        )
+        if not floor_pf:
             continue
-        pixels = float(value) / pf_per_px
+        pixels = float(floor_pf) / pf_per_px
         if pixels < MIN_ANCHOR_RESOLUTION_PX:
             unresolved[name] = (pixels, pf_per_px)
     return unresolved

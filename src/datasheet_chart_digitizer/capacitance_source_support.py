@@ -226,13 +226,21 @@ def grid_rule_capture_diagnostics(
                     abandoned, measurable = _abandoned_stroke_columns(
                         gray, plot, traces, run, rule_rows
                     )
-                    if measurable <= 0:
+                    # Fewer measurable columns than the flag threshold means the
+                    # evidence CANNOT reach the bar, whatever the trace did -- a
+                    # run abandoning 100% of its measurable columns would read
+                    # clean. `measurable` counts only columns where all three
+                    # traces are served, so it shrinks exactly as extraction
+                    # degrades: the anti-monotone shape, inside the fix for it.
+                    if measurable < ORPHAN_CENTER_MIN_COLUMNS:
                         undecidable.append(
                             {
                                 **_run_to_json(run, plot),
                                 "rule_y_px": rule_y,
-                                "reason": "no_off_rule_approach_and_no_"
+                                "reason": "no_off_rule_approach_and_too_few_"
                                 "measurable_source_columns",
+                                "measurable_source_columns": measurable,
+                                "abandoned_stroke_columns": abandoned,
                                 "rule_evidence_columns": eligible,
                             }
                         )
