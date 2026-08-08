@@ -291,12 +291,14 @@ def unresolved_anchor_traces(
     y_scale: object,
     anchor_pf: dict[str, float | None],
     served_min_pf: dict[str, float | None] | None = None,
-) -> dict[str, tuple[float, float]]:
+) -> dict[str, tuple[float, float, float]]:
     """Traces that fall below the axis's resolution somewhere along their span.
 
     Only linear capacitance axes can hit this: on a log axis every decade gets
-    the same pixel budget.  Returns ``{name: (pixels, pf_per_px)}`` so callers
-    can report the measurement, and an EMPTY dict when the axis is logarithmic
+    the same pixel budget.  Returns ``{name: (pixels, pf_per_px, deciding_pf)}``
+    so callers can report the measurement in the units it was made in -- the
+    deciding pF is the anchor when that is all there is, and the served curve's
+    floor when the caller supplied one.  Returns an EMPTY dict when the axis is logarithmic
     or its scale is unknown -- absence of a linear scale is absence of this
     particular failure mode, not a clean bill of health for the trace.
     """
@@ -309,7 +311,7 @@ def unresolved_anchor_traces(
         return {}
     if pf_per_px <= 0.0:
         return {}
-    unresolved: dict[str, tuple[float, float]] = {}
+    unresolved: dict[str, tuple[float, float, float]] = {}
     for name, value in anchor_pf.items():
         # The anchor is stated at ONE voltage; the served curve keeps falling past
         # it. Judging resolvability on the anchor alone missed traces that are
@@ -326,19 +328,44 @@ def unresolved_anchor_traces(
             continue
         pixels = float(floor_pf) / pf_per_px
         if pixels < MIN_ANCHOR_RESOLUTION_PX:
-            unresolved[name] = (pixels, pf_per_px)
+            # Return the pF the pixel count was DERIVED FROM, not just the count.
+            # The caller reports both, and pairing the anchor's value with the
+            # served floor's pixel count describes a quantity that exists
+            # nowhere: SUP70060E read "95 pF = 3.02 px" when 95 pF is 4.95 px
+            # and 3.02 px is 58 pF. The reason string is the only thing a human
+            # reviewer sees, so it has to name what was actually measured.
+            unresolved[name] = (pixels, pf_per_px, float(floor_pf))
     return unresolved
 
 
 def anchor_resolution_reason(
-    name: str, pixels: float, pf_per_px: float, anchor_value_pf: float
+    name: str,
+    pixels: float,
+    pf_per_px: float,
+    anchor_value_pf: float,
+    deciding_pf: float | None = None,
 ) -> str:
+    """Describe the downgrade in the units the measurement was made in.
+
+    ``deciding_pf`` is what ``pixels`` was computed from -- the served curve's
+    floor when the caller has one, the anchor otherwise. It is reported
+    SEPARATELY from ``anchor_value_pf`` because the two are different
+    quantities and quoting one against the other's pixel count names a value
+    that appears nowhere in the chart. The tiny-Crss export exemption stays
+    keyed on the ANCHOR: the export applies a fixed offset derived from the
+    spec-table value, so that is the number deciding whether the correction
+    applies, regardless of how far the trace falls afterwards.
+    """
+
     exempt = name == "Crss" and anchor_value_pf <= TINY_CRSS_ANCHOR_PF
     suffix = "_offset_corrected_at_export" if exempt else ""
+    measured = anchor_value_pf if deciding_pf is None else deciding_pf
+    source = "anchor" if deciding_pf is None or deciding_pf >= anchor_value_pf else "curve_floor"
     return (
         f"{name}_anchor_below_axis_resolution{suffix}:"
-        f"{anchor_value_pf:g} pF = {pixels:.2f} px on a linear axis "
-        f"({pf_per_px:.2f} pF/px, need {MIN_ANCHOR_RESOLUTION_PX:g})"
+        f"{source} {measured:g} pF = {pixels:.2f} px on a linear axis "
+        f"({pf_per_px:.2f} pF/px, need {MIN_ANCHOR_RESOLUTION_PX:g}; "
+        f"anchor {anchor_value_pf:g} pF)"
     )
 
 

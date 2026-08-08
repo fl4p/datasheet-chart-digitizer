@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import cv2
 import numpy as np
 
@@ -16,6 +18,7 @@ def draw_trace_overlay(
     traces: list[Trace],
     calibration: AxisCalibration | None = None,
     shared_spans: list[dict[str, object]] | None = None,
+    anchors: Mapping[str, object] | None = None,
 ) -> np.ndarray:
     overlay = image.copy()
     draw_plot_frame(overlay, plot, color=(0, 180, 255))
@@ -49,6 +52,7 @@ def draw_trace_overlay(
         )
 
     _draw_shared_ciss_coss_spans(overlay, traces, shared_spans or [])
+    _draw_anchors(overlay, plot, calibration, anchors or {}, traces)
 
     if calibration is not None:
         source_x_ticks = (
@@ -91,6 +95,118 @@ def draw_trace_overlay(
                 lineType=cv2.LINE_AA,
             )
     return overlay
+
+
+def _draw_anchors(
+    overlay: np.ndarray,
+    plot: PlotBox,
+    calibration: AxisCalibration | None,
+    anchors: Mapping[str, object],
+    traces: list[Trace],
+) -> None:
+    """Mark every spec-table anchor on the chart it was compared against.
+
+    The anchor is the only independent evidence most of these charts carry, and
+    the residual it produces is the number a reviewer trusts -- but the residual
+    is a scalar, so it cannot show WHERE the comparison happened or how much
+    room the axis had there. Drawing the anchor makes both visible: on
+    SUP70060E the Crss anchor lands 5 px off the frame with the trace beneath
+    it, which reads instantly as "this comparison had no room" where "+1.4 %"
+    reads as agreement.
+
+    Every supplied anchor is accounted for. One that cannot be PLACED -- no
+    trusted axis, a non-positive value, a position off the plot -- is listed in
+    a corner note instead of being dropped, because a missing marker is
+    indistinguishable from a chart that carried no anchor at all, and that is
+    the reading that lets a bad comparison pass review unseen.
+    """
+
+    if not anchors:
+        return
+    trace_colors = {trace.name: _trace_color_bgr(trace) for trace in traces}
+    unplaced: list[str] = []
+    for name in ("Ciss", "Coss", "Crss"):
+        anchor = anchors.get(name)
+        if anchor is None:
+            continue
+        value_pf = getattr(anchor, "value_pf", None)
+        vds_v = getattr(anchor, "vds_v", None)
+        label = "%s %s pF @%s V" % (
+            name,
+            "?" if value_pf is None else "%g" % float(value_pf),
+            "?" if vds_v is None else "%g" % float(vds_v),
+        )
+        if calibration is None:
+            unplaced.append("%s (axis untrusted)" % label)
+            continue
+        if not value_pf or float(value_pf) <= 0.0 or vds_v is None:
+            unplaced.append("%s (unusable value)" % label)
+            continue
+        x = int(round(calibration_x_of_v(calibration, plot, float(vds_v))))
+        y = int(round(
+            calibration_y_of_log_c(calibration, plot, np.log10(float(value_pf)))
+        ))
+        if not (plot.x0 <= x <= plot.x1 and plot.y0 <= y <= plot.y1):
+            unplaced.append("%s (off-chart)" % label)
+            continue
+        color = trace_colors.get(name, TRACE_COLORS_BGR[name])
+        _draw_anchor_marker(overlay, x, y, color, label, plot)
+    if unplaced:
+        _draw_unplaced_anchor_note(overlay, plot, unplaced)
+
+
+# The marker is a hollow diamond with a crosshair: no extraction glyph on these
+# overlays uses either, so it cannot be misread as a digitized sample.
+ANCHOR_MARKER_RADIUS_PX = 7
+
+
+def _draw_anchor_marker(
+    overlay: np.ndarray,
+    x: int,
+    y: int,
+    color: tuple[int, int, int],
+    label: str,
+    plot: PlotBox,
+) -> None:
+    r = ANCHOR_MARKER_RADIUS_PX
+    diamond = np.array([[x, y - r], [x + r, y], [x, y + r], [x - r, y]], dtype=np.int32)
+    # White underlay first: these charts run light and a saturated hue alone
+    # vanishes against its own trace.
+    cv2.polylines(overlay, [diamond], True, (255, 255, 255), 3, lineType=cv2.LINE_AA)
+    cv2.polylines(overlay, [diamond], True, color, 1, lineType=cv2.LINE_AA)
+    cv2.line(overlay, (x - r - 3, y), (x + r + 3, y), color, 1, lineType=cv2.LINE_AA)
+    cv2.line(overlay, (x, y - r - 3), (x, y + r + 3), color, 1, lineType=cv2.LINE_AA)
+    # Label below-right by default, flipped near the right edge so it stays on
+    # the crop rather than being clipped away. Flipped ABOVE the marker in the
+    # bottom of the plot, where the label would otherwise land on the x-axis
+    # tick row -- and the bottom is exactly where the anchors worth reading sit,
+    # because that is where the axis has run out of resolution.
+    text_x = x + r + 4
+    if text_x > plot.x1 - 90:
+        text_x = max(plot.x0, x - r - 92)
+    if y > plot.y1 - max(18, int(plot.height * 0.12)):
+        text_y = max(plot.y0 + 10, y - r - 5)
+    else:
+        text_y = min(plot.y1 - 3, y + r + 12)
+    for shade, thickness in (((255, 255, 255), 3), (color, 1)):
+        cv2.putText(
+            overlay, label, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX,
+            0.38, shade, thickness, lineType=cv2.LINE_AA,
+        )
+
+
+def _draw_unplaced_anchor_note(
+    overlay: np.ndarray, plot: PlotBox, unplaced: list[str]
+) -> None:
+    lines = ["ANCHORS NOT PLACED:"] + unplaced
+    y = max(12, plot.y0 + 14)
+    for line in lines:
+        for shade, thickness in (((255, 255, 255), 3), ((0, 0, 200), 1)):
+            cv2.putText(
+                overlay, line, (max(4, plot.x0 + 6), y), cv2.FONT_HERSHEY_SIMPLEX,
+                0.40, shade, thickness, lineType=cv2.LINE_AA,
+            )
+        y += 14
 
 
 def _draw_shared_ciss_coss_spans(
