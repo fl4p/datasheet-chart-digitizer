@@ -247,7 +247,8 @@ def parse_output_charge_reference(part: str, datasheet_root: Path) -> OutputChar
         oc = (_SUPPLIED_ANCHORS.get(part) or {}).get("output_charge") or {}
         return OutputChargeReference(
             qoss_pc=oc.get("qoss_pc"), vint_v=oc.get("vint_v"),
-            coer_pf=oc.get("coer_pf"), cotr_pf=oc.get("cotr_pf"))
+            coer_pf=oc.get("coer_pf"), cotr_pf=oc.get("cotr_pf"),
+            coer_vint_v=oc.get("coer_vint_v"))
 
     csv_path = _anchor_csv_path(part, datasheet_root)
     if csv_path is None:
@@ -400,5 +401,6 @@ def output_charge_reference_to_json(ref: OutputChargeReference) -> dict[str, flo
         "qoss_pc": ref.qoss_pc,
         "vint_v": ref.vint_v,
         "coer_pf": ref.coer_pf,
+        "coer_vint_v": ref.coer_vint_v,
         "cotr_pf": ref.cotr_pf,
     }

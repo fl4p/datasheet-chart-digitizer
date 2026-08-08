@@ -107,6 +107,10 @@ class OutputChargeReference:
     vint_v: float | None
     coer_pf: float | None
     cotr_pf: float | None
+    # Voltage Co(er) is quoted at. Co(er) without its condition voltage cannot
+    # be turned into an energy, so this is required for the Co(er) tier and is
+    # never guessed: absent, the check reports itself unevaluable.
+    coer_vint_v: float | None = None
 
 
 @dataclass(frozen=True)

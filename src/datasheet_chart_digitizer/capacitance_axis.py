@@ -789,41 +789,159 @@ def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: 
     return _major_horizontal_gridline_fit(image, plot, count).centers
 
 
+_GRIDLINE_MIN_ROW_INK_FRACTION = 0.35
+_GRIDLINE_MIN_ROW_SPAN_FRACTION = 0.65
+_GRIDLINE_MAX_RUN_PX = 8
+_GRIDLINE_RUN_PEAK_FRACTION = 0.9
+
+
 def _horizontal_gridline_candidates(image: np.ndarray, plot: PlotBox) -> list[float]:
-    """Return source horizontal-line centers crossing most of the plot width."""
+    """Return source horizontal-line centers crossing most of the plot width.
+
+    Rows are measured directly instead of being morphologically opened with a
+    long horizontal kernel.  The kernel erased two whole classes of real rule:
+
+    * DOTTED/dashed grids (huayi, NCE) have no run long enough to survive it,
+      so those panels reported only their two frame rails and every arithmetic
+      Y ladder failed to seat;
+    * a solid rule interrupted by a curve LABEL ("Ciss" printed on the 12000 pF
+      line) is left with fragments shorter than the kernel, and the surviving
+      fragment then misses the width test.
+
+    Within a run of qualifying rows only the darkest plateau is kept.  That is
+    what separates a rule from a near-horizontal TRACE that touches it: on
+    GT045N10T the flat Ciss curve merged with the 6000 pF rule into one
+    7 px-tall contour whose center sat 2 px off the true rule, which is enough
+    to fail the 1 px seating-fit gate on an otherwise perfect axis.
+    """
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
-    _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(80, gray.shape[1] // 5), 1))
-    hlines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(hlines, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    by_y: list[tuple[float, list[tuple[int, int]]]] = []
-    for contour in contours:
-        x, y, w, h = cv2.boundingRect(contour)
-        if w < plot.width * 0.20 or h > 8:
-            continue
-        center_y = y + h / 2.0
-        if not (plot.y0 - 4 <= center_y <= plot.y1 + 4):
-            continue
-        start = max(plot.x0, x)
-        end = min(plot.x1, x + w - 1)
-        if end <= start:
-            continue
-        for idx, (existing_y, intervals) in enumerate(by_y):
-            if abs(center_y - existing_y) <= 3.0:
-                intervals.append((start, end))
-                ys = [existing_y] * (len(intervals) - 1) + [center_y]
-                by_y[idx] = (float(np.median(ys)), intervals)
-                break
-        else:
-            by_y.append((center_y, [(start, end)]))
+    x0 = max(0, int(round(plot.x0)))
+    x1 = min(gray.shape[1] - 1, int(round(plot.x1)))
+    if x1 <= x0:
+        return []
+    # `cv2.threshold(gray, 245, THRESH_BINARY_INV)` marks gray <= 245 as ink;
+    # keep that boundary so a rule printed at exactly 245 does not vanish.
+    dark = gray[:, x0 : x1 + 1] <= 245
+    width = x1 - x0 + 1
+    ink = dark.sum(axis=1) / float(width)
+    # A rule crosses the plot; a short dark segment (legend underline, axis
+    # break) does not, however dense it is.
+    span = np.zeros(gray.shape[0], dtype=float)
+    for row in range(gray.shape[0]):
+        columns = np.flatnonzero(dark[row])
+        if columns.size:
+            span[row] = (columns[-1] - columns[0] + 1) / float(width)
+    qualifies = (
+        (ink >= _GRIDLINE_MIN_ROW_INK_FRACTION)
+        & (span >= _GRIDLINE_MIN_ROW_SPAN_FRACTION)
+    )
+    # The band selects which rules to REPORT (by their center), so a run is
+    # grown across the whole image: a stroke straddling the band edge would
+    # otherwise be truncated on the low side and its center biased inward by up
+    # to half its thickness, while the high side silently dropped it instead.
+    low = max(0, int(math.floor(plot.y0 - 4)))
+    high = min(gray.shape[0] - 1, int(math.ceil(plot.y1 + 4)))
+    last_row = gray.shape[0] - 1
 
     candidates: list[float] = []
-    for center_y, intervals in by_y:
-        if _interval_coverage_fraction(intervals, plot.x0, plot.x1) >= 0.65:
-            candidates.append(center_y)
+    row = low
+    while row <= high:
+        if not qualifies[row]:
+            row += 1
+            continue
+        start = row
+        while start - 1 >= 0 and qualifies[start - 1]:
+            start -= 1
+        end = row
+        while end + 1 <= last_row and qualifies[end + 1]:
+            end += 1
+        run = list(range(start, end + 1))
+        row = end + 1
+        # Densely gridded panels leave no blank row between neighbouring rules,
+        # so a run can hold several strokes plus the curve ink between them.
+        # Split it into darkest-plateau segments and emit each one: taking only
+        # the longest, or discarding the whole run as "too thick", loses real
+        # major gridlines on exactly those panels.
+        peak = max(ink[y] for y in run)
+        floor = _GRIDLINE_RUN_PEAK_FRACTION * peak
+        cores: list[list[int]] = []
+        for y in run:
+            if ink[y] < floor:
+                continue
+            if cores and y == cores[-1][-1] + 1:
+                cores[-1].append(y)
+            else:
+                cores.append([y])
+        segments = [_with_antialias_fringe(core, run, ink, peak) for core in cores]
+        for segment in segments:
+            # A stroke is thin; a thicker band is a filled area, not a rule.
+            if len(segment) > _GRIDLINE_MAX_RUN_PX:
+                continue
+            # Weight each row by its ink: a stroke's antialiased edge rows carry
+            # real sub-pixel position, and dropping them (or counting them like
+            # saturated rows) biases the seat by up to half a pixel.  AONS66916's
+            # bottom rule has a heavier fringe above (.44/.76) than below (.49),
+            # so its true center sits above the saturated core's midpoint.
+            #
+            # Row indices name the TOP edge of a pixel cell, so the stroke
+            # center is half a pixel below the weighted mean row.  This is the
+            # convention the contour-bounding-box detector this replaced used
+            # (y + h/2), and the seated tick geometry in the corpus and its
+            # regression expectations are expressed in it.
+            weights = [float(ink[y]) for y in segment]
+            total = sum(weights)
+            if total <= 0.0:
+                continue
+            # Rounded: a weighted mean carries float noise well below any
+            # meaningful pixel precision, and stable values keep the emitted
+            # JSON reproducible for the collateral hash harness.
+            center_y = round(
+                sum(y * weight for y, weight in zip(segment, weights)) / total + 0.5,
+                6,
+            )
+            if plot.y0 - 4 <= center_y <= plot.y1 + 4:
+                candidates.append(center_y)
     return sorted(candidates)
+
+
+_GRIDLINE_FRINGE_MIN_PEAK_FRACTION = 0.5
+
+
+def _with_antialias_fringe(
+    core: list[int], run: list[int], ink: np.ndarray, peak: float
+) -> list[int]:
+    """Re-attach a stroke's own antialiased edge rows to its saturated core.
+
+    Keeping only the core biases the reported center by half a pixel whenever a
+    plain rule rasterises with an uneven fringe -- AONS66916's bottom rule
+    (rows 344-349 at .44/.76/1/1/1/.49) moved 347.0 -> 347.5 and pushed both
+    Coss and Crss further from their spec-table anchors.
+
+    A stroke's own fringe DECAYS monotonically away from the core; a competing
+    stroke does not, which is what keeps GT045N10T's flat Ciss shoulder
+    (.766/.754/.733/.701 rising away from the rule) out of the 6000 pF rule's
+    center.  Rows below half the run peak are edge noise and never attach.
+    """
+
+    minimum = _GRIDLINE_FRINGE_MIN_PEAK_FRACTION * peak
+    first, last = run[0], run[-1]
+    extended = list(core)
+    previous = ink[core[0]]
+    for y in range(core[0] - 1, first - 1, -1):
+        value = ink[y]
+        if value < minimum or value >= previous:
+            break
+        extended.insert(0, y)
+        previous = value
+    previous = ink[core[-1]]
+    for y in range(core[-1] + 1, last + 1):
+        value = ink[y]
+        if value < minimum or value >= previous:
+            break
+        extended.append(y)
+        previous = value
+    return extended
 
 
 def _vertical_gridline_candidates(image: np.ndarray, plot: PlotBox) -> list[float]:

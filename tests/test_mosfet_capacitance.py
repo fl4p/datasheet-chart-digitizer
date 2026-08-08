@@ -531,7 +531,13 @@ class AxisCalibrationTests(unittest.TestCase):
             self.assertEqual("axis_calibration_untrusted", result["status_reasons"][0])
             self.assertFalse(result["physical_output_available"])
             self.assertEqual(
-                {"qoss_pc": None, "vint_v": None, "coer_pf": None, "cotr_pf": None},
+                {
+                    "qoss_pc": None,
+                    "vint_v": None,
+                    "coer_pf": None,
+                    "coer_vint_v": None,
+                    "cotr_pf": None,
+                },
                 result["output_charge_reference"],
             )
             self.assertIn("untrusted text-order axis fallback", result["axis_warning"])
@@ -634,7 +640,19 @@ class AxisCalibrationTests(unittest.TestCase):
             self.assertIsNone(result["qoss_metrics"])
             self.assertIsNotNone(result["qoss_diagnostic_metrics"])
             self.assertFalse(result["qoss_metrics_physical_output_available"])
-            self.assertEqual("reference_unavailable", result["qoss_validation_status"])
+            # No integral reference of either kind exists, so the Qoss charge
+            # tier cannot run. The anchor-only tier is then the only candidate
+            # and it refuses because trace validation is not `pass` -- a more
+            # specific verdict than the old blanket `reference_unavailable`,
+            # and still explicitly non-servable.
+            self.assertEqual(
+                "anchor_only_trace_validation_not_pass",
+                result["qoss_validation_status"],
+            )
+            self.assertNotIn(
+                result["qoss_validation_status"],
+                mc.QOSS_SERVABLE_STATUSES,
+            )
             self.assertIn(
                 "chart_physical_output_unavailable",
                 result["qoss_metrics_status_reasons"],

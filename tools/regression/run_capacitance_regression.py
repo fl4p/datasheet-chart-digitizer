@@ -54,7 +54,7 @@ CASES = (
         name="dashed_vector_trace",
         chart_index=CHART_ROOT / "debug_iaucn_dashed" / "charts.json",
         expected_charts=1,
-        allowed_qoss_statuses=frozenset({"pass", None}),
+        allowed_qoss_statuses=frozenset({"pass", "coss_anchor_only", None}),
         expected_extraction_axis_counts=(("vector", "grid_text", 1),),
     ),
     RegressionCase(
@@ -63,7 +63,20 @@ CASES = (
         expected_charts=35,
         max_untrusted_axes=1,
         expected_untrusted_parts=frozenset({"IMBG75R007M2H"}),
-        allowed_qoss_statuses=frozenset({"pass", "graph_table_inconsistent", None}),
+        allowed_qoss_statuses=frozenset(
+            {
+                "pass",
+                "graph_table_inconsistent",
+                # Parts with no Qoss reference used to collapse into
+                # `reference_unavailable`. They are now classified by the tier
+                # that actually applies. The VERDICT is unchanged for every one
+                # of them except the anchor-only passes, which are the point.
+                "coer_graph_table_inconsistent",
+                "coss_anchor_only",
+                "anchor_only_coss_anchor_inconsistent",
+                None,
+            }
+        ),
         expected_graph_table_inconsistent_parts=frozenset(
             {
                 "AIMZA75R007M2H",
@@ -204,7 +217,8 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
     graph_table_inconsistent_parts = {
         str(result.get("part"))
         for result in results
-        if result.get("qoss_validation_status") == "graph_table_inconsistent"
+        if result.get("qoss_validation_status")
+        in ("graph_table_inconsistent", "coer_graph_table_inconsistent")
     }
     missing_axis_parts = {
         str(result.get("part"))

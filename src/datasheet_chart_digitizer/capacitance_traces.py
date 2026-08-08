@@ -28,6 +28,16 @@ CISS_COSS_IDENTITY_MIN_SHARED_TAIL_POINTS = 12
 UPPER_CROSSING_MIN_MERGED_COLUMNS = 12
 UPPER_CROSSING_MIN_COST_ADVANTAGE_PX = 4.0
 UPPER_CROSSING_MAX_SOURCE_SEATING_DISTANCE_PX = 1.0
+# Two per-column stroke centers closer than one stroke width are the SAME ink.
+# Raster strokes on this corpus measure 2-3 px thick, so 3.0 px is "the same
+# object", not "a nearby curve": on the tightest legitimately-separated
+# Coss/Crss column in the corpus the two sit 12+ px apart.
+PEER_STROKE_EXCLUSION_PX = 3.0
+# Columns either side of the seed that must also show three strokes. The seed
+# starts every trace with a zero-slope one-point history, so it must not sit on
+# a discontinuity; 5 px is enough to step clear of a knee's leading edge while
+# still leaving a seed on every corpus panel.
+SEED_STABILITY_WINDOW_PX = 5
 
 
 def repair_merged_ciss_coss_identity(
@@ -357,7 +367,17 @@ def _raster_source_centers_by_x(
     if float(dark.mean()) > 0.10 or _dark_grid_rule_evidence(dark):
         dark = cv2.morphologyEx(dark, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
         dark = _remove_full_width_horizontal_rails(dark)
-        dark = _remove_frame_residual_rails(dark)
+    # The plot FRAME exists on every chart, whatever ink the grid is drawn in,
+    # so its removal must not be gated on the black-grid signature. Gating it
+    # cost the whole GT/goford family their Crss: the bottom rail survives as
+    # the lowest per-column stroke, `_trace_candidates(..., "bottom")` takes
+    # `centers[-1]`, and the real Crss -- one stroke above it, carrying
+    # hundreds of pF -- is discarded for the entire span. Only rows within
+    # `FRAME_RESIDUAL_BAND_PX` of the ROI edge are eligible, so a mid-plot
+    # trace is untouched; a real trace that genuinely coincides with the rail
+    # loses those columns and fails toward `short_x_span`, never toward a
+    # confident wrong value.
+    dark = _remove_frame_residual_rails(dark)
     margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
     dark[:margin, :] = 0
     dark[-margin:, :] = 0
@@ -444,7 +464,12 @@ def _track_directional_traces(
     if joint_pair_tracking:
         tracked, chosen_seed = track_ciss_coss_pair(centers_by_x, plot, anchors, seed_x)
         tracked["Crss"] = _track_one_trace(
-            centers_by_x, chosen_seed, -1, "bottom", plot
+            centers_by_x,
+            chosen_seed,
+            -1,
+            "bottom",
+            plot,
+            _roi_y_by_x(tracked.get("Coss"), plot),
         )
         return tracked
     chosen_seed = _seed_x_from_anchors(centers_by_x, anchors)
@@ -454,10 +479,23 @@ def _track_directional_traces(
         ("Coss", 1, "upper"),
         ("Crss", -1, "bottom"),
     ):
+        # Crss is tracked last and may not claim the stroke Coss is already
+        # on; see `_drop_reserved_candidates`.
+        reserved = _roi_y_by_x(tracked.get("Coss"), plot) if name == "Crss" else None
         tracked[name] = _track_one_trace(
-            centers_by_x, chosen_seed, seed_index, candidate, plot
+            centers_by_x, chosen_seed, seed_index, candidate, plot, reserved
         )
     return tracked
+
+
+def _roi_y_by_x(
+    points: list[tuple[int, int]] | None, plot: PlotBox
+) -> dict[int, float] | None:
+    """Map a tracked trace back into the ROI coordinates the tracker uses."""
+
+    if not points:
+        return None
+    return {x - plot.x0: float(y - plot.y0) for x, y in points}
 
 
 def _repair_reseparated_upper_crossing(
@@ -1278,15 +1316,47 @@ def _seed_x_from_anchors(centers_by_x: list[list[float]], anchors: dict[str, Cap
     anchor_vds = float(np.median(vds_values))
     axis_max_v = anchor_vds * 2.0
     target = int(round((anchor_vds / axis_max_v) * (len(centers_by_x) - 1)))
-    candidates = [x for x, centers in enumerate(centers_by_x) if len(centers) >= 3]
+    candidates = stable_three_center_columns(centers_by_x)
     if not candidates:
         return _seed_x_from_middle(centers_by_x)
     return min(candidates, key=lambda x: abs(x - target))
 
 
+def stable_three_center_columns(centers_by_x: list[list[float]]) -> list[int]:
+    """Three-center columns that are not sitting on a stroke discontinuity.
+
+    The seed column defines every trace's identity by RANK, and the tracker
+    starts there with a one-point history whose predicted slope is zero. Seed
+    it at the last column before a steep Coss knee and the very next column is
+    already out of reacquisition range, so the trace dies at the seed.
+
+    That used to be masked: the bottom grid rail padded almost every column to
+    three centers, so the seed landed near mid-plot by luck. With the rail
+    correctly removed, the three-center columns end where Crss decays -- and
+    the last of them is exactly the worst seed. Require three centers across a
+    window so the seed is interior to a stable run.
+    """
+
+    eligible = [len(centers) >= 3 for centers in centers_by_x]
+    window = SEED_STABILITY_WINDOW_PX
+    return [
+        x
+        for x in range(len(centers_by_x))
+        if eligible[x]
+        and all(
+            eligible[neighbour]
+            for neighbour in range(
+                max(0, x - window), min(len(centers_by_x), x + window + 1)
+            )
+        )
+    ]
+
+
 def _seed_x_from_middle(centers_by_x: list[list[float]]) -> int:
     target = int(len(centers_by_x) * 0.55)
-    candidates = [x for x, centers in enumerate(centers_by_x) if len(centers) >= 3]
+    candidates = stable_three_center_columns(centers_by_x) or [
+        x for x, centers in enumerate(centers_by_x) if len(centers) >= 3
+    ]
     if not candidates:
         raise RuntimeError("could not find a three-trace seed column")
     return min(candidates, key=lambda x: abs(x - target))
@@ -1298,6 +1368,7 @@ def _track_one_trace(
     seed_index: int,
     candidate_kind: str,
     plot: PlotBox,
+    reserved_by_x: dict[int, float] | None = None,
 ) -> list[tuple[int, int]]:
     seed_centers = centers_by_x[seed_x]
     if len(seed_centers) < 3:
@@ -1305,10 +1376,14 @@ def _track_one_trace(
     seed_y = float(seed_centers[seed_index])
     local_points = [(seed_x, seed_y)]
     local_points.extend(
-        _track_direction(centers_by_x, seed_x, seed_y, -1, candidate_kind)
+        _track_direction(
+            centers_by_x, seed_x, seed_y, -1, candidate_kind, reserved_by_x
+        )
     )
     local_points.extend(
-        _track_direction(centers_by_x, seed_x, seed_y, 1, candidate_kind)
+        _track_direction(
+            centers_by_x, seed_x, seed_y, 1, candidate_kind, reserved_by_x
+        )
     )
 
     by_x: dict[int, float] = {}
@@ -1328,6 +1403,7 @@ def _track_direction(
     seed_y: float,
     direction: int,
     candidate_kind: str,
+    reserved_by_x: dict[int, float] | None = None,
 ) -> list[tuple[int, float]]:
     points: list[tuple[int, float]] = [(seed_x, seed_y)]
     out: list[tuple[int, float]] = []
@@ -1338,6 +1414,7 @@ def _track_direction(
     x = seed_x + direction
     while 0 <= x < len(centers_by_x):
         candidates = _trace_candidates(centers_by_x[x], candidate_kind)
+        candidates = _drop_reserved_candidates(candidates, reserved_by_x, x)
         pred = _predict_y(points, x)
         if candidates:
             best = min(candidates, key=lambda y: abs(y - pred))
@@ -1356,14 +1433,52 @@ def _track_direction(
     return out
 
 
+def _drop_reserved_candidates(
+    candidates: list[float],
+    reserved_by_x: dict[int, float] | None,
+    x: int,
+) -> list[float]:
+    """Remove the stroke a higher curve already owns in this column.
+
+    Coss and Crss are tracked independently by RANK inside the column, and
+    rank is not identity: when Crss decays into the axis and stops being a
+    resolvable stroke, the column drops from three centers to two and
+    ``centers[-1]`` -- Crss's rule -- becomes the COSS stroke. Crss then
+    climbs onto the Coss curve and is served as a Crss value ~50x too high
+    (GT045N10T/GT045N10TH: Crss read ~500 pF at 100 V against a true ~10 pF),
+    while Coss simultaneously loses the lane and truncates.
+
+    Coss = Cds + Cgd is strictly greater than Crss = Cgd, so the two can never
+    legitimately be the SAME stroke. Two centers within one stroke width are
+    not resolvable as separate objects, so the assignment is unverifiable:
+    withhold the column. The caller's miss counter then ends the trace, which
+    surfaces as ``Crss_short_x_span`` -- an explicit gap, never a confident
+    wrong value.
+    """
+
+    if not reserved_by_x:
+        return candidates
+    reserved = reserved_by_x.get(x)
+    if reserved is None:
+        return candidates
+    return [
+        y for y in candidates if abs(y - reserved) > PEER_STROKE_EXCLUSION_PX
+    ]
+
+
 def _trace_candidates(centers: list[float], candidate_kind: str) -> list[float]:
     if not centers:
         return []
     if candidate_kind == "upper":
-        if len(centers) >= 3:
+        # Both upper names may claim either of the two strokes. Restricting a
+        # two-stroke column to ``centers[0]`` assumed the vanished stroke was
+        # always Crss's, which is backwards on exactly the panels where Crss
+        # decays into the axis first: Coss is then the LOWER of the two, is
+        # never offered, and truncates mid-chart (GT048N10T Coss ended at
+        # 38 V of 100 V). Identity between the two is settled downstream by
+        # the shared-span and Ciss-flatness repairs, which need the samples.
+        if len(centers) >= 2:
             return centers[:2]
-        if len(centers) == 2:
-            return [centers[0]]
         return []
     if candidate_kind == "bottom":
         return [centers[-1]]

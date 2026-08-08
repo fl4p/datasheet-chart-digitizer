@@ -54,7 +54,10 @@ def _pair_seed_x(
     anchors: dict[str, CapAnchor],
     requested: int | None,
 ) -> int:
-    candidates = [
+    # Imported lazily: capacitance_traces imports this module at load time.
+    from .capacitance_traces import stable_three_center_columns
+
+    candidates = stable_three_center_columns(centers_by_x) or [
         x for x, centers in enumerate(centers_by_x) if len(centers) >= 3
     ]
     if not candidates:
@@ -84,7 +87,15 @@ def _track_pair_direction(
     x = seed_x + direction
     while 0 <= x < len(centers_by_x):
         centers = centers_by_x[x]
-        observations = centers[:2] if len(centers) >= 3 else centers[:1] if len(centers) == 2 else []
+        # A two-stroke column does NOT imply the vanished stroke was Crss's.
+        # Charts whose Crss decays into the axis lose the BOTTOM stroke first,
+        # so `centers[:1]` handed the pair a single observation, the shared-
+        # merge test rejected it (the two predictions are far apart), the
+        # nearest name -- Ciss -- took it, and Coss starved into
+        # PAIR_MAX_MISSES and truncated mid-chart (GT048N10T Coss ended at
+        # 38 V of 100 V). Offer both strokes and let the parallel/crossed
+        # assignment below decide identity, which is what it exists for.
+        observations = centers[:2] if len(centers) >= 2 else []
         predictions = {name: _pair_prediction(histories[name], x) for name in names}
         limit = PAIR_REACQUIRE_MAX_STEP_PX if misses else PAIR_MAX_STEP_PX
         accepted = False
@@ -110,8 +121,17 @@ def _track_pair_direction(
                     histories[name].append((x, assignment[name]))
                     out[name].append((x, assignment[name]))
                 accepted = True
-        elif len(observations) == 1:
-            observation = observations[0]
+        if not accepted and observations:
+            # Single-stroke salvage. Reached either when the column holds one
+            # stroke, or when the joint two-stroke assignment above was
+            # rejected -- the joint test is all-or-nothing, so without this
+            # fallback widening `observations` to two would STARVE a column
+            # that the old one-observation branch used to feed (IRFB4110G lost
+            # the left half of both upper traces that way).
+            observation = min(
+                observations,
+                key=lambda y: min(abs(predictions[name] - y) for name in names),
+            )
             prediction_gap = abs(predictions["Ciss"] - predictions["Coss"])
             distances = {
                 name: abs(predictions[name] - observation) for name in names

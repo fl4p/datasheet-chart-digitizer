@@ -35,6 +35,15 @@ GRID_RULE_MIN_EVIDENCE_COLUMNS = 20
 GRID_RULE_CAPTURE_MIN_APPROACH_DEVIATION_PX = 5.0
 GRID_RULE_APPROACH_WINDOW_PX = 14
 GRID_RULE_APPROACH_MIN_COLUMNS = 8
+# Fallback discriminator for a run whose trajectory is UNMEASURABLE (the trace
+# never leaves rule ink, so it has no own approach to extrapolate).  A trace
+# that abandoned its curve leaves that curve unclaimed; a flat trace that
+# merely coincides with a rule leaves nothing behind.  Measured over the
+# labelled panels: legitimate flat traces on a rule scored 0.00 (PSMN1R4-100ASE,
+# PSMN1R0-100ASF, IAUTN12S5N018TATMA1, AONS66916) to 0.03 (CRST030N10N), while
+# real captures scored 0.38 (XP10N3R8P Ciss on the 6000 pF rule) and 0.99
+# (GT020N10T Crss on the bottom frame).  The floor sits ~8x from both groups.
+GRID_RULE_ABANDONED_STROKE_MIN_COLUMN_FRACTION = 0.25
 
 
 def raster_source_support_diagnostics(
@@ -155,6 +164,7 @@ def grid_rule_capture_diagnostics(
         math.ceil((plot.width - 1) * GRID_RULE_CAPTURE_MIN_SPAN_FRACTION),
     )
     merged_columns = _shared_span_columns(shared_collapse_spans)
+    rule_rows = frozenset(candidate_rows)
 
     captures: dict[str, object] = {}
     undecidable_by_trace: dict[str, object] = {}
@@ -183,18 +193,72 @@ def grid_rule_capture_diagnostics(
                 # (Toshiba draws grid and data in one black ink).  Ink cannot
                 # separate that from capture; the trace's own trajectory can.
                 # A real curve arrives where it was heading, a captured one
-                # leaves its approach to sit on the rule.
+                # leaves its approach to sit on the rule.  The approach may
+                # only be measured over columns the trace does NOT already
+                # spend on rule ink -- see `_approach_deviation_px`.
                 deviation = _approach_deviation_px(
-                    y_by_x, run, rule_y, merged_columns
+                    y_by_x, run, rule_y, merged_columns, rule_rows
                 )
-                if deviation < GRID_RULE_CAPTURE_MIN_APPROACH_DEVIATION_PX:
-                    continue
                 # A flat full-span trace makes its OWN row look like a rule
                 # (Toshiba TPH2R70AR5 Ciss: 223 columns over rows 89-92).  The
                 # printed rule must be evidenced where this trace is NOT.
                 elsewhere, eligible = _rule_evidence_outside_trace(
                     interior, plot, rule_y, y_by_x
                 )
+                rule_is_proven = (
+                    eligible >= GRID_RULE_MIN_EVIDENCE_COLUMNS
+                    and elsewhere >= GRID_RULE_MIN_OCCUPANCY
+                )
+                if deviation is None:
+                    # The trace never leaves rule ink anywhere in its span, so
+                    # it HAS no own trajectory to compare.  That is the most
+                    # complete capture possible and must not read as the best
+                    # possible trajectory agreement, which returning 0.0 here
+                    # used to do (GT020N10T served the bottom FRAME as Crss
+                    # across the full span and passed every trace check).
+                    #
+                    # Decide it on what the trace LEFT BEHIND instead. Rule
+                    # coincidence alone cannot: a genuinely flat Ciss lying on
+                    # a decade line is legitimate and common.  A captured trace
+                    # abandons a real stroke, and that stroke is then claimed
+                    # by nobody.  This evidence grows with the capture, so the
+                    # check stays monotone at the far tail.
+                    abandoned, measurable = _abandoned_stroke_columns(
+                        gray, plot, traces, run, rule_rows
+                    )
+                    if measurable <= 0:
+                        undecidable.append(
+                            {
+                                **_run_to_json(run, plot),
+                                "rule_y_px": rule_y,
+                                "reason": "no_off_rule_approach_and_no_"
+                                "measurable_source_columns",
+                                "rule_evidence_columns": eligible,
+                            }
+                        )
+                        continue
+                    fraction = abandoned / measurable
+                    if (
+                        abandoned >= ORPHAN_CENTER_MIN_COLUMNS
+                        and fraction
+                        >= GRID_RULE_ABANDONED_STROKE_MIN_COLUMN_FRACTION
+                    ):
+                        found.append(
+                            {
+                                **_run_to_json(run, plot),
+                                "rule_y_px": rule_y,
+                                "boundary_step_px": step,
+                                "approach_deviation_px": None,
+                                "approach_evidence": "no_off_rule_columns",
+                                "abandoned_stroke_column_fraction": fraction,
+                                "abandoned_stroke_columns": abandoned,
+                                "rule_occupancy_off_trace": elsewhere,
+                                "rule_evidence_columns": eligible,
+                            }
+                        )
+                    continue
+                if deviation < GRID_RULE_CAPTURE_MIN_APPROACH_DEVIATION_PX:
+                    continue
                 if eligible < GRID_RULE_MIN_EVIDENCE_COLUMNS:
                     # The trace covers this row almost everywhere, so rule and
                     # trace cannot be told apart here.  Record it rather than
@@ -299,22 +363,35 @@ def _approach_deviation_px(
     run: list[int],
     rule_y: int,
     merged_columns: set[int],
-) -> float:
+    rule_rows: frozenset[int] = frozenset(),
+) -> float | None:
     """How far the rule sits from where the trace's approach was heading.
 
     The fit is extrapolated only to the ADJACENT run edge, never across the
     run: a window that ends in a steep stretch predicts wildly at a distant
     midpoint (Toshiba TPH2R70AR5 read 48 px that way).  Columns inside a
-    shared-collapse span are excluded from the fit because a merged y is not
-    this trace's own path.  Returns 0.0 when neither side has enough columns,
-    which declines to flag rather than inventing an unmeasured trajectory.
+    shared-collapse span are excluded because a merged y is not this trace's
+    own path.
+
+    Columns where the trace ALREADY sits on printed rule ink are excluded too,
+    and this is load-bearing.  A trace captured across its whole span has an
+    approach window made entirely of captured samples, so the extrapolation
+    trivially lands on the rule and the discriminator reports agreement -- the
+    check got weaker exactly as the capture got worse.  GT020N10T's Crss, which
+    is the bottom FRAME for all 495 columns, measured 2.0-4.1 px that way and
+    passed under the 5.0 px floor.
+
+    Returns None when no side has enough OFF-RULE columns to fit.  That is an
+    unmeasurable trajectory, not an agreeing one, and the caller must handle it
+    as unverified; returning 0.0 here made the most complete capture possible
+    read as the cleanest.
     """
 
     xs = sorted(y_by_x)
     if not xs:
-        return 0.0
+        return None
     window = GRID_RULE_APPROACH_WINDOW_PX
-    best = 0.0
+    best: float | None = None
     for (lo, hi), target in (
         ((run[0] - window, run[0] - 1), run[0]),
         ((run[-1] + 1, run[-1] + window), run[-1]),
@@ -322,7 +399,9 @@ def _approach_deviation_px(
         sample = [
             (x, y_by_x[x])
             for x in xs
-            if lo <= x <= hi and x not in merged_columns
+            if lo <= x <= hi
+            and x not in merged_columns
+            and not _sits_on_rule_ink(y_by_x[x], rule_rows)
         ]
         if len(sample) < GRID_RULE_APPROACH_MIN_COLUMNS:
             continue
@@ -331,8 +410,75 @@ def _approach_deviation_px(
         if float(sample_xs.max() - sample_xs.min()) < 1.0:
             continue
         slope, intercept = np.polyfit(sample_xs, sample_ys, 1)
-        best = max(best, abs(float(slope * target + intercept) - rule_y))
+        deviation = abs(float(slope * target + intercept) - rule_y)
+        best = deviation if best is None else max(best, deviation)
     return best
+
+
+def _abandoned_stroke_columns(
+    gray: np.ndarray,
+    plot: PlotBox,
+    traces: list[Trace],
+    run: list[int],
+    rule_rows: frozenset[int],
+) -> tuple[int, int]:
+    """Columns of `run` holding a real source stroke no trace accounts for.
+
+    Printed rule rows are excluded from the stroke set -- grid and frame ink is
+    source ink but never a curve, so counting it would make every panel look
+    like it abandoned something.  What remains is curve ink, and a column whose
+    curve ink is not claimed by ANY served trace is a column where the chart
+    drew a curve the digitizer did not take.
+
+    Returns ``(abandoned, measurable)``.  ``measurable`` is 0 when the raster
+    yields no usable column, which the caller must treat as unverified rather
+    than as "nothing abandoned".
+    """
+
+    _mask, centers_by_x = _raster_source_centers_by_x(gray, plot)
+    served = [dict(trace.points) for trace in traces if trace.points]
+    abandoned = 0
+    measurable = 0
+    for x in run:
+        local_x = x - plot.x0
+        if not 0 <= local_x < len(centers_by_x):
+            continue
+        if len(served) < 3 or any(x not in points for points in served):
+            # Unclaimed ink in a column where a peer is not served belongs to
+            # THAT peer, not to this trace: GT045N10D5's Coss stops at 57 V and
+            # leaves its own tail behind, which must not read as the (correct)
+            # Ciss abandoning a curve.  The peer-span gates own those columns.
+            continue
+        measurable += 1
+        curve_ys = [
+            plot.y0 + center
+            for center in centers_by_x[local_x]
+            if not _sits_on_rule_ink(plot.y0 + center, rule_rows)
+        ]
+        if any(
+            all(
+                x not in points
+                or abs(points[x] - curve_y) > ORPHAN_CENTER_MAX_MATCH_DISTANCE_PX
+                for points in served
+            )
+            for curve_y in curve_ys
+        ):
+            abandoned += 1
+    return abandoned, measurable
+
+
+def _sits_on_rule_ink(y: int, rule_rows: frozenset[int]) -> bool:
+    """True when a served y lies on ANY printed full-width rule row.
+
+    Not only the rule under study: a trace riding a multi-row stroke (a plot
+    FRAME is 4-6 px thick) is on rule ink at every one of those rows, and a
+    sample taken there cannot testify to the trace's own trajectory.
+    """
+
+    return any(
+        abs(y - rule_row) <= GRID_RULE_CAPTURE_MAX_DISTANCE_PX
+        for rule_row in rule_rows
+    )
 
 
 def _boundary_step_px(y_by_x: dict[int, int], run: list[int]) -> float:

@@ -38,6 +38,33 @@ _CAPACITANCE_UNIT_TO_PF = {"pf": 1.0, "nf": 1e3}
 _CAPACITANCE_UNIT_TOKEN_RE = re.compile(
     r"(?:(?:\((pf|nf)\))|(?:\[(pf|nf)\])|(pf|nf))", re.I
 )
+# An axis TITLE carries the same unit ownership as a bare "(pF)" token:
+# "Capacitance(pF)", "C-Capacitance(pF)" and "C(pF)" are one word in the
+# PyMuPDF word stream, so the standalone-token match above never sees them.
+# The prefix must be pure label text -- no digits and no unit of its own --
+# so a data annotation ("Ciss=5000pF", "1000pF") can never donate the unit.
+_CAPACITANCE_AXIS_TITLE_RE = re.compile(
+    r"[A-Za-z][A-Za-zÀ-ɏ\-‐-― /,.]*"
+    r"(?:\((pf|nf)\)|\[(pf|nf)\])",
+    re.I,
+)
+# A log Y reading is FALSIFIABLE by its own residual only from three decade
+# labels up; a two-point fit has an identically-zero residual and self-reports
+# as perfect no matter how wrong it is.  HYG030N10NS1P's 0..10000 pF LINEAR
+# ladder contains the decade-VALUED labels 1000 and 10000, and reading only
+# those two as a log axis produced `axis_calibration_trusted=True` with
+# `y_resid_dec = 8.9e-16` and Ciss +20583 % against the part's own spec table.
+#
+# Disproving that from the arithmetic side alone is not enough: degrade the
+# ladder by one tick and the arithmetic fit stops proving anything while the two
+# decades still self-certify, so the guard would vanish exactly as the input got
+# worse.  A two-decade reading must therefore be CORROBORATED by every other
+# label on the axis.  It is not simply banned -- Toshiba TPCC8105's OCR recovers
+# exactly two Y labels (100 and 10000) and nothing else, and there a two-point
+# fit is all the page offers and nothing contradicts it.
+_MIN_FALSIFIABLE_LOG_Y_DECADES = 3
+_MAX_TWO_DECADE_PEER_RESID_PX = 1.5
+_MAX_TWO_DECADE_PEER_RESID_FRACTION = 0.02
 _MIN_POSITIONED_LOG_Y_LABELS = 4
 _MIN_POSITIONED_LOG_Y_SPAN_DEC = math.log10(5.0)
 _MAX_POSITIONED_LOG_Y_RESID_DEC = 0.02
@@ -139,9 +166,21 @@ def _number_tokens(text: str) -> list[float]:
 
 
 def _capacitance_unit_token(text: str) -> str | None:
-    """Return one standalone pF/nF token with at most one matching wrapper."""
+    """Return the pF/nF unit a standalone token or an axis title declares.
 
-    match = _CAPACITANCE_UNIT_TOKEN_RE.fullmatch(text.strip())
+    Two shapes own a unit: the bare token ("pF", "(pF)", "[pF]") and a
+    wholly-alphabetic axis title that ends in a wrapped unit
+    ("Capacitance(pF)", "C-Capacitance(pF)").  Both are refused when anything
+    numeric is attached, so a plotted annotation such as "Ciss=5000pF" cannot
+    stand in for the axis' own declaration.  Callers still require exactly one
+    distinct unit across the label band, so a title/annotation conflict keeps
+    failing closed rather than picking a winner.
+    """
+
+    stripped = text.strip()
+    match = _CAPACITANCE_UNIT_TOKEN_RE.fullmatch(stripped)
+    if match is None:
+        match = _CAPACITANCE_AXIS_TITLE_RE.fullmatch(stripped)
     if match is None:
         return None
     return next(group.casefold() for group in match.groups() if group is not None)
@@ -201,20 +240,22 @@ def _inside_box(cx: float, cy: float, bbox: tuple[float, float, float, float]) -
     return bbox[0] - 1.0 <= cx <= bbox[2] + 1.0 and bbox[1] - 1.0 <= cy <= bbox[3] + 1.0
 
 
-def _linear_capacitance_y_fit(
-    labels: list[tuple[float, float]], units: set[str]
+def _arithmetic_ladder_fit(
+    labels: list[tuple[float, float]], multiplier: float = 1.0
 ) -> tuple[float, float, tuple[tuple[float, float], ...], float] | None:
-    """Fit a guarded arithmetic capacitance ladder in physical pF.
+    """Fit an evenly-stepped, monotone tick ladder; None when it is not one.
 
-    This is deliberately narrower than the decade path: at least four tick
-    labels, one locally-owned pF/nF unit, strict top-to-bottom ordering, and a
-    near-uniform arithmetic step are all required.  A partial or irregular
-    ladder stays uncalibrated instead of inventing a physical scale.
+    Pure geometry, deliberately free of any unit reasoning: at least four
+    unique non-negative labels, a near-uniform arithmetic step, strictly
+    top-to-bottom pixel order, and a tight linear residual.  `multiplier`
+    rescales the fitted values; the accept/reject decision is scale-invariant
+    except in the absolute-floor regime of the residual gate
+    (``max(1e-6, 0.03 * step * multiplier)``), where a sub-1e-6 product admits
+    slightly more than the relative term alone would.
     """
 
-    if len(labels) < 4 or len(units) != 1:
+    if len(labels) < 4:
         return None
-    multiplier = _CAPACITANCE_UNIT_TO_PF[next(iter(units))]
     ordered = sorted((float(value), float(pixel)) for value, pixel in labels)
     # Duplicate numeric values are not a single owned tick ladder.
     if len({value for value, _ in ordered}) != len(ordered):
@@ -231,13 +272,29 @@ def _linear_capacitance_y_fit(
     pixels = np.asarray([pixel for _, pixel in ordered], dtype=float)
     if np.any(np.diff(pixels) >= 0.0):
         return None
-    values_pf = values * multiplier
-    my, by = np.polyfit(pixels, values_pf, 1)
-    residual_pf = float(np.sqrt(np.mean((my * pixels + by - values_pf) ** 2)))
-    if residual_pf > max(1e-6, 0.03 * step * multiplier):
+    scaled = values * multiplier
+    my, by = np.polyfit(pixels, scaled, 1)
+    residual = float(np.sqrt(np.mean((my * pixels + by - scaled) ** 2)))
+    if residual > max(1e-6, 0.03 * step * multiplier):
         return None
-    ticks = tuple((float(value), float(pixel)) for value, pixel in zip(values_pf, pixels))
-    return float(my), float(by), ticks, residual_pf
+    ticks = tuple((float(value), float(pixel)) for value, pixel in zip(scaled, pixels))
+    return float(my), float(by), ticks, residual
+
+
+def _linear_capacitance_y_fit(
+    labels: list[tuple[float, float]], units: set[str]
+) -> tuple[float, float, tuple[tuple[float, float], ...], float] | None:
+    """Fit a guarded arithmetic capacitance ladder in physical pF.
+
+    This is deliberately narrower than the decade path: at least four tick
+    labels, one locally-owned pF/nF unit, strict top-to-bottom ordering, and a
+    near-uniform arithmetic step are all required.  A partial or irregular
+    ladder stays uncalibrated instead of inventing a physical scale.
+    """
+
+    if len(units) != 1:
+        return None
+    return _arithmetic_ladder_fit(labels, _CAPACITANCE_UNIT_TO_PF[next(iter(units))])
 
 
 def _subunit_log_capacitance_y_fit(
@@ -331,6 +388,81 @@ def _positioned_log_capacitance_y_fit(
     )
 
 
+def _decade_ladder_is_contradicted(
+    yd: list[tuple[float, float]], yd_numeric: list[tuple[float, float]]
+) -> bool:
+    """True when the full label set proves the Y axis is arithmetic, not log.
+
+    Decade-VALUED labels also occur ON an arithmetic ladder: a 0..10000 pF
+    linear axis prints 1000 and 10000 like any other tick.  Reading just those
+    two as a log axis produced a silently wrong calibration -- the overlay
+    looked perfect while the served capacitances were orders of magnitude out
+    (HYG030N10NS1P: Ciss +20583 % against its own spec table).
+
+    The disproof has to be positive evidence, not merely a peer that misses the
+    log fit: a single OCR fragment lands anywhere and must never veto a real
+    decade axis.  So the whole label set must itself pass the evenly-stepped,
+    monotone, tight-residual ladder test, and it must contain labels the decade
+    subset does not -- i.e. an arithmetic reading explains strictly more of the
+    printed axis than the log reading does.
+    """
+
+    if len(yd) < 2:
+        return False
+    ladder = _arithmetic_ladder_fit(yd_numeric)
+    if ladder is None:
+        return False
+    _my, _by, ticks, _residual = ladder
+    return len(ticks) > len(yd)
+
+
+def _two_decade_reading_is_corroborated(
+    yd: list[tuple[float, float]], yd_numeric: list[tuple[float, float]]
+) -> bool:
+    """Do the axis' other labels agree with a two-point log fit?
+
+    Only reached when the log reading rests on exactly two decade labels, where
+    the fit's own residual is identically zero and proves nothing.  Every other
+    positive label in the band is then the only available evidence: on a real
+    log axis they land on the fit, on an arithmetic ladder they do not (dropping
+    one tick from HYG030N10NS1P leaves seven peers that miss it by 26 px).
+
+    With no peers at all the reading is uncorroborated but also uncontradicted,
+    and the page simply offers nothing else -- Toshiba TPCC8105's OCR recovers
+    only 100 and 10000.  Refusing there would discard the sole available reading
+    on evidence that does not exist, so it is admitted; every peer that DOES
+    exist must agree.
+    """
+
+    if len(yd) < 2:
+        # No log reading to corroborate; the decade path is not taken anyway.
+        return True
+    pixels = [pixel for _exponent, pixel in yd]
+    exponents = [exponent for exponent, _pixel in yd]
+    span = max(pixels) - min(pixels)
+    if span <= 0.0:
+        return False
+    decade_pixels = set(pixels)
+    peers = [
+        (value, pixel)
+        for value, pixel in yd_numeric
+        if value > 0.0 and pixel not in decade_pixels
+    ]
+    if not peers:
+        return True
+    my, by = np.polyfit(pixels, exponents, 1)
+    if my == 0.0:
+        return False
+    tolerance = max(
+        _MAX_TWO_DECADE_PEER_RESID_PX,
+        _MAX_TWO_DECADE_PEER_RESID_FRACTION * span,
+    )
+    return all(
+        abs((math.log10(value) - by) / my - pixel) <= tolerance
+        for value, pixel in peers
+    )
+
+
 def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=None):
     """Fit calibration from tick-label text positions on a PyMuPDF page.
 
@@ -421,6 +553,19 @@ def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=Non
     x_fit_vals = [math.log10(v) if x_log else v for v, _ in xt]
     mx, bx = np.polyfit([px for _, px in xt], x_fit_vals, 1)
     x_resid = float(np.sqrt(np.mean([(mx * px + bx - v) ** 2 for v, px in zip(x_fit_vals, [px for _, px in xt])])))
+    if _decade_ladder_is_contradicted(yd, yd_numeric):
+        # Decade-VALUED labels on an arithmetic ladder are not a log axis.
+        # Drop the (disproven) log reading and let the narrower arithmetic and
+        # positioned-log tiers below prove a model on the full label set.
+        yd = []
+    if (
+        len(yd) < _MIN_FALSIFIABLE_LOG_Y_DECADES
+        and not _two_decade_reading_is_corroborated(yd, yd_numeric)
+    ):
+        # Too few decades for the fit's own residual to mean anything, and the
+        # rest of the axis disagrees with it.  Fall through to the tiers that
+        # must prove a model on the FULL label set.
+        yd = []
     if len(yd) >= 2:
         # Preserve the established decade path exactly when it has enough
         # evidence.  Linear recovery is fallback-only.
