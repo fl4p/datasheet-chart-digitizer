@@ -111,6 +111,7 @@ class OutputChargeReference:
     # be turned into an energy, so this is required for the Co(er) tier and is
     # never guessed: absent, the check reports itself unevaluable.
     coer_vint_v: float | None = None
+    cotr_vint_v: float | None = None
 
 
 @dataclass(frozen=True)

@@ -135,6 +135,8 @@ from .capacitance_validation import (
     qoss_validation_status,
     coer_energy_validation,
     coer_integration_voltage,
+    integral_reference_available,
+    weaker_tier_may_follow,
     coss_anchor_only_validation,
     QOSS_CHARGE_INTEGRAL_STATUSES,
     QOSS_SERVABLE_STATUSES,
@@ -384,12 +386,26 @@ def process_chart(
     # keys on the ANCHOR's size rather than on the trace. Say it here instead.
     # physical_output_available is deliberately untouched: the exporter still
     # needs the calibrated columns to apply its tiny-Crss offset correction.
+    trace_data: dict[str, list[tuple[float, float]]] = {}
     if axis_trusted and axis_calibration is not None:
+        # Built here rather than after the overlays: the resolution check below
+        # needs the SERVED curve, not just the anchor.
+        trace_data = {
+            trace.name: trace_data_points(trace, plot, axis_calibration)
+            for trace in traces
+        }
+    if axis_trusted and axis_calibration is not None:
+        served_min_pf = {}
+        for name, points in trace_data.items():
+            values = [c for _, c in points if c and c > 0.0]
+            if values:
+                served_min_pf[name] = min(values)
         unresolved = unresolved_anchor_traces(
             getattr(axis_calibration, "y_log", None),
             getattr(axis_calibration, "y_scale", None),
             {name: (anchors.get(name).value_pf if anchors.get(name) else None)
              for name in ("Ciss", "Coss", "Crss")},
+            served_min_pf,
         )
         for name, (pixels, pf_per_px) in sorted(unresolved.items()):
             anchor = anchors[name]
@@ -424,10 +440,6 @@ def process_chart(
             f"{chart.get('part', '')} {chart.get('diagram', '')}",
         )
         cv2.imwrite(str(axis_debug_path), axis_overlay)
-
-    trace_data: dict[str, list[tuple[float, float]]] = {}
-    if axis_trusted and axis_calibration is not None:
-        trace_data = {trace.name: trace_data_points(trace, plot, axis_calibration) for trace in traces}
 
     with points_path.open("w", newline="") as f:
         writer = csv.writer(f)
@@ -536,17 +548,22 @@ def process_chart(
     # reference exists.
     coer_energy_diagnostics: dict[str, object] | None = None
     coss_anchor_only_diagnostics: dict[str, object] | None = None
-    if qoss_status not in QOSS_CHARGE_INTEGRAL_STATUSES:
+    # A weaker tier may only follow "nothing to compare against", never a charge
+    # verdict that compared and disagreed -- see weaker_tier_may_follow().
+    if weaker_tier_may_follow(qoss_status):
         if output_ref.qoss_pc is None and output_ref.coer_pf is not None:
             coer_status, coer_energy_diagnostics = coer_energy_validation(
                 metrics, output_ref.coer_pf, coer_vint_v
             )
             qoss_status = coer_status
-        elif output_ref.qoss_pc is None and output_ref.coer_pf is None:
+        elif output_ref.qoss_pc is None:
+            # Reached with no Qoss and no Co(er). Co(tr) may still be present, and
+            # then this tier must refuse -- the flag is computed, never assumed.
             anchor_status, coss_anchor_only_diagnostics = (
                 coss_anchor_only_validation(
                     anchor_diagnostics,
-                    integral_reference_available=False,
+                    integral_reference_available=integral_reference_available(
+                        output_ref),
                     trace_validation_status=validation["status"],
                 )
             )
