@@ -128,14 +128,21 @@ from .capacitance_types import (
 )
 from .capacitance_validation import (
     _vendor_qoss_curve_path,
+    anchor_resolution_reason,
     coss_metrics_to_json,
     partition_qoss_metrics,
     qoss_metrics_status_reasons,
     qoss_validation_status,
+    coer_energy_validation,
+    coer_integration_voltage,
+    coss_anchor_only_validation,
+    QOSS_CHARGE_INTEGRAL_STATUSES,
+    QOSS_SERVABLE_STATUSES,
     top_decade_clip_diagnostic,
     trace_left_start_fractions,
     trace_right_end_fractions,
     trace_validation_summary,
+    unresolved_anchor_traces,
     vendor_qoss_tail_validation,
 )
 from .capacitance_vector import (
@@ -370,6 +377,29 @@ def process_chart(
         axis_trusted, extraction_method, validation
     )
     physical_output_available = axis_trusted and validation["status"] == "pass"
+    # A linear axis can be calibrated perfectly and still be unable to resolve a
+    # small trace: GT060N10T's Crss anchor is 16 pF = 0.84 px, so its served
+    # curve is 3.6x wrong while the axis fit residual is 1.7e-13. Reporting
+    # "ok" there leaves the whole defence to the downstream export gate, which
+    # keys on the ANCHOR's size rather than on the trace. Say it here instead.
+    # physical_output_available is deliberately untouched: the exporter still
+    # needs the calibrated columns to apply its tiny-Crss offset correction.
+    if axis_trusted and axis_calibration is not None:
+        unresolved = unresolved_anchor_traces(
+            getattr(axis_calibration, "y_log", None),
+            getattr(axis_calibration, "y_scale", None),
+            {name: (anchors.get(name).value_pf if anchors.get(name) else None)
+             for name in ("Ciss", "Coss", "Crss")},
+        )
+        for name, (pixels, pf_per_px) in sorted(unresolved.items()):
+            anchor = anchors[name]
+            reason = anchor_resolution_reason(
+                name, pixels, pf_per_px, float(anchor.value_pf)
+            )
+            if reason not in status_reasons:
+                status_reasons.append(reason)
+            if status == "ok":
+                status = "unverified"
     if vector_selection_method == "source_drawing_rescue":
         if status == "ok":
             status = "overlay-review-required"
@@ -445,9 +475,20 @@ def process_chart(
     coss_clip_diag = top_decade_clip_diagnostic(
         trace_data, axis_calibration, plot
     )
+    # Voltage the ENERGY integral is taken to. Co(er)'s OWN condition only -- never
+    # Qoss's `vint_v`. They are different numbers on the same datasheet: Infineon
+    # states Coss and Qoss at 50 V but Co(er) over 0->80 V (80% of BVdss), while
+    # onsemi states Co(er) at 50 V. Energy goes as V^2, so borrowing 50 V for an 80 V
+    # reference compares against a figure 2.56x off and reports `pass_coer_energy` --
+    # a silent-wrong pass. Absent condition must fail closed as
+    # `coer_reference_condition_voltage_unavailable`, which the caller already emits.
+    coer_vint_v = coer_integration_voltage(output_ref)
+    integral_vint_v = output_ref.vint_v or (
+        coer_vint_v if output_ref.coer_pf else None
+    )
     if not axis_trusted and axis_calibration is not None:
         qoss_validation_error = "untrusted axis calibration"
-    elif axis_calibration is not None and "Coss" in trace_data and output_ref.vint_v:
+    elif axis_calibration is not None and "Coss" in trace_data and integral_vint_v:
         if output_ref.qoss_pc is None:
             qoss_validation_error = "Qoss table reference unavailable"
         try:
@@ -457,7 +498,7 @@ def process_chart(
             clip_ceiling = None
             if coss_clip_diag and coss_clip_diag.get("near_plot_top"):
                 clip_ceiling = float(coss_clip_diag["plot_top_pf"])
-            metrics = coss_metrics(vds, coss, output_ref.vint_v, clip_ceiling=clip_ceiling)
+            metrics = coss_metrics(vds, coss, integral_vint_v, clip_ceiling=clip_ceiling)
             qoss_metrics = coss_metrics_to_json(metrics)
             qoss_vendor_tail_validation = vendor_qoss_tail_validation(
                 str(chart["part"]),
@@ -469,7 +510,7 @@ def process_chart(
                 validate_axis(
                     vds,
                     coss,
-                    output_ref.vint_v,
+                    integral_vint_v,
                     ds_Qoss=output_ref.qoss_pc,
                     ds_Coer=output_ref.coer_pf,
                     ds_Cotr=output_ref.cotr_pf,
@@ -487,6 +528,29 @@ def process_chart(
         qoss_vendor_tail_validation,
         table_reference_available=output_ref.qoss_pc is not None,
     )
+    # Fallback tiers, tried ONLY when the Qoss charge integral did not itself
+    # produce a servable verdict, and each strictly narrower than the last.
+    # Ordering is load-bearing: a part with a Qoss reference that FAILED keeps
+    # its failing status, because `coer_energy_validation` needs a Co(er) and
+    # `coss_anchor_only_validation` refuses outright when any integral
+    # reference exists.
+    coer_energy_diagnostics: dict[str, object] | None = None
+    coss_anchor_only_diagnostics: dict[str, object] | None = None
+    if qoss_status not in QOSS_CHARGE_INTEGRAL_STATUSES:
+        if output_ref.qoss_pc is None and output_ref.coer_pf is not None:
+            coer_status, coer_energy_diagnostics = coer_energy_validation(
+                metrics, output_ref.coer_pf, coer_vint_v
+            )
+            qoss_status = coer_status
+        elif output_ref.qoss_pc is None and output_ref.coer_pf is None:
+            anchor_status, coss_anchor_only_diagnostics = (
+                coss_anchor_only_validation(
+                    anchor_diagnostics,
+                    integral_reference_available=False,
+                    trace_validation_status=validation["status"],
+                )
+            )
+            qoss_status = anchor_status
     qoss_metrics_reasons = qoss_metrics_status_reasons(
         qoss_metrics,
         qoss_status,
@@ -549,6 +613,8 @@ def process_chart(
         "qoss_metrics_status_reasons": qoss_metrics_reasons,
         "qoss_vendor_tail_validation": qoss_vendor_tail_validation,
         "qoss_validation_status": qoss_status,
+        "coer_energy_validation": coer_energy_diagnostics,
+        "coss_anchor_only_validation": coss_anchor_only_diagnostics,
         "qoss_validation_error": qoss_validation_error,
         "coss_top_decade_clip": coss_clip_diag,
         "trace_validation_status": validation["status"],

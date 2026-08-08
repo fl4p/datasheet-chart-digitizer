@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from pathlib import Path
 
 import numpy as np
@@ -27,13 +28,57 @@ FLAT_GRID_CAPTURE_MAX_Y_RANGE_PX = 1
 # Grid-capture is raster-only; vector paths cannot latch onto a gridline.
 FLAT_GRID_CAPTURE_RASTER_MIN_X_SPAN_FRACTION = MIN_MATERIAL_TRACE_X_SPAN_FRACTION
 FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION = 0.90
-QOSS_SERVABLE_STATUSES = frozenset(
+# Quanta an anchor must span before a comparison against it carries any
+# information. On a LINEAR capacitance axis a small trace sits within a pixel or
+# two of the axis rule, so a trace that is actually the rule still "agrees" with
+# the spec table: GT020N10T's Crss anchor is 110 pF = 2.84 px and the served
+# bottom FRAME read -9.0 % against it. Anchor agreement is structurally blind
+# there, which is exactly why the chart must not self-report as resolved.
+MIN_ANCHOR_RESOLUTION_PX = 4.0
+# A Crss this small is corrected by an explicit additive offset at export
+# instead of being rejected, so it is reported as unresolved but not as a
+# defect. Kept here so the exporter and the chart status share one definition.
+TINY_CRSS_ANCHOR_PF = 15.0
+# Tiers in DESCENDING strength. Each names exactly the check that ran, so a
+# consumer's provenance can never claim a Qoss check that did not happen.
+#   pass / pass_vendor_qoss_curve_tail / clipped_chart_completed
+#       the Qoss CHARGE integral was compared against a datasheet Qoss.
+#   pass_coer_energy
+#       no datasheet Qoss exists, but the datasheet quotes Co(er) and the
+#       ENERGY integral of the digitized curve matches 1/2*Co(er)*V^2 at the
+#       quoted V. This constrains Eoss -- the quantity P_coss consumes --
+#       directly, so it is a peer of the Qoss check, not a weaker relative.
+#   coss_anchor_only
+#       the datasheet carries NO integral reference of either kind. The only
+#       independent evidence is the single spec-table Coss point, which pins
+#       the curve's VALUE at one voltage and says nothing about its SHAPE.
+#       Materially weaker; a consumer must decide separately whether to take
+#       it. It is still strictly more evidence than the scalar 1/sqrt(V) guess
+#       these parts fall back to today, which is derived from that same point.
+QOSS_CHARGE_INTEGRAL_STATUSES = frozenset(
     {
         "pass",
         "pass_vendor_qoss_curve_tail",
         "clipped_chart_completed",
     }
 )
+COER_ENERGY_INTEGRAL_STATUS = "pass_coer_energy"
+COSS_ANCHOR_ONLY_STATUS = "coss_anchor_only"
+QOSS_SERVABLE_STATUSES = frozenset(
+    QOSS_CHARGE_INTEGRAL_STATUSES
+    | {COER_ENERGY_INTEGRAL_STATUS, COSS_ANCHOR_ONLY_STATUS}
+)
+# Relative agreement required of the Co(er) energy check. Held at the same 0.25
+# the Qoss charge path uses (`validate_axis(tol=0.25)`) so the two tiers are
+# equally strict; Co(er) is a derived table figure with the same rounding and
+# graph/table-consistency exposure as Qoss, and nothing in the data justifies
+# giving it more room.
+COER_ENERGY_RELATIVE_TOLERANCE = 0.25
+# Agreement required of the single spec-table Coss point for the anchor-only
+# tier. This is the ONLY evidence in that tier, so it is held tighter than the
+# integral tolerances: a sampled value is read straight off a calibrated axis
+# with no integration to average errors out.
+COSS_ANCHOR_ONLY_RELATIVE_TOLERANCE = 0.10
 
 
 def trace_validation_summary(
@@ -76,6 +121,14 @@ def trace_validation_summary(
                 for name in ("Ciss", "Coss", "Crss"):
                     if captured.get(name):
                         reasons.append(f"{name}_captured_by_grid_rule")
+            # A run that met every capture test but whose rule could not be
+            # separated from the trace was recorded and then consumed by
+            # nobody, so an UNDECIDABLE capture check served as a clean one.
+            undecidable = capture.get("undecidable_runs")
+            if isinstance(undecidable, dict):
+                for name in ("Ciss", "Coss", "Crss"):
+                    if undecidable.get(name):
+                        reasons.append(f"{name}_grid_rule_capture_undecidable")
     if any(
         span.get("separated_sign_before") is not None
         and span.get("separated_sign_after") is None
@@ -193,6 +246,48 @@ def trace_validation_summary(
     return {"status": "pass" if not reasons else "suspect", "reasons": reasons}
 
 
+def unresolved_anchor_traces(
+    y_log: object, y_scale: object, anchor_pf: dict[str, float | None]
+) -> dict[str, tuple[float, float]]:
+    """Traces whose spec anchor spans too few pixels to be resolvable.
+
+    Only linear capacitance axes can hit this: on a log axis every decade gets
+    the same pixel budget.  Returns ``{name: (pixels, pf_per_px)}`` so callers
+    can report the measurement, and an EMPTY dict when the axis is logarithmic
+    or its scale is unknown -- absence of a linear scale is absence of this
+    particular failure mode, not a clean bill of health for the trace.
+    """
+
+    if y_log is True:
+        return {}
+    try:
+        pf_per_px = abs(float(y_scale))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return {}
+    if pf_per_px <= 0.0:
+        return {}
+    unresolved: dict[str, tuple[float, float]] = {}
+    for name, value in anchor_pf.items():
+        if not value:
+            continue
+        pixels = float(value) / pf_per_px
+        if pixels < MIN_ANCHOR_RESOLUTION_PX:
+            unresolved[name] = (pixels, pf_per_px)
+    return unresolved
+
+
+def anchor_resolution_reason(
+    name: str, pixels: float, pf_per_px: float, anchor_value_pf: float
+) -> str:
+    exempt = name == "Crss" and anchor_value_pf <= TINY_CRSS_ANCHOR_PF
+    suffix = "_offset_corrected_at_export" if exempt else ""
+    return (
+        f"{name}_anchor_below_axis_resolution{suffix}:"
+        f"{anchor_value_pf:g} pF = {pixels:.2f} px on a linear axis "
+        f"({pf_per_px:.2f} pF/px, need {MIN_ANCHOR_RESOLUTION_PX:g})"
+    )
+
+
 def trace_left_start_fractions(
     traces: list[Trace], plot: PlotBox
 ) -> dict[str, float]:
@@ -262,6 +357,118 @@ def coss_metrics_to_json(metrics: object) -> dict[str, float]:
         "Qoss_clip_added_pc": float(metrics.Qoss_clip_added),
         "clipped_completion_fraction": float(metrics.clipped_completion_fraction),
     }
+
+
+def coer_integration_voltage(output_ref: object) -> float | None:
+    """The voltage Co(er)'s energy integral is taken to -- from Co(er)'s OWN stated
+    condition, or None.
+
+    Deliberately a named seam rather than an inline expression at the call site, so the
+    rule can be pinned by a test. It replaced `output_ref.coer_vint_v or
+    output_ref.vint_v`, which borrowed QOSS's condition voltage when Co(er)'s had not
+    parsed. They are different numbers on the same datasheet -- Infineon states Coss and
+    Qoss at 50 V but Co(er) over 0->80 V (80% of BVdss); onsemi states Co(er) at 50 V --
+    and energy goes as V^2, so the borrow compares the curve against a reference 2.56x
+    off and returns `pass_coer_energy`. Absence of the condition must fail closed, not
+    reach for the nearest available number.
+    """
+    v = getattr(output_ref, "coer_vint_v", None)
+    return float(v) if v is not None and float(v) > 0.0 else None
+
+
+def coer_energy_validation(
+    metrics: object | None,
+    coer_pf: float | None,
+    coer_vint_v: float | None,
+) -> tuple[str, dict[str, object]]:
+    """Compare the digitized ENERGY integral against a datasheet Co(er).
+
+    Co(er) is DEFINED by the energy integral -- Eoss = 1/2*Co(er)*V^2 at the
+    quoted V -- so `metrics.Co_er` (the energy-equivalent capacitance the
+    integrator already derives) is directly comparable to the table value.
+
+    Every branch that cannot evaluate the comparison returns an explicit
+    non-servable status naming what was missing. None of them returns a
+    passing tier, and none of them returns ``None``: absence of the reference,
+    of its condition voltage, or of the integral itself is reported as such,
+    so a consumer can never read "not evaluated" as "evaluated and fine".
+    """
+
+    diagnostics: dict[str, object] = {
+        "coer_pf": coer_pf,
+        "coer_vint_v": coer_vint_v,
+        "tolerance": COER_ENERGY_RELATIVE_TOLERANCE,
+    }
+    if coer_pf is None or not float(coer_pf) > 0.0:
+        return "coer_reference_unavailable", diagnostics
+    if coer_vint_v is None or not float(coer_vint_v) > 0.0:
+        # The value is useless without the voltage it is quoted at, and
+        # guessing one would fabricate the very reference being validated.
+        return "coer_reference_condition_voltage_unavailable", diagnostics
+    if metrics is None:
+        return "coer_energy_integral_unavailable", diagnostics
+    extrapolated = float(getattr(metrics, "extrapolated_qoss_fraction", 1.0))
+    diagnostics["extrapolated_fraction"] = extrapolated
+    if extrapolated > 0.20:
+        # Same ceiling the charge path uses: too much of the integral comes
+        # from below the first digitized point to call the comparison a check.
+        return "coer_unreliable_extrapolation", diagnostics
+    if bool(getattr(metrics, "clipped_completion_active", False)):
+        # The top decade was reconstructed rather than read; the energy
+        # integral is then partly modelled and cannot referee the table.
+        return "coer_chart_clipped", diagnostics
+    extracted = float(getattr(metrics, "Co_er", float("nan")))
+    diagnostics["extracted_coer_pf"] = extracted
+    if not math.isfinite(extracted) or extracted <= 0.0:
+        return "coer_energy_integral_unavailable", diagnostics
+    relative = abs(extracted - float(coer_pf)) / float(coer_pf)
+    diagnostics["relative_residual"] = relative
+    if relative > COER_ENERGY_RELATIVE_TOLERANCE:
+        return "coer_graph_table_inconsistent", diagnostics
+    return COER_ENERGY_INTEGRAL_STATUS, diagnostics
+
+
+def coss_anchor_only_validation(
+    anchor_diagnostics: dict[str, object] | None,
+    *,
+    integral_reference_available: bool,
+    trace_validation_status: str | None,
+) -> tuple[str, dict[str, object]]:
+    """Weakest tier: the single spec-table Coss point, and nothing else.
+
+    `integral_reference_available` is load-bearing and is checked FIRST. A part
+    that HAS a Qoss or Co(er) reference and fails it must keep failing; letting
+    it fall through to this tier would make the check disappear exactly when it
+    has evidence and that evidence is bad.
+    """
+
+    diagnostics: dict[str, object] = {
+        "tolerance": COSS_ANCHOR_ONLY_RELATIVE_TOLERANCE,
+        "integral_reference_available": integral_reference_available,
+    }
+    if integral_reference_available:
+        return "integral_reference_present_anchor_only_not_applicable", diagnostics
+    if trace_validation_status != "pass":
+        return "anchor_only_trace_validation_not_pass", diagnostics
+    residuals = ((anchor_diagnostics or {}).get("anchor_residuals") or {})
+    coss = residuals.get("Coss") if isinstance(residuals, dict) else None
+    if not isinstance(coss, dict):
+        return "anchor_only_no_coss_anchor", diagnostics
+    relative = coss.get("relative_error")
+    diagnostics["coss_anchor_relative_error"] = relative
+    diagnostics["coss_anchor_vds_v"] = coss.get("vds_v")
+    diagnostics["coss_anchor_table_pf"] = coss.get("table_pf")
+    diagnostics["coss_anchor_sampled_pf"] = coss.get("sampled_pf")
+    diagnostics["coss_anchor_reason"] = coss.get("reason")
+    if coss.get("reason"):
+        # The sampler itself refused this anchor (e.g. `anchor_inside_trace_gap`).
+        # An anchor that could not be read cannot be the tier's sole evidence.
+        return "anchor_only_coss_anchor_unusable", diagnostics
+    if relative is None or not math.isfinite(float(relative)):
+        return "anchor_only_coss_anchor_unusable", diagnostics
+    if abs(float(relative)) > COSS_ANCHOR_ONLY_RELATIVE_TOLERANCE:
+        return "anchor_only_coss_anchor_inconsistent", diagnostics
+    return COSS_ANCHOR_ONLY_STATUS, diagnostics
 
 
 def qoss_validation_status(

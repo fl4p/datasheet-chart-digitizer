@@ -98,18 +98,35 @@ def load_coss_points_csv(path: Path, trace: str = "Coss") -> tuple[np.ndarray, n
 
     vds: list[float] = []
     coss: list[float] = []
+    trace_rows = 0
+    unpriced_rows = 0
     with path.open(newline="") as f:
         for row in csv.DictReader(f):
             if row.get("trace") != trace:
                 continue
+            trace_rows += 1
             try:
                 v = float(row["vds_V"])
                 c = float(row["cap_pF"])
             except (KeyError, TypeError, ValueError):
+                unpriced_rows += 1
                 continue
             if math.isfinite(v) and math.isfinite(c) and c > 0:
                 vds.append(max(0.0, v))
                 coss.append(c)
+    if trace_rows and unpriced_rows == trace_rows:
+        # The panel HAS a digitized trace; the digitizer withheld its physical
+        # columns because `physical_output_available` was false (untrusted axis
+        # calibration, or trace validation not `pass`). Reporting the generic
+        # sample-count error here sends a reviewer looking for a data-shape
+        # problem in a file whose shape is fine.
+        raise ValueError(
+            f"{trace} pixel points are present but carry no calibrated "
+            f"vds_V/cap_pF: the digitizer withheld physical output for this "
+            f"panel (physical_output_available=false -- see its "
+            f"axis_calibration_trusted and trace_validation_status). Nothing "
+            f"is wrong with {path.name}; the panel was not cleared upstream."
+        )
     return clean_coss_points(np.asarray(vds, dtype=float), np.asarray(coss, dtype=float))
 
 

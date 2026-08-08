@@ -63,3 +63,7 @@
 - [dsdig review tool is upstream-only](dsdig-review-tool-upstream-only.md) — review-tooling changes land in dsdig-verify-backlog/tools and are committed there; never a packet-local tools-local/ copy
 - [Codex instruction loading stops at git root](codex-instruction-loading-git-root.md) — sub-repos need their own root AGENTS.md; verify with `codex debug prompt-input` + move-away control
 - [dsdig worktree pytest imports main tree](dsdig-worktree-pytest-imports-main-tree.md) — .venv editable install is pinned to the main checkout; worktree pytest baselines need PYTHONPATH or they measure the wrong tree
+- [C(V) arithmetic axis + rule detection](cv-arithmetic-axis-and-rule-detection.md) — axis-title pF ownership, log-misread-of-linear-ladder silent-wrong, dotted/label-broken/trace-merged rule detection
+- [C(V) full-span grid capture hole](cv-full-span-grid-capture-hole.md) — approach window measured inside the capture; trace born on a rule scored perfect; off-rule approach + abandoned-stroke fallback
+- [cv-rank-is-not-identity-lane-assignment](cv-rank-is-not-identity-lane-assignment.md) — the bottom frame rail was served as Crss on every gray-grid panel; rank-in-column is not curve identity
+- [cv-coer-energy-and-anchor-only-tiers](cv-coer-energy-and-anchor-only-tiers.md) — pass_coer_energy / coss_anchor_only tiers for the 26/30 parts with no Qoss; coer_vint_v is unpopulated in fetlib
