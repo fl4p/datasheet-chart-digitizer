@@ -38,6 +38,35 @@ class CossKnotModel:
     achieved_max_rel_error: float
 
 
+# A segment slope is treated as non-increasing only if it is <= this. Exact 0 is allowed (a
+# genuinely flat tail is normal on these charts); anything positive is a capacitance rising with
+# reverse bias and is rejected. Deliberately NOT a loose positive tolerance -- a "small" positive
+# slope waved through here is the same unphysical curve, just harder to see.
+_MONOTONE_SLOPE_TOL = 0.0
+
+
+@dataclass(frozen=True)
+class CossHingeModel:
+    """Adaptive piecewise-LINEAR-in-V representation of C(V) (hinge / LUT form).
+
+    `vds` and `coss` are the retained knots; C is linearly interpolated between them, so the
+    charge is piecewise quadratic and emits with `max()` alone (no `pow()` per slice beyond the
+    squared hinge). Contrast `CossKnotModel`, which is linear in log10(C) versus log1p(V/vs).
+
+    `meets_target` and `monotone` are recorded rather than assumed. A consumer must gate on
+    them: running out of knots before reaching the target, or a rising C, are both conditions
+    under which this model must not be used, and neither raises at build time.
+    """
+
+    vds: tuple[float, ...]
+    coss: tuple[float, ...]
+    max_rel_error: float
+    source_points: int
+    achieved_max_rel_error: float
+    meets_target: bool
+    monotone: bool
+
+
 @dataclass(frozen=True)
 class QossTable:
     """Dense monotone charge/energy table derived from a Coss knot model."""
@@ -219,6 +248,159 @@ def evaluate_coss_knots(vds: np.ndarray, knot_vds: np.ndarray, knot_coss: np.nda
     knot_z = _z_of_v(np.asarray(knot_vds, dtype=float), v_scale)
     log_c = np.interp(z, knot_z, np.log10(knot_coss), left=np.log10(knot_coss[0]), right=np.log10(knot_coss[-1]))
     return np.power(10.0, log_c)
+
+
+def build_adaptive_hinge_model(
+    vds: np.ndarray,
+    coss: np.ndarray,
+    *,
+    max_rel_error: float = 0.02,
+    max_knots: int = 256,
+) -> "CossHingeModel":
+    """Build an adaptive knot model that interpolates C LINEARLY IN V (hinge/LUT form).
+
+    Same greedy refinement as `build_adaptive_coss_model`; the difference is what is linear.
+    Here C(V) is piecewise linear, so the charge is piecewise QUADRATIC and expressible with
+    `max()` and multiplies alone -- no `pow()` per slice. See `hinge_charge_expression`.
+
+    WHY NOT INTERPOLATE Q. A table() of Q with linear interpolation gives piecewise-CONSTANT
+    C, which simulators differentiate into one current spike per knot (this is the failure that
+    retired the PWL Coss table in the dcdc-tools loss deck: dev_ls 3.9 -> 7.6 W, switching
+    overlap ~10x). Interpolating C keeps C continuous and the spikes do not arise. Density does
+    not fix linear-Q: C is discontinuous at every knot regardless of spacing.
+
+    The returned model carries `meets_target` and `monotone` as explicit fields. Neither is
+    assumed by any consumer: a model that ran out of knots before reaching its target, or whose
+    C rises with reverse bias, must be REFUSED by the caller rather than used -- absence of a
+    raised exception here is not evidence the fit is usable.
+    """
+
+    if max_rel_error <= 0:
+        raise ValueError("max_rel_error must be positive")
+    if max_knots < 2:
+        raise ValueError("max_knots must be at least 2")
+    vds, coss = clean_coss_points(vds, coss)
+
+    selected = {0, len(vds) - 1}
+    achieved = float("inf")
+    while True:
+        idx = sorted(selected)
+        pred = np.interp(vds, vds[idx], coss[idx])
+        rel = np.abs(pred / coss - 1.0)
+        achieved = float(np.max(rel))
+        if achieved <= max_rel_error or len(selected) >= min(max_knots, len(vds)):
+            break
+        selected.add(int(np.argmax(rel)))
+
+    idx = sorted(selected)
+    kv = vds[idx]
+    kc = coss[idx]
+    segments = np.diff(kc) / np.diff(kv)
+    return CossHingeModel(
+        vds=tuple(float(v) for v in kv),
+        coss=tuple(float(c) for c in kc),
+        max_rel_error=float(max_rel_error),
+        source_points=int(len(vds)),
+        achieved_max_rel_error=achieved,
+        meets_target=bool(achieved <= max_rel_error),
+        monotone=bool(np.all(segments <= _MONOTONE_SLOPE_TOL)),
+    )
+
+
+def evaluate_hinge_model(model: "CossHingeModel", vds: np.ndarray | Iterable[float]) -> np.ndarray:
+    """C(V) in pF for the hinge model, including the flat tails outside the knot range.
+
+    Tails are FLAT (constant C), matching the knot-range endpoints, because the consumers swing
+    outside the chart: the loss deck's SW node undershoots below 0 V and its ring overshoots
+    above the top knot. Letting the last hinge slope continue would drive C negative and then
+    through zero -- an unphysical capacitance produced by extrapolation nobody asked for.
+    """
+
+    v = np.asarray(list(vds) if not isinstance(vds, np.ndarray) else vds, dtype=float)
+    kv = np.asarray(model.vds, dtype=float)
+    kc = np.asarray(model.coss, dtype=float)
+    return np.interp(v, kv, kc, left=float(kc[0]), right=float(kc[-1]))
+
+
+def hinge_charge_terms(model: "CossHingeModel") -> tuple[float, float, tuple[tuple[float, float], ...]]:
+    """Decompose C(V) into `c0 + sum s_i * max(V - V_i, 0)` over the knot range.
+
+    Returns `(v0, c0, terms)` with `c0` the capacitance at the first knot and `terms` the
+    (breakpoint, slope-step) pairs. The first segment's slope is folded in as a term at `v0`
+    so the caller never has to special-case it.
+    """
+
+    kv = np.asarray(model.vds, dtype=float)
+    kc = np.asarray(model.coss, dtype=float)
+    if len(kv) < 2:
+        raise ValueError("hinge model needs at least two knots")
+    seg = np.diff(kc) / np.diff(kv)
+    terms = [(float(kv[0]), float(seg[0]))]
+    terms += [(float(kv[i]), float(seg[i] - seg[i - 1])) for i in range(1, len(seg))]
+    return float(kv[0]), float(kc[0]), tuple(terms)
+
+
+def hinge_charge_expression(model: "CossHingeModel", *, var: str = "x", scale: float = 1e-12) -> str:
+    """Behavioral charge expression Q(x) for the hinge model, with Q(v0)=0.
+
+    Q is the exact analytic integral of the piecewise-linear C, so the capacitance the
+    simulator differentiates back out is exactly `evaluate_hinge_model` -- there is no second,
+    differently-rounded representation of the same curve. Flat-C tails outside the knot range
+    are emitted explicitly, matching `evaluate_hinge_model`.
+
+    `scale` converts the knot units to farads (knots are pF by convention here).
+    """
+
+    v0, c0, terms = hinge_charge_terms(model)
+    vlast = float(model.vds[-1])
+    clast = float(model.coss[-1])
+    vc = f"min(max({var},{v0:.9g}),{vlast:.9g})"
+    parts = [f"{c0 * scale:.9g}*({vc}-{v0:.9g})"]
+    for vk, sk in terms:
+        if sk == 0.0:
+            continue
+        parts.append(f"{0.5 * sk * scale:.9g}*pow(max({vc}-{vk:.9g},0),2)")
+    parts.append(f"{c0 * scale:.9g}*min({var}-{v0:.9g},0)")
+    parts.append(f"{clast * scale:.9g}*max({var}-{vlast:.9g},0)")
+    return "+".join(parts).replace("+-", "-")
+
+
+def spice_hinge_charge(
+    model_name: str,
+    model: "CossHingeModel",
+    *,
+    drain: str = "d",
+    source: str = "s",
+) -> str:
+    """SPICE behavioral charge element for the hinge model.
+
+    REFUSES to emit a model that did not meet its error target or whose C is non-monotone.
+    Emitting either would put an unphysical capacitance into a deck under a provenance that
+    claims a fitted datasheet curve, which is worse than emitting nothing.
+    """
+
+    if not model.meets_target:
+        raise ValueError(
+            f"{model_name}: hinge model achieved {model.achieved_max_rel_error:.3%} against a "
+            f"{model.max_rel_error:.3%} target within {len(model.vds)} knots; refusing to emit "
+            f"a curve that does not meet its own accuracy contract")
+    if not model.monotone:
+        raise ValueError(
+            f"{model_name}: hinge model C(V) is not monotone non-increasing; a junction "
+            f"capacitance that rises with reverse bias is unphysical, refusing to emit")
+    safe = _safe_name(model_name)
+    return "\n".join(
+        [
+            f"* Coss hinge charge model for {model_name}",
+            f"* {len(model.vds)} knots, max rel err {model.achieved_max_rel_error:.3%} "
+            f"(target {model.max_rel_error:.3%}), C piecewise-linear and continuous",
+            "* C is interpolated, NOT Q: a linear-Q table gives staircase C and one current "
+            "spike per knot.",
+            f".func qoss_{safe}(x) {{{hinge_charge_expression(model)}}}",
+            f"B_COSS_{safe} {drain} {source} I = ddt(qoss_{safe}(V({drain},{source})))",
+            "",
+        ]
+    )
 
 
 def build_qoss_table(model: CossKnotModel, *, v_max: float | None = None, samples: int = 256) -> QossTable:
