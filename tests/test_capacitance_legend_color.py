@@ -224,6 +224,23 @@ _GAN_LS2 = Path(
 )
 
 
+def _packet_charts(root: Path) -> Path | None:
+    """The packet's charts.json, or None.
+
+    The skip guards used to test `root.exists()` -- the DIRECTORY -- while the tests need
+    `charts.json` INSIDE it. That is a proxy for the precondition, not the precondition: the
+    2026-07-29 packet was later regenerated in a sharded layout with no top-level charts.json,
+    so the directory still existed, the guard still passed, and every test in the class died
+    with FileNotFoundError instead of skipping. Three tests then sat in the suite reading as
+    known failures for weeks, which is how "cannot evaluate" gets mistaken for "known-bad".
+    """
+    direct = root / "charts.json"
+    if direct.exists():
+        return direct
+    shards = sorted(root.glob("_shard*/charts.json"))
+    return shards[0] if shards else None
+
+
 @unittest.skipUnless(_GAN.exists(), "local GaN packet not available")
 class EpcEndToEndTests(unittest.TestCase):
     @staticmethod
@@ -299,7 +316,8 @@ class EpcEndToEndTests(unittest.TestCase):
             self.assertGreater(max(xs) - min(xs), 400)
 
 
-@unittest.skipUnless(_GAN_LS2.exists(), "local GaN LS2 packet not available")
+@unittest.skipUnless(_packet_charts(_GAN_LS2) is not None,
+                     "local GaN LS2 packet has no charts.json (regenerated layout)")
 class EpcGuardedColorEndToEndTests(unittest.TestCase):
     def _extract(self, part: str, diagram: int):
         from PIL import Image
@@ -310,7 +328,10 @@ class EpcGuardedColorEndToEndTests(unittest.TestCase):
             extract_vector_trace_components_with_provenance,
         )
 
-        charts = json.loads((_GAN_LS2 / "charts.json").read_text())
+        index = _packet_charts(_GAN_LS2)
+        if index is None:
+            self.skipTest("local GaN LS2 packet has no charts.json")
+        charts = json.loads(index.read_text())
         chart = next(
             (
                 c
@@ -321,7 +342,7 @@ class EpcGuardedColorEndToEndTests(unittest.TestCase):
         )
         if chart is None:
             self.skipTest(f"{part} diagram {diagram} absent from local GaN packet")
-        image = np.asarray(Image.open(_GAN_LS2 / chart["crop_png"]).convert("L"))
+        image = np.asarray(Image.open(index.parent / chart["crop_png"]).convert("L"))
         plot = find_capacitance_plot_box(image)
         return extract_vector_trace_components_with_provenance(
             chart,
