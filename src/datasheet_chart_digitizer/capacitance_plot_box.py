@@ -5,7 +5,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from .capacitance_traces import find_plot_box
+from .capacitance_traces import _MIN_GRID_VERTICALS, find_plot_box
 from .capacitance_types import PlotBox
 
 
@@ -27,7 +27,15 @@ def find_closed_frame_plot_box(gray: np.ndarray) -> PlotBox:
             raise
         recovered = _sparse_closed_frame(gray)
         if recovered is None:
-            raise
+            # LAST RESORT, after closure evidence has already declined: a chart may carry only
+            # MAJOR verticals and no closing top/bottom rails of its own. EPC's log-scale
+            # capacitance panel is the case -- 0/25/50/75/100 with the 75 V line broken by the
+            # legend, leaving four runs. Retrying with the lower floor demands that those
+            # verticals form a real grid (integer-multiple spacing), so this admits a
+            # structurally-verified grid rather than merely fewer lines. Ordering matters: the
+            # closure path keeps its foreign-rail and top/bottom safeguards for every chart it
+            # can still handle, and only genuinely unhandled charts reach here.
+            return find_plot_box(gray, min_verticals=_MIN_GRID_VERTICALS)
         return recovered
     recovered = _sparse_closed_frame(gray)
     if recovered is None:

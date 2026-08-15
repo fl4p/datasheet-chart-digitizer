@@ -249,7 +249,103 @@ def _trace_y_range(trace: Trace) -> int:
 
 def _renamed_trace(trace: Trace, name: str) -> Trace:
     return replace(trace, name=name)
-def find_plot_box(gray: np.ndarray) -> PlotBox:
+# Vertical-grid counts for find_plot_box. At or above _CONFIDENT_GRID_VERTICALS the count alone
+# is taken as evidence of a gridded plot. Between _MIN and _CONFIDENT the count is accepted only
+# if the spacing is uniform (see find_plot_box); below _MIN there is not enough to locate a box
+# at all. _MIN is 4 because the left and right frames plus two interior majors are the least
+# that can establish both edges AND a spacing to test.
+_MIN_GRID_VERTICALS = 4
+_CONFIDENT_GRID_VERTICALS = 6
+
+# Structural thresholds for the sparse-grid acceptance in `_require_consistent_grid`. All are
+# fractions of the panel WIDTH so they scale with render DPI rather than being tuned to one
+# crop size. Values are set from the real geometry they must admit (EPC log-scale capacitance:
+# 689 px wide, verticals at 57/207/357/657, base spacing 150 px = 21.8% of width, 4 cells,
+# span 87%) with room to spare, and from the junk they must reject.
+_GRID_MERGE_FRACTION = 0.015        # centers closer than this are one line, double-detected
+_GRID_MIN_SPACING_FRACTION = 0.08   # a gridline interval below this is not a grid at <6 lines
+_GRID_RATIO_TOL = 0.12              # how far a gap may sit from an integer multiple of base
+_GRID_MAX_CELLS = 12                # total base-units spanned; more means coincidence, not grid
+_GRID_MIN_SPAN_FRACTION = 0.5       # the verticals must cover most of the panel
+
+
+def _require_consistent_grid(
+    v_boxes: list[tuple[int, int, int, int]], width: int
+) -> list[tuple[int, int, int, int]]:
+    """Refuse a sparse vertical set unless it is structurally a grid. Returns the deduplicated
+    boxes so the caller derives the plot box from the same set that was validated.
+
+    Below the confident count there are too few lines for quantity to be evidence, so this
+    demands structure. Each rule closes a specific way the naive "gaps are integer multiples of
+    min(gaps)" test degrades into a near-no-op -- an adversarial review measured that naive form
+    accepting ~5% of RANDOM 4-mark sets, and ~2.3% of sets containing one close pair, each time
+    returning a confidently wrong plot box rather than refusing:
+
+    1. MERGE near-duplicates first. An anti-aliased or double-detected line yields two contours
+       a few px apart. With `base = min(gaps)` that pair collapses the base to ~4 px, after
+       which almost any other gap is within tolerance of some integer multiple. Merging removes
+       the trigger instead of trying to tolerate it.
+    2. FLOOR the base spacing. A gridline interval cannot be a tiny fraction of the panel; a
+       plot with this few verticals necessarily spreads them across it.
+    3. CAP the implied cell count. Without this, gaps of 1 and 40 base units "pass" as a grid
+       with 39 invisible lines, which is not a reading of the image any more.
+    4. Require the lines to SPAN most of the panel, so a cluster of marks in one corner cannot
+       stand in for a plot frame.
+    """
+
+    centers = sorted(x + w / 2 for x, _, w, _ in v_boxes)
+    by_center = {x + w / 2: box for box, (x, _, w, _) in zip(v_boxes, v_boxes)}
+    merged: list[float] = []
+    for c in centers:
+        if merged and c - merged[-1] <= max(3.0, _GRID_MERGE_FRACTION * width):
+            continue
+        merged.append(c)
+    kept = [by_center[c] for c in merged]
+
+    if len(merged) < _MIN_GRID_VERTICALS:
+        raise RuntimeError(
+            f"could not find plot grid verticals; found {len(merged)} distinct verticals "
+            f"after merging near-duplicates")
+
+    gaps = np.diff(np.array(merged))
+    base = float(np.min(gaps))
+    if base < _GRID_MIN_SPACING_FRACTION * width:
+        raise RuntimeError(
+            f"could not find plot grid verticals; base spacing {base:.1f} px is under "
+            f"{_GRID_MIN_SPACING_FRACTION:.0%} of the {width} px panel — too fine to be a "
+            f"gridline interval at {len(merged)} verticals")
+    ratios = gaps / base
+    if float(np.max(np.abs(ratios - np.round(ratios)))) > _GRID_RATIO_TOL:
+        raise RuntimeError(
+            f"could not find plot grid verticals; found {len(merged)} and their spacing is "
+            f"not a consistent grid (gaps={[round(g, 1) for g in gaps]}, base={base:.1f})")
+    if float(np.sum(np.round(ratios))) > _GRID_MAX_CELLS:
+        raise RuntimeError(
+            f"could not find plot grid verticals; spacing implies "
+            f"{int(np.sum(np.round(ratios)))} cells over {len(merged)} verticals, more than "
+            f"{_GRID_MAX_CELLS} — the multiples are arithmetic coincidence, not a grid")
+    if (merged[-1] - merged[0]) < _GRID_MIN_SPAN_FRACTION * width:
+        raise RuntimeError(
+            f"could not find plot grid verticals; the {len(merged)} verticals span "
+            f"{merged[-1] - merged[0]:.0f} px of a {width} px panel — too narrow to be its grid")
+    return kept
+
+
+def find_plot_box(gray: np.ndarray, *, min_verticals: int = _CONFIDENT_GRID_VERTICALS) -> PlotBox:
+    """Locate the plot box from vertical gridlines.
+
+    `min_verticals` defaults to the long-standing six-vertical contract, which
+    `find_closed_frame_plot_box` depends on: it deliberately lets this detector REFUSE sparse
+    grids so a sparse frame can be admitted on positive closure evidence (four mutually closing
+    rails) instead. Lowering the floor here by default would silently steal those charts from
+    that path along with its foreign-rail and closure safeguards.
+
+    Callers may lower it to `_MIN_GRID_VERTICALS` as a LAST RESORT, after the closure-based
+    recovery has already declined. Below the confident count the verticals must additionally
+    form a real grid -- see the spacing check below -- so the relaxed path is a narrower gate,
+    not merely a lower one.
+    """
+
     height, width = gray.shape
     _, bw = cv2.threshold(gray, 245, 255, cv2.THRESH_BINARY_INV)
 
@@ -262,6 +358,11 @@ def find_plot_box(gray: np.ndarray) -> PlotBox:
     for contour in contours:
         x, y, w, h = cv2.boundingRect(contour)
         if w > 8 or h < height * 0.45 or x > width * 0.96:
+            # The right-hand 96% cutoff stays: Infineon panels carry an OUTER FIGURE BORDER
+            # just inside the crop edge (ISC0802NLSATMA1: a full-height rule at x=753 of a
+            # 759 px crop). Admitting it drags the plot box from x1=712 out to 754 and the
+            # overlay/extraction bounds with it. Measured, not assumed -- an earlier revision
+            # of this function relaxed the cutoff and moved that box by 42 px.
             continue
         if x >= width * 0.08:
             v_boxes.append((x, y, w, h))
@@ -275,8 +376,10 @@ def find_plot_box(gray: np.ndarray) -> PlotBox:
         tallest = max(h for _, _, _, h in v_boxes)
         v_boxes.extend(box for box in near_edge if box[3] >= 0.9 * tallest)
 
-    if len(v_boxes) < 6:
+    if len(v_boxes) < max(min_verticals, _MIN_GRID_VERTICALS):
         raise RuntimeError(f"could not find plot grid verticals; found {len(v_boxes)}")
+    if len(v_boxes) < _CONFIDENT_GRID_VERTICALS:
+        v_boxes = _require_consistent_grid(v_boxes, width)
 
     centers = np.array([x + w / 2 for x, _, w, _ in v_boxes])
     y_starts = np.array([y for _, y, _, _ in v_boxes])

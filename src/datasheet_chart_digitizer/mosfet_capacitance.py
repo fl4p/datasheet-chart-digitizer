@@ -409,9 +409,18 @@ def process_chart(
             served_min_pf,
         )
         for name, (pixels, pf_per_px, deciding_pf) in sorted(unresolved.items()):
-            anchor = anchors[name]
+            # `unresolved` can name a trace that has NO anchor: the resolvability decision
+            # falls back to the served curve's own floor, which is the only evidence available
+            # for parts with no spec table (EPC). Indexing anchors[name] here raised a bare
+            # KeyError that surfaced as `ERROR: 'Crss'` and dropped the whole panel -- the
+            # downgrade this branch exists to RECORD instead destroyed the record.
+            anchor = anchors.get(name)
             reason = anchor_resolution_reason(
-                name, pixels, pf_per_px, float(anchor.value_pf), deciding_pf
+                name,
+                pixels,
+                pf_per_px,
+                float(anchor.value_pf) if anchor is not None else None,
+                deciding_pf,
             )
             if reason not in status_reasons:
                 status_reasons.append(reason)

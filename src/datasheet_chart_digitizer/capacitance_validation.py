@@ -342,7 +342,7 @@ def anchor_resolution_reason(
     name: str,
     pixels: float,
     pf_per_px: float,
-    anchor_value_pf: float,
+    anchor_value_pf: float | None,
     deciding_pf: float | None = None,
 ) -> str:
     """Describe the downgrade in the units the measurement was made in.
@@ -355,10 +355,30 @@ def anchor_resolution_reason(
     keyed on the ANCHOR: the export applies a fixed offset derived from the
     spec-table value, so that is the number deciding whether the correction
     applies, regardless of how far the trace falls afterwards.
+
+    ``anchor_value_pf`` may be None: ``unresolved_anchor_traces`` deliberately
+    decides on the served curve's own floor when no spec-table anchor exists
+    (EPC parts carry no .nop.csv anchor table), so an anchor-less trace can
+    reach here. That case is NEVER exempt -- the exemption exists because the
+    export applies an offset derived from the anchor, and with no anchor there
+    is no such correction to rely on. Treating "no anchor" as exempt would
+    silence the downgrade for exactly the parts with the least evidence.
     """
 
-    exempt = name == "Crss" and anchor_value_pf <= TINY_CRSS_ANCHOR_PF
+    exempt = (
+        name == "Crss"
+        and anchor_value_pf is not None
+        and anchor_value_pf <= TINY_CRSS_ANCHOR_PF
+    )
     suffix = "_offset_corrected_at_export" if exempt else ""
+    if anchor_value_pf is None:
+        measured = deciding_pf
+        return (
+            f"{name}_anchor_below_axis_resolution:"
+            f"curve_floor {measured:g} pF = {pixels:.2f} px on a linear axis "
+            f"({pf_per_px:.2f} pF/px, need {MIN_ANCHOR_RESOLUTION_PX:g}; "
+            f"no spec-table anchor for this part)"
+        )
     measured = anchor_value_pf if deciding_pf is None else deciding_pf
     source = "anchor" if deciding_pf is None or deciding_pf >= anchor_value_pf else "curve_floor"
     return (
