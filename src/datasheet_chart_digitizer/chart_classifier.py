@@ -66,6 +66,29 @@ def _is_body_diode_chart_text(text: str) -> bool:
     )
 
 
+def _is_reverse_leakage_chart_text(text: str) -> bool:
+    """Recognize a diode reverse-leakage family: Ir versus Vr at several Tj.
+
+    Deliberately narrow. The decisive evidence is BOTH axes naming the reverse
+    quantities -- reverse current against reverse voltage -- because "reverse
+    current" alone also appears on recovery panels and in MOSFET body-diode
+    captions, which are owned by other families.
+
+    ``drain``/``source`` disqualify: a MOSFET body diode plotted in its third
+    quadrant is ``body_diode``, whose curves DO cross, and which therefore must
+    not reach a digitizer whose safety gate assumes they cannot.
+
+    ``recovery`` and ``test circuit`` disqualify for the reason the body-diode
+    predicate above already gives: a recovery waveform and a measurement
+    schematic are not a measured Ir(Vr) family, however similar the words.
+    """
+    if "recovery" in text or "test circuit" in text:
+        return False
+    if "drain" in text or "source" in text:
+        return False
+    return "reverse current" in text and "reverse voltage" in text
+
+
 def strong_noncapacitance_panel_kind(text: str) -> str | None:
     """Return a contradictory owned family only from decisive panel semantics."""
     normalized = _normalized_chart_text(text)
@@ -85,6 +108,11 @@ def strong_noncapacitance_panel_kind(text: str) -> str | None:
         return None
     if "safe operation area" in normalized or "safe operating area" in normalized:
         return "safe_operating_area"
+    # Checked BEFORE body_diode: the generic "reverse + current + voltage" test
+    # below would otherwise swallow a small-signal diode leakage family into a
+    # MOSFET family whose crossing assumption is the opposite of this one's.
+    if _is_reverse_leakage_chart_text(normalized):
+        return "reverse_leakage"
     if _is_body_diode_chart_text(normalized) or all(
         word in normalized for word in ("reverse", "drain", "current", "voltage")
     ):
@@ -168,6 +196,12 @@ def classify_chart(title: str, text: str) -> str:
     formula_kind = compact_formula_chart_kind(title)
     if formula_kind is not None:
         return formula_kind
+    # Checked on the TITLE as well as on panel text, because the caption finder
+    # classifies with ``text=""``: a side-by-side caption line is segmented into
+    # per-figure titles before any panel text exists to consult. Ordered ahead
+    # of body_diode for the same reason as in the text path below.
+    if _is_reverse_leakage_chart_text(normalized_title):
+        return "reverse_leakage"
     if _is_body_diode_chart_text(normalized_title):
         return "body_diode"
     if (
@@ -188,6 +222,8 @@ def classify_chart(title: str, text: str) -> str:
         return "safe_operating_area"
     if "thermal impedance" in haystack or "zth" in haystack:
         return "thermal_impedance"
+    if _is_reverse_leakage_chart_text(haystack):
+        return "reverse_leakage"
     if _is_body_diode_chart_text(haystack):
         return "body_diode"
     compact = re.sub(r"[^a-z0-9]+", "", haystack)

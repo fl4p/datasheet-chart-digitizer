@@ -36,6 +36,7 @@ SUPPORTED_CHART_KINDS = {
     "capacitances",
     "gate_charge",
     "rds_on",
+    "reverse_leakage",
     "transfer",
 }
 GENERATED_MARKER_RE = re.compile(r"\.pdf\.", re.IGNORECASE)

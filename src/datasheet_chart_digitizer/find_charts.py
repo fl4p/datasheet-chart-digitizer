@@ -409,6 +409,7 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 "gate_charge",
                 "breakdown_voltage",
                 "body_diode",
+                "reverse_leakage",
                 "transfer", "capacitances", "rds_on",
             }:
                 continue
@@ -1467,7 +1468,7 @@ def process_page_texts(
                     if image_bbox is not None:
                         # A whole-figure raster is the exact label-complete panel.
                         bbox = image_bbox
-                if kind in {"capacitances", "breakdown_voltage", "body_diode", "rds_on", "transfer"}:
+                if kind in {"capacitances", "breakdown_voltage", "body_diode", "rds_on", "transfer", "reverse_leakage"}:
                     bbox = _expand_caption_bbox_to_axis_labels(page, bbox, kind)
                 preserve_left = caption_leading_plot_bbox(page, title, kind, _token_norm) == bbox or (kind in {"transfer", "body_diode"} and direction is not None)
                 bbox = _bound_caption_bbox_to_own_column(

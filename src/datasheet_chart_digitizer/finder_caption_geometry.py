@@ -189,7 +189,7 @@ def frame_bound_short_caption_segments(
     """Recover short unnumbered titles only from an evidenced chart row."""
     supported = {
         "gate_charge", "breakdown_voltage", "body_diode", "transfer",
-        "capacitances", "rds_on",
+        "capacitances", "rds_on", "reverse_leakage",
     }
     above_candidates: dict[BBox, tuple[str, BBox]] = {}
     below_candidates: dict[BBox, tuple[str, BBox]] = {}
