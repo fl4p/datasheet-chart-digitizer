@@ -18,6 +18,14 @@ their table typ to <1 %), AO3400A (UMW) `inconsistent` = a real table/chart
 disagreement, 6 review_required (Rohm x3, BRCS, WSR3090 raster; FDP8870 filled
 outlines with unbound ID labels).
 
+Review round 1 (2026-09-28, Codex xhigh + Opus visual) found the clipping,
+leader, gap, coverage, temperature-kind and validation-scope defects; fixed in
+429806d..4bbf9ad with known-bad tests in tests/test_rdson_gate_voltage_review.py.
+v2 output: `batch15_v2/`, `batch15_v2_manifest.json`, `CHANGELOG-v1-v2.md`
+(v1 kept: the reviews cite it). The review loop continues until a round has no
+new findings. `test_annotate_pdf::test_csd13385...` asserts the extractor tree is
+DIRTY -- it fails on any clean checkout, unrelated to this class.
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
