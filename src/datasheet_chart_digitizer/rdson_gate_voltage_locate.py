@@ -134,7 +134,16 @@ def locate_panels(
     located: list[LocatedPanel] = []
     refusals: list[Refusal] = []
     panel_text: dict[tuple[int, str], PageText] = {}
-    pages = run_text_bbox(pdf)
+    try:
+        pages = run_text_bbox(pdf)
+    except RuntimeError:
+        # An image-only PDF has no text layer at all; every page then goes
+        # through the OCR path below instead of aborting the whole document.
+        with pymupdf.open(pdf) as document:
+            pages = [
+                PageText(index + 1, float(page.rect.width), float(page.rect.height), [], "no_text_layer")
+                for index, page in enumerate(document)
+            ]
     with pymupdf.open(pdf) as document:
         for page in pages:
             pdf_page = document[page.page_num - 1]
