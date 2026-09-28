@@ -9,6 +9,7 @@ were re-checked against the PDFs before the fixes.
 
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 import unittest
@@ -697,7 +698,9 @@ class RoundThreeTests(unittest.TestCase):
             stubs = [s for c in row["curves"] for s in c["dropped_end_stub_points"]]
             match = [s for s in stubs if abs(s[2] - x) <= 1 and abs(s[3] - y) <= 1.5]
             self.assertTrue(match, (name, stubs))
-            self.assertAlmostEqual(match[0][0], vgs, delta=0.01)
+            # values are the reviewer's, read with the v3 calibration; R3-9's
+            # full-ladder refit moved RQ3E110AJ's x fit by <= 0.92 px (0.013 V)
+            self.assertAlmostEqual(match[0][0], vgs, delta=0.015)
             self.assertAlmostEqual(match[0][1], rds, delta=0.3)
             self.assertLess(int(gray[int(round(y)) - 2:int(round(y)) + 3, x - 2:x + 3].min()), 150)
             self.assertTrue(any("_end_stub_points_dropped (" in r for r in row["reasons"]), row["reasons"])
@@ -900,6 +903,214 @@ class BoundaryTests(unittest.TestCase):
         curve = rgv._curves([trace], cal, cap["scale"], gray)[0][0]
         self.assertTrue(any(g0 < 9.5 < g1 for g0, g1 in curve["gap_kinds"]["gap"]), curve["gap_kinds"])
         self.assertFalse(any(g0 < 9.5 < g1 for g0, g1 in curve["gap_kinds"]["untraced_section"]))
+
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundThreeLateTests(unittest.TestCase):
+    """Fab's v3 overlay inspection (R3-8..R3-14), each on its real case."""
+
+    RASTER = (("RQ3E110AJ_Rohm", 7, "12"), ("RQ6E080AJ_Rohm", 7, "12"), ("RQ3E180AJ_Rohm", 7, "12"))
+
+    # -- R3-8: tick provenance -------------------------------------------------
+
+    def test_r3_8_image_chart_ticks_are_not_credited_to_the_text_layer(self):
+        # pdftotext finds 2 numeric words on RQ3E110AJ p7 (both charts are
+        # images): no tick label there can come from the text layer.
+        import pymupdf
+        for name, page, diagram in self.RASTER:
+            with pymupdf.open(DS / f"{name}.pdf") as document:
+                numeric = [w[4] for w in document[page - 1].get_text("words") if re.fullmatch(r"[\d.]+", w[4])]
+            self.assertLessEqual(len(numeric), 3, (name, numeric))
+            cal = _panel(name, page, diagram)["calibration"]
+            self.assertFalse(cal["tick_source"].startswith("text_layer"), (name, cal["tick_source"]))
+            origins = {o["origin"] for axis in cal["tick_origins"].values() for o in axis}
+            self.assertNotIn("text_layer", origins, name)
+            self.assertNotIn("unmatched", origins, name)
+
+    def test_r3_8_vector_chart_ticks_come_from_the_text_layer(self):
+        row = next(r for r in _results("CSD17306Q5A_TI") if r["page"] == 4)
+        cal = row["calibration"]
+        self.assertEqual(cal["tick_source"], "text_layer")
+        self.assertEqual({o["origin"] for axis in cal["tick_origins"].values() for o in axis}, {"text_layer"})
+
+    # -- R3-9: used-tick span and extrapolation ------------------------------------
+
+    def test_r3_9_rq3e110aj_uses_every_printed_tick(self):
+        cal = _panel("RQ3E110AJ_Rohm", 7, "12")["calibration"]
+        self.assertEqual(cal["used_tick_span"]["y_axis"]["values"], [0.0, 30.0])
+        self.assertEqual(cal["used_tick_span"]["x_axis"]["values"], [0.0, 10.0])
+        self.assertEqual(sorted(t["value"] for t in cal["y_axis"]["ticks"]), [float(v) for v in range(0, 31, 2)])
+        self.assertIn("added ticks", cal["tick_completion"])
+        for curve in _panel("RQ3E110AJ_Rohm", 7, "12")["curves"]:
+            for reading in curve["readouts"]:
+                if reading["rds_mohm"] is not None:
+                    self.assertEqual(reading["calibration_span"], "inside", reading)
+
+    def _v3_ladder(self):
+        # the v3 calibration: y ticks 10-30 and x ticks 1-10 only (panel OCR)
+        import dataclasses
+        from datasheet_chart_digitizer.numeric_axis import NumericAxis
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        cal = cap["calibration"]
+
+        def cut(axis, keep):
+            ticks = tuple(t for t in axis.ticks if keep(t.value))
+            return NumericAxis(axis.model, axis.m, axis.b, ticks, axis.residual_px, axis.candidate_residuals_px)
+
+        return cap, dataclasses.replace(cal, x_axis=cut(cal.x_axis, lambda v: v >= 1), y_axis=cut(cal.y_axis, lambda v: v >= 10))
+
+    def test_r3_9_readouts_below_the_used_ticks_are_flagged(self):
+        cap, v3 = self._v3_ladder()
+        # 8.6 mOhm (the 4.5 V reading) lies below the lowest used tick (10);
+        # the frame bottom (0 mOhm) sits on the fitted lattice: anchored
+        state = rgv._span_state(v3, 4.5, 8.6)
+        self.assertEqual(state["state"], "outside_anchored", state)
+        # the same with the frame 3 px off the lattice: NOT anchored -> a reason
+        import dataclasses
+        moved = dataclasses.replace(v3, plot=dataclasses.replace(v3.plot, y1=v3.plot.y1 + 3))
+        self.assertEqual(rgv._span_state(moved, 4.5, 8.6)["state"], "outside_unanchored")
+        curves = [{"curve_index": 0, "readouts": [{"vgs_v": 4.5, "rds_mohm": 8.6, "status": "read"}]}]
+        reasons = rgv._flag_calibration_span(curves, {"anchors": []}, moved, 1.0)
+        self.assertTrue(reasons and reasons[0].startswith("curve_0_readout_outside_calibrated_span"), reasons)
+        self.assertEqual(rgv._span_state(v3, 4.5, 12.0)["state"], "inside")
+
+    # -- R3-10: every used tick marked, off the grid ----------------------------
+
+    def test_r3_10_every_used_tick_is_marked_outside_the_datasheet_crop(self):
+        for name, page, diagram in (("RQ3E110AJ_Rohm", 7, "12"), ("FDP8870_onsemi", 5, "9")):
+            row = _panel(name, page, diagram)
+            marks = row["overlay_tick_marks"]
+            self.assertEqual(sorted(marks["x"]), sorted(t["value"] for t in row["calibration"]["x_axis"]["ticks"]), name)
+            self.assertEqual(sorted(marks["y"]), sorted(t["value"] for t in row["calibration"]["y_axis"]["ticks"]), name)
+
+    # -- R3-11: a curve above the table max, bindings unknown -------------------
+
+    def test_r3_11_brcs020n03ra_curve_above_table_max_is_recorded_not_judged(self):
+        row = _panel("BRCS020N03RA_LCSC_C22449012", 4, "5")
+        notes = row["validation"]["diagnostics"]
+        hit = [n for n in notes if n["vgs_v"] == 4.5 and n["kind"] == "curve_exceeds_table_max_at_table_vgs"]
+        self.assertEqual(len(hit), 1, notes)
+        self.assertGreater(hit[0]["chart_mohm"], hit[0]["table_max_mohm"])
+        self.assertIn("temperature binding unknown", hit[0]["text"])
+        # no claim either way: the verdict is untouched, the reason is stated
+        self.assertEqual(row["validation"]["verdict"], "not_evaluable")
+        self.assertTrue(any(r.startswith(f"curve_{hit[0]['curve_index']}_exceeds_table_max_at_4.5V") for r in row["reasons"]))
+
+    def test_r3_11_an_evaluated_or_differently_bound_curve_is_not_a_diagnostic(self):
+        # AO3400A: the 25 C curve is judged by its anchors; the 125 C curve is
+        # bound to another temperature than the rows, so it is not listed
+        row = next(r for r in _results("AO3400A_UMW_C347475") if r.get("validation"))
+        self.assertEqual(row["validation"]["diagnostics"], [])
+        for name in ("CSD17306Q5A_TI", "IRLB8748_IFX", "SIS176LDN_Vishay"):
+            for r in _results(name):
+                if r.get("validation"):
+                    self.assertEqual(r["validation"]["diagnostics"], [], name)
+
+    # -- R3-12: per-curve legend and direct labels -------------------------------
+
+    def test_r3_12_legend_row_and_direct_label_per_curve(self):
+        row = next(r for r in _results("CSD17306Q5A_TI") if r["page"] == 4)
+        legend = [t for t, _c in report._legend_lines(row, 4000)]
+        for curve in row["curves"]:
+            line = next(t for t in legend if t.startswith(f"c{curve['curve_index']} "))
+            self.assertIn(f"{curve['temperature_kind']}={curve['temperature_c']:g}C", line)
+            self.assertIn(f"ID={curve['id_a']:g}A", line)
+            self.assertIn("usable", line)
+            for reading in curve["readouts"]:
+                self.assertIn(f"{reading['vgs_v']:g}V:", line)
+        labels = row["overlay_curve_labels"]
+        self.assertEqual(sorted(l["curve_index"] for l in labels), [c["curve_index"] for c in row["curves"]])
+        self.assertIn("c1 Tc=25C", [l["text"] for l in labels])
+        boxes = [l["box_px"] for l in labels]
+        for i, a in enumerate(boxes):
+            for b in boxes[i + 1:]:
+                self.assertTrue(a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1], (a, b))
+        for label in labels:
+            self.assertEqual(label["placement"], "beside its trace, clear of all ink")
+            x0, y0, x1, y1 = label["box_px"]
+            for curve in row["curves"]:
+                for x, y in curve["points_px"]:
+                    self.assertFalse(x0 - 3 <= x <= x1 + 3 and y0 - 3 <= y <= y1 + 3, (label, x, y))
+
+    def test_r3_12_unknown_labels_are_spelled_out(self):
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        legend = " ".join(t for t, _c in report._legend_lines(row, 4000))
+        self.assertIn("T unknown", legend)
+        self.assertIn("ID unknown", legend)
+
+    # -- R3-13: FDP8870 coincident tails ------------------------------------------
+
+    def test_r3_13_fdp8870_source_draws_the_tails_coincident(self):
+        # PDF drawings 716 (1 A) and 719 (35 A) are separate filled outlines:
+        # at 6 V both have vertices at y 621.07 / 623.11 pt, 0.36 pt apart in x
+        import pymupdf
+        with pymupdf.open(DS / "FDP8870_onsemi.pdf") as document:
+            drawings = document[4].get_drawings()
+        ys = []
+        for index in (716, 719):
+            pts = [(p.x, p.y) for item in drawings[index]["items"] for p in item[1:] if hasattr(p, "x")]
+            ys.append({round(y, 2) for x, y in pts if 207.5 <= x <= 211.0})
+        self.assertTrue({621.07, 623.11} <= ys[0] & ys[1], ys)
+
+    def test_r3_13_fdp8870_coincidence_is_recorded_both_ways(self):
+        row = _panel("FDP8870_onsemi", 5, "9")
+        c0, c1 = row["curves"]
+        for curve, other in ((c0, 1), (c1, 0)):
+            spans = [c for c in curve["coincident_with"] if c["curve_index"] == other]
+            self.assertEqual(len(spans), 1, curve["coincident_with"])
+            self.assertAlmostEqual(spans[0]["from_vgs_v"], 4.41, delta=0.15)
+            self.assertAlmostEqual(spans[0]["to_vgs_v"], 10.0, delta=0.01)
+        self.assertTrue(any(r.startswith("curve_0_coincident_with_curve_1") for r in row["reasons"]))
+        # separated curves are not called coincident (WSR3090: >= 35 px apart)
+        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("RQ3E180AJ_Rohm", 7, "12")):
+            for curve in _panel(name, page, diagram)["curves"]:
+                self.assertEqual(curve["coincident_with"], [], name)
+
+    def test_r3_13_both_coincident_curves_stay_visible(self):
+        import numpy as np
+        row = _panel("FDP8870_onsemi", 5, "9")
+        x0 = min(p[0] for p in row["curves"][0]["points_px"] if p[0] > 0)
+        body = np.full((1000, 1200, 3), 255, dtype=np.uint8)
+        report._draw_curves(body, row["curves"])
+        lo = int(_px_at(row, 6.0))
+        hi = int(_px_at(row, 9.0))
+        self.assertGreater(hi, lo + 50, (lo, hi, x0))
+        for curve in row["curves"]:
+            color = np.asarray(report.curve_color(curve), dtype=int)
+            near = np.abs(body[:, lo:hi].astype(int) - color).max(axis=2) <= 40
+            hits = near.any(axis=0).sum()
+            # dashes alternate every 10 px; line caps and halos eat part of each gap
+            self.assertGreater(hits, 0.2 * (hi - lo), (curve["curve_index"], hits, hi - lo))
+
+    # -- R3-14: palette and halos ----------------------------------------------------
+
+    def test_r3_14_palette_is_bright_against_black_ink(self):
+        self.assertGreaterEqual(len(report._COLORS), 6)
+        for color in report._COLORS:
+            self.assertGreaterEqual(report.contrast_vs_black(color), report.MIN_CONTRAST_VS_BLACK, color)
+        self.assertGreaterEqual(report.MIN_CONTRAST_VS_BLACK, 4.0)
+        self.assertNotIn((130, 0, 75), report._COLORS)
+        self.assertEqual(len(set(report._COLORS)), len(report._COLORS))
+
+    def test_r3_14_traces_have_white_halos_over_black_ink(self):
+        import numpy as np
+        row = next(r for r in _results("CSD17306Q5A_TI") if r["page"] == 4)
+        body = np.zeros((1000, 1200, 3), dtype=np.uint8)   # all "black ink"
+        report._draw_curves(body, row["curves"])
+        white = (body >= 230).all(axis=2)
+        for curve in row["curves"]:
+            x, y = (int(round(v)) for v in curve["points_px"][len(curve["points_px"]) // 2])
+            window = white[y - 6:y + 7, x - 6:x + 7]
+            self.assertTrue(window.any(), curve["curve_index"])
+            color = np.asarray(report.curve_color(curve), dtype=int)
+            near = np.abs(body[y - 2:y + 3, x - 2:x + 3].astype(int) - color).max(axis=2) <= 40
+            self.assertTrue(near.any(), curve["curve_index"])
+
+
+def _px_at(row: dict, vgs: float) -> float:
+    axis = row["calibration"]["x_axis"]
+    return (vgs - axis["b"]) / axis["m"]
 
 
 if __name__ == "__main__":

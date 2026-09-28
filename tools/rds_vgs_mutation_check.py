@@ -28,6 +28,7 @@ from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces
 from datasheet_chart_digitizer import rdson_spec_table as spec
 
+import test_rdson_gate_voltage_golden as golden
 import test_rdson_gate_voltage_review as review
 
 T = "test_rdson_gate_voltage_review."
@@ -151,6 +152,7 @@ def _char_clipped(text, color, width_px=None):
 
 
 R3 = "RoundThreeTests."
+L = "RoundThreeLateTests."
 B = "BoundaryTests."
 
 
@@ -400,6 +402,71 @@ MUTANTS = {
     "erase_no_ocr_box": (
         [patch.object(rgv, "_is_texty", lambda *a, **k: False)],
         ["LeaderTests", "RasterCoverageHonestyTests", "RoundTwoTests"]),
+    # ---- R3-8..R3-14 (Fab's v3 overlay inspection) --------------------------------
+    "tick_origin_always_text_layer (R3-8)": (
+        [patch.object(rgv, "_tick_origins", lambda axis, plot, orientation, sources: ["text_layer"] * len(axis.ticks))],
+        [L + "test_r3_8_image_chart_ticks_are_not_credited_to_the_text_layer"]),
+    "locator_ocr_named_text_layer (R3-8, v3 label)": (
+        [patch.object(rgv, "_LOCATOR_SOURCE_NAMES", {"tesseract_fallback": "text_layer", "text_layer+tesseract_panel": "text_layer"})],
+        [L + "test_r3_8_image_chart_ticks_are_not_credited_to_the_text_layer"]),
+    "no_tick_completion (R3-9)": (
+        [patch.object(rgv, "_complete_ticks", lambda calibration, *a: (calibration, "off"))],
+        [L + "test_r3_9_rq3e110aj_uses_every_printed_tick"]),
+    "TICK_COMPLETION_MAX_SHIFT_0.5 (R3-9)": (
+        [patch.object(rgv, "TICK_COMPLETION_MAX_SHIFT_PX", 0.5)],
+        [L + "test_r3_9_rq3e110aj_uses_every_printed_tick"]),
+    "span_always_inside (R3-9)": (
+        [patch.object(rgv, "_span_state", lambda *a: {"state": "inside"})],
+        [L + "test_r3_9_readouts_below_the_used_ticks_are_flagged"]),
+    "span_anchor_tolerance_5px (R3-9)": (
+        [_source_mutant(rgv, "_span_state", ("if step and deviation <= 1.0:", "if step and deviation <= 5.0:"))],
+        [L + "test_r3_9_readouts_below_the_used_ticks_are_flagged"]),
+    "span_anchor_tolerance_0px (R3-9)": (
+        [_source_mutant(rgv, "_span_state", ("if step and deviation <= 1.0:", "if step and deviation <= 0.0 - 1:"))],
+        [L + "test_r3_9_readouts_below_the_used_ticks_are_flagged"]),
+    "unanchored_not_a_reason (R3-9)": (
+        [_source_mutant(rgv, "_flag_calibration_span", ('''            if span["state"] == "outside_unanchored":
+                reasons.append(f"curve_''', '''            if False:
+                reasons.append(f"curve_'''))],
+        [L + "test_r3_9_readouts_below_the_used_ticks_are_flagged"]),
+    "ticks_not_marked (R3-10)": (
+        [_source_mutant(report, "_axis_bands", ('''        marks["y"].append(tick.value)
+''', ""))],
+        [L + "test_r3_10_every_used_tick_is_marked_outside_the_datasheet_crop"]),
+    "no_max_diagnostics (R3-11)": (
+        [patch.object(report, "_max_diagnostics", lambda *a: [])],
+        [L + "test_r3_11_brcs020n03ra_curve_above_table_max_is_recorded_not_judged"]),
+    "max_diagnostic_ignores_bound_temperature (R3-11)": (
+        [_source_mutant(report, "_max_diagnostics", ("if temperature is not None and abs(temperature - row.temperature_c) > TJ_MATCH_C:", "if False:"))],
+        [L + "test_r3_11_an_evaluated_or_differently_bound_curve_is_not_a_diagnostic"]),
+    "no_direct_curve_labels (R3-12)": (
+        [patch.object(report, "_place_curve_labels", lambda *a: [])],
+        [L + "test_r3_12_legend_row_and_direct_label_per_curve"]),
+    "labels_ignore_ink (R3-12)": (
+        [patch.object(report, "LABEL_CLEARANCE_PX", -10000)],
+        [L + "test_r3_12_legend_row_and_direct_label_per_curve"]),
+    "legend_without_temperature_kind (R3-12)": (
+        [patch.object(report, "temperature_text", lambda curve: "T")],
+        [L + "test_r3_12_legend_row_and_direct_label_per_curve", L + "test_r3_12_unknown_labels_are_spelled_out"]),
+    "no_coincidence_marking (R3-13)": (
+        [patch.object(rgv, "_mark_coincident", lambda curves, calibration: [curve.setdefault("coincident_with", []) and None for curve in curves] and [])],
+        [L + "test_r3_13_fdp8870_coincidence_is_recorded_both_ways"]),
+    "COINCIDENT_PX_40 (R3-13)": (
+        [patch.object(rgv, "COINCIDENT_PX", 40.0)],
+        [L + "test_r3_13_fdp8870_coincidence_is_recorded_both_ways"]),
+    "COINCIDENT_MIN_PX_huge (R3-13)": (
+        [patch.object(rgv, "COINCIDENT_MIN_PX", 10000)],
+        [L + "test_r3_13_fdp8870_coincidence_is_recorded_both_ways"]),
+    "coincident_drawn_solid (R3-13b)": (
+        [_source_mutant(report, "_draw_curves", ("if over and (p0[0] // 10) % 2:", "if False:"))],
+        [L + "test_r3_13_both_coincident_curves_stay_visible"]),
+    "dark_palette_colour (R3-14)": (
+        [patch.object(report, "_COLORS", ((130, 0, 75),) + report._COLORS[1:])],
+        [L + "test_r3_14_palette_is_bright_against_black_ink"]),
+    "no_halo (R3-14)": (
+        [_source_mutant(report, "_draw_curves", ("cv2.line(body, p0, p1, (255, 255, 255), 7, cv2.LINE_AA)", "pass"),
+                        ("cv2.circle(body, (int(round(x)), int(round(y))), 5, (255, 255, 255), -1, cv2.LINE_AA)", "pass"))],
+        [L + "test_r3_14_traces_have_white_halos_over_black_ink"]),
 }
 
 
@@ -423,9 +490,14 @@ EQUIVALENT_ON_REAL_DATA = {
 
 
 def run(names: list[str]) -> unittest.TestResult:
+    """The mutant's targeted tests PLUS every human-verified golden panel
+    (Fab's v3 check, tests/fixtures/rds_vgs_golden): each mutant is also
+    checked against the goldens."""
     review._CACHE.clear()
     review._CAPTURE.clear()
+    golden._CACHE.clear()
     suite = unittest.defaultTestLoader.loadTestsFromNames([T + n for n in names])
+    suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(golden.GoldenTests))
     stream = io.StringIO()
     return unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
 
@@ -439,6 +511,9 @@ def main() -> int:
           file=log, flush=True)
     for test, trace in base.failures + base.errors:
         print(f"  BASELINE FAIL {test.id()}\n{trace}", file=log)
+    # a skipped golden (PDF missing or hash changed) is NOT a pass
+    for test, why in base.skipped:
+        print(f"  BASELINE SKIP (counts as failure) {test.id()}: {why}", file=log)
     survived = 0
     for label, (patches, names) in MUTANTS.items():
         with contextlib.ExitStack() as stack:
@@ -446,6 +521,7 @@ def main() -> int:
                 stack.enter_context(item)
             result = run(names)
         killed = [t.id().rsplit(".", 2)[-2] + "." + t.id().rsplit(".", 1)[-1] for t, _ in result.failures + result.errors]
+        killed = [k.replace("GoldenTests.test_golden_", "GOLDEN:") for k in killed]
         verdict = "KILLED" if killed else "SURVIVED"
         survived += not killed
         print(f"{verdict:8} {label}: ran {result.testsRun}; failing: {killed}", file=log, flush=True)
@@ -461,7 +537,7 @@ def main() -> int:
               file=log, flush=True)
     print(f"mutants {len(MUTANTS)}, survived {survived}; equivalent-on-real-data {len(EQUIVALENT_ON_REAL_DATA)} "
           f"(unexpectedly killed {unexpected}); seconds {time.time() - start:.0f}", file=log, flush=True)
-    return 1 if survived or unexpected or base.failures or base.errors else 0
+    return 1 if survived or unexpected or base.failures or base.errors or base.skipped else 0
 
 
 if __name__ == "__main__":
