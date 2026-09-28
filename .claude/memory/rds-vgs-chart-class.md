@@ -26,6 +26,12 @@ v2 output: `batch15_v2/`, `batch15_v2_manifest.json`, `CHANGELOG-v1-v2.md`
 new findings. `test_annotate_pdf::test_csd13385...` asserts the extractor tree is
 DIRTY -- it fails on any clean checkout, unrelated to this class.
 
+Review round 2 (Codex + Opus on v2): R2-1..R2-8 fixed in f3f991e/c09bcf2;
+v3 output `batch15_v3/`, `batch15_v3_manifest.json`, `CHANGELOG-v2-v3.md`.
+`tools/rds_vgs_mutation_check.py` disables each review fix in turn (23
+mutants, all killed; log in out/rds_vgs_mutation_check.log) -- rerun it after
+any change to the class: Codex showed round-1 tests passed with fixes off.
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
