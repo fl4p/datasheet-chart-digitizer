@@ -24,6 +24,8 @@ families:
 6. Body-diode forward-voltage plots (`Is` versus `Vsd`).
 7. On-resistance plots: absolute `RDS(on)` versus drain current and normalized
    `RDS(on)` versus junction temperature.
+8. On-resistance versus gate-source voltage, `RDS(on)(VGS)` at one or more Tj/ID
+   (unvalidated class: samples await human overlay review before batch use).
 
 The core pieces are kept generic so other datasheet chart types can be added
 as plugins.
@@ -66,6 +68,8 @@ dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 dsdig digitize-transfer work/charts/charts.json --out work/transfer
+dsdig digitize-rds-vgs work/charts/charts.json --out work/rds-vgs
+dsdig digitize-rds-vgs --pdf /path/to/datasheet.pdf --out work/rds-vgs
 dsdig annotate /path/to/datasheet.pdf --out /path/to/datasheet-with-curves.pdf
 datasheet-layout-cluster /path/to/datasheets --out work/layouts
 ```
@@ -106,6 +110,19 @@ across series or vendors. Files named like `PART.pdf.r600.pdf`,
 `PART.pdf.gs.pdf`, `PART.pdf.cups.pdf`, or `PART.pdf.sips.pdf` are excluded from
 clustering and recorded separately in `generated-pdf-variants.json`. Layout
 clusters are never runtime detector authority.
+
+`digitize-rds-vgs` scans the PDFs named in a `charts.json` (or given with `--pdf`) with its
+own caption/frame locator, because the shared finder misses most RDS(on)-versus-VGS panels.
+A panel is owned only when its x-axis title names VGS and not a drain current. It serves
+per-curve `(VGS [V], RDS(on) [mOhm])` points, each curve's Tj/ID when a label binds to it
+(legend swatch, leader line, proximity, or elimination -- otherwise `None`), readouts at
+2.5/3.3/4.5 V interpolated along the curve (`not_on_chart` outside its span, never
+extrapolated, always labelled "typical curve, not a guaranteed value"), and a tri-state check
+against the datasheet's RDS(on) table rows (`verified` / `inconsistent` / `not_evaluable`;
+a missing anchor is never a pass). Panel status is `ok` only when every gate passes and the
+validation is `verified`; otherwise `review_required` or `refused`, each with its reasons.
+Outputs: `rdson_gate_voltage.json`, `crops/`, `overlays/PART/*.rds_vgs_overlay.png`,
+`points/PART/*.rds_vgs_points.csv`, and OCR scratch under `work/`.
 
 Key capacitance-pipeline outputs:
 
