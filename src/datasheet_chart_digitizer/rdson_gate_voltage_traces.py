@@ -60,6 +60,7 @@ class Trace:
     binding: dict[str, str] = field(default_factory=dict)
     bridged_columns: int = 0
     contact_removed_x: list = field(default_factory=list)
+    dropped_stub_points: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -459,24 +460,48 @@ def raster_traces(
     for track in tracks:
         _cut_leader_ends(track, text_boxes_px)
     tracks = [piece for track in tracks for piece in _split_leader_runs(track)]
+    kept = _admit_tracks(tracks, erased_cols, width, height, plot)
+    out = []
+    for t in kept:
+        points, filled = _bridge_erased_rules(t["points"], erased_cols)
+        out.append(Trace([(float(px), float(py)) for px, py in points], "raster", None, t["merged"],
+                         bridged_columns=filled, contact_removed_x=t.get("contact_removed_x", []),
+                         dropped_stub_points=list(t.get("dropped_stubs", []))))
+    return out
+
+
+def _admit_tracks(tracks: list[dict], erased_cols: np.ndarray, width: int, height: int, plot: PlotBox) -> list[dict]:
+    """Clean each track, THEN decide whether it is a curve (review R3-3).
+
+    Order matters: a track must pass the admission tests on the points it
+    will actually serve, not on ink that a later step removes.
+    """
     for track in tracks:
         _remove_contact_bumps(track)
+        # Stubs go BEFORE the admission tests (review R3-3): on RQ3E180AJ two
+        # steep tracks reached the 25 %-height rule only through their final
+        # point on the 30.3 mOhm ID-leader junction, which the stub rule then
+        # removed. Every dropped point is recorded, not silently lost (R3-5).
+        track["points"], track["dropped_stubs"] = _drop_orphan_ends(track["points"], erased_cols)
     kept = [
         t for t in tracks
         if len(t["points"]) >= 3 and _long_enough(t, width, height)
         and not _is_straight_rule(t) and not _floating_flat_fragment(t, plot)
     ]
     kept = _drop_duplicates(kept)
-    out = []
-    for t in kept:
-        points, filled = _bridge_erased_rules(_drop_orphan_ends(t["points"], erased_cols), erased_cols)
-        out.append(Trace([(float(px), float(py)) for px, py in points], "raster", None, t["merged"],
-                         bridged_columns=filled, contact_removed_x=t.get("contact_removed_x", [])))
-    return out
+    return kept
 
 
-def _drop_orphan_ends(points, erased_cols: np.ndarray, keep_min: int = 3):
+STUB_MAX_POINTS = 2   # an end piece this short, cut off by a real gap, is a stub
+STUB_KEEP_MIN = 3     # ... dropped only if at least this many points remain
+
+
+def _drop_orphan_ends(points, erased_cols: np.ndarray):
     """Drop 1-2 point stubs cut off from the track's end by a real gap.
+
+    (Through v3 the code dropped up to 3-point stubs while this docstring and
+    the reason text said 1-2; round 3 made them agree at 1-2. On the 15 real
+    panels every dropped stub is 1 point, so no output changed.)
 
     On RQ3E180AJ both steep branches ended in one point at 30.3 mOhm, a
     column after a gap: the point where the ID leader meets the branch
@@ -489,12 +514,14 @@ def _drop_orphan_ends(points, erased_cols: np.ndarray, keep_min: int = 3):
         return hi - lo > 2.5 and not all(0 <= c < erased_cols.shape[0] and erased_cols[c] for c in missing)
 
     points = list(points)
+    dropped: list[tuple[float, float]] = []
     for _end in range(2):
-        cut = [i for i in range(1, min(len(points), keep_min + 1)) if real_gap(points[i - 1], points[i])]
-        if cut and len(points) - cut[-1] >= keep_min:
+        cut = [i for i in range(1, min(len(points), STUB_MAX_POINTS + 1)) if real_gap(points[i - 1], points[i])]
+        if cut and len(points) - cut[-1] >= STUB_KEEP_MIN:
+            dropped.extend(points[: cut[-1]])
             points = points[cut[-1]:]
         points = points[::-1]
-    return points
+    return points, dropped
 
 
 def _bridge_erased_rules(points, erased_cols: np.ndarray):
@@ -681,7 +708,9 @@ def _split_leader_runs(track: dict) -> list[dict]:
             j += 1
         run_x = xs[j - 1] - xs[i]
         flat = run_x >= LEADER_MIN_RUN_PX and abs(ys[j - 1] - ys[i]) / max(1.0, run_x) <= LEADER_FLAT_SLOPE
-        steep_before = i >= 8 and slope(i - 8, i) >= LEADER_STEEP_SLOPE
+        # over the last (up to) 8 points; a steep branch may be only a few
+        # points long before it meets its leader (RQ3E180AJ 9 A top: 4 points)
+        steep_before = i >= 2 and slope(max(0, i - 8), i) >= LEADER_STEEP_SLOPE
         # a curve never steepens again after flattening (it is convex), so a
         # flat run followed by a steep stretch is a leader too (jog at the head)
         steep_after = j + 8 < n and slope(j, j + 8) >= LEADER_STEEP_SLOPE

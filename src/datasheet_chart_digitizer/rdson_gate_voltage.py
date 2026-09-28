@@ -228,7 +228,7 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     row["calibration"]["y_to_mohm"] = scale
 
     traces, swatches, leaders, method, plot_ocr = _traces(
-        page, transform, calibration, image, gray, words, labels, ocr, out_dir, panel, stem
+        page, transform, calibration, image, gray, words, labels, ocr, out_dir, panel, stem, row
     )
     row["trace_method"] = method
     if not traces:
@@ -262,12 +262,24 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
 # --------------------------------------------------------------------------- traces
 
 
-def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr, out_dir, panel, stem):
+def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr, out_dir, panel, stem,
+            row: dict | None = None):
     traces, swatches, leaders = vector_traces(page, transform, calibration.plot)
     if traces:
         return traces, swatches, leaders, "vector", []
     plot = calibration.plot
-    xs, ys = _full_span_grid_lines(gray, plot)
+    x_candidates, y_candidates = _full_span_grid_lines(gray, plot)
+    xs = _verified_rules(gray, x_candidates, plot, [t.pixel for t in calibration.x_axis.ticks], vertical=True)
+    ys = _verified_rules(gray, y_candidates, plot, [t.pixel for t in calibration.y_axis.ticks], vertical=False)
+    if row is not None:
+        # which projection peaks were erased as grid rules, and which were
+        # refused as not-a-rule (review R3-4) -- provenance for the reviewer
+        row["raster_grid_rules_px"] = {
+            "x_erased": [round(float(v), 1) for v in xs],
+            "x_refused_not_a_rule": [round(float(v), 1) for v in x_candidates if v not in xs],
+            "y_erased": [round(float(v), 1) for v in ys],
+            "y_refused_not_a_rule": [round(float(v), 1) for v in y_candidates if v not in ys],
+        }
     plot_ocr = ocr_plot_labels(gray, plot, out_dir, panel, stem)
     boxes = [b for b, text in _text_boxes_px(words, transform, plot) if _is_texty(text, b, plot)]
     boxes += [
@@ -276,6 +288,51 @@ def _traces(page, transform, calibration: Calibration, image, gray, words, label
         and _is_texty(l.text, (l.x0, l.y0, l.x1, l.y1), plot)
     ]
     return raster_traces(image, plot, xs, ys, boxes), [], [], "raster", plot_ocr
+
+
+RULE_DARK_FRACTION = 0.9
+RULE_LATTICE_DARK_FRACTION = 0.75
+
+
+def _verified_rules(gray, lines, plot: PlotBox, tick_pixels, *, vertical: bool) -> tuple[float, ...]:
+    """Keep a rule candidate only if it IS a rule: dark end to end, or on the grid lattice.
+
+    The projection detector counts a steep curve as a vertical rule (review
+    R3-4: RQ3E180AJ's 18 A branch at x=460 px, dark in 60 % of the rows,
+    while the real 1.5 V rule at 466 px is dark in all). Erasing it cut the
+    branch. A candidate is kept when it is dark (< 200 within +-1 px) in
+    >= 90 % of the plot's rows (columns); or when it is dark in >= 75 % and
+    sits within 2 px of a calibrated tick or of the regular lattice the
+    fully dark rules form (a legend box can hide part of a real rule:
+    RQ3E180AJ's 4.5 V rule is dark in 88 %).
+    """
+    def darkness(line: float) -> float:
+        c = int(round(line))
+        if vertical:
+            band = gray[plot.y0 + 3 : plot.y1 - 2, max(0, c - 1) : c + 2]
+            return float((band < 200).any(axis=1).mean()) if band.size else 0.0
+        band = gray[max(0, c - 1) : c + 2, plot.x0 + 3 : plot.x1 - 2]
+        return float((band < 200).any(axis=0).mean()) if band.size else 0.0
+
+    dark = {line: darkness(line) for line in lines}
+    solid = sorted(line for line in lines if dark[line] >= RULE_DARK_FRACTION)
+    steps = [b - a for a, b in zip(solid, solid[1:]) if b - a > 5]
+    pitch = float(np.median(steps)) if steps else None
+
+    def on_lattice(line: float) -> bool:
+        if any(abs(line - tick) <= 2.0 for tick in tick_pixels):
+            return True
+        if pitch is None or not solid:
+            return False
+        # whole pitches from the NEAREST solid rule: a far anchor would let
+        # pitch jitter accumulate into a false match
+        distance = abs(line - min(solid, key=lambda a: abs(line - a)))
+        return abs(distance - round(distance / pitch) * pitch) <= 2.0
+
+    return tuple(
+        line for line in lines
+        if dark[line] >= RULE_DARK_FRACTION or (dark[line] >= RULE_LATTICE_DARK_FRACTION and on_lattice(line))
+    )
 
 
 def _is_texty(text: str, box, plot: PlotBox) -> bool:
@@ -486,10 +543,15 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
         removed = trace.contact_removed_x
         kinds: dict[str, list] = {"gap": [], "untraced_section": [], "annotation_contact": []}
         for a, b in zip(points, points[1:]):
-            if b[2] - a[2] <= GAP_PX:
+            contact = any(a[2] < x < b[2] for x in removed)
+            if b[2] - a[2] <= GAP_PX and not contact:
                 continue
+            # A removed contact point ALWAYS opens an unread interval between
+            # its surviving neighbours, however close they are (review R3-2:
+            # WSR3090 c1 at 8.4419 V had neighbours 2 px apart and was read
+            # through).
             span = [round(a[0], 4), round(b[0], 4)]
-            if any(a[2] < x < b[2] for x in removed):
+            if contact:
                 kinds["annotation_contact"].append(span)
             elif trace.method == "raster" and _ink_connects(gray, a[2:], b[2:]):
                 kinds["untraced_section"].append(span)
@@ -508,7 +570,28 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
                 more = f" +{len(spans) - 6} more" if len(spans) > 6 else ""
                 reasons.append(f"curve_{index}_{kind}s ({listed}{more}; {wording[kind]}; no readout inside)")
         curve["points_removed_as_annotation_contact"] = len(removed)
-        fragment = open_left and open_right and (points[-1][0] - points[0][0]) < USABLE_MIN_SPAN_FRACTION * x_span
+        curve["annotation_contact_removed_vgs_v"] = [round(calibration.x_axis.value(x), 5) for x in removed]
+        stubs = [
+            [round(calibration.x_axis.value(x), 5), round(calibration.y_axis.value(y) * scale, 5), round(x, 2), round(y, 2)]
+            for x, y in trace.dropped_stub_points
+        ]
+        curve["dropped_end_stub_points"] = stubs
+        if stubs:
+            where = ", ".join(f"{v:.3g} V/{r:.3g} mOhm" for v, r, _x, _y in stubs)
+            reasons.append(
+                f"curve_{index}_end_stub_points_dropped ({where}; a 1-2 point end cut off by a gap is not "
+                "served -- it may be curve ink at a rule crossing or leader ink)"
+            )
+        ink_left = trace.method != "raster" or not open_left or _ink_reaches_frame(gray, trace.points_px[0], plot, "left")
+        ink_right = trace.method != "raster" or not open_right or _ink_reaches_frame(gray, trace.points_px[-1], plot, "right")
+        curve["trace_complete"]["left_ink_reaches_frame"] = ink_left
+        curve["trace_complete"]["right_ink_reaches_frame"] = ink_right
+        # Usability is judged from the INK, not from where the column tracker's
+        # first sample happened to land (review R3-6: RQ6E080AJ's twin steep
+        # branches both reach the top frame; one sample started 3.5 px below
+        # it, the other 9 px, and they got opposite flags).
+        fragment = (not ink_left and not ink_right
+                    and (points[-1][0] - points[0][0]) < USABLE_MIN_SPAN_FRACTION * x_span)
         curve["usable"] = not fragment
         if fragment:
             curve["not_usable_reason"] = (
@@ -525,6 +608,28 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             curve["readouts"] = readouts(points, log_y, curve["gaps"], abs(calibration.x_axis.m), open_left, open_right)
         curves.append(curve)
     return curves, reasons, refusal
+
+
+def _ink_reaches_frame(gray, end, plot: PlotBox, side: str) -> bool:
+    """Does the curve's ink run on from this trace end to the top or bottom rail?
+
+    Followed row by row (towards the top rail from a left end, towards the
+    bottom rail or right frame from a right end) through dark pixels within
+    3 px of the previous row's ink.
+    """
+    if gray is None:
+        return False
+    x, y = int(round(end[0])), int(round(end[1]))
+    step = -1 if side == "left" else 1
+    stop = plot.y0 + 3 if side == "left" else plot.y1 - 3
+    cx = x
+    for row in range(y, stop, step):
+        lo, hi = max(plot.x0 + 1, cx - 3), min(plot.x1 - 1, cx + 4)
+        dark = np.flatnonzero(gray[row, lo:hi] < 150)
+        if dark.size == 0:
+            return False
+        cx = lo + int(round(float(np.median(dark))))
+    return True
 
 
 def _ink_connects(gray, a, b) -> bool:

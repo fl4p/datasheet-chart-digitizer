@@ -140,14 +140,21 @@ extrapolated and nothing is interpolated across an unread stretch. Unread stretc
 listed per curve (`gaps`, with their kind in `gap_kinds`) and drawn as breaks in the
 overlay: `gap` (no curve ink traced there), `untraced_section` (the ink is continuous but
 the column tracker did not sample it, e.g. a near-vertical stretch), `annotation_contact`
-(points pulled off the curve by a touching arrow or label were removed). Only columns
-hidden under a vertical grid rule the tracker itself erased are bridged
-(`columns_interpolated_across_erased_grid_rules`). `temperature_kind` is null only when
+(points pulled off the curve by a touching arrow or label were removed; a removed point
+always opens an interval between its surviving neighbours, however close they are, and
+its VGS is listed in `annotation_contact_removed_vgs_v`). Readouts and the overlay use the
+same list of intervals. Only columns hidden under a vertical grid rule the tracker itself
+erased are bridged (`columns_interpolated_across_erased_grid_rules`); a projection peak
+is erased as a rule only if it is dark over >= 90 % of the plot height, or >= 75 % and on
+the tick lattice (`raster_grid_rules_px` lists erased and refused peaks). A 1-2 point end
+cut off from a raster track by a real gap is dropped before the track is admitted as a
+curve, and every dropped point is listed (`dropped_end_stub_points`, with a reason). `temperature_kind` is null only when
 `temperature_c` is null, and every curve without a temperature carries a
-`curve_N_temperature_c_unknown` reason. The overlay header lists every reason (wrapped);
-the legend shows each readout's state (`n/c`, `not traced`, `unusable`).
-A raster fragment with both ends inside the plot spanning under 30 % of the VGS axis is
-`usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
+`curve_N_temperature_c_unknown` reason. The overlay header lists every reason, word-wrapped
+to the image width and never clipped; the legend shows each readout's state (`n/c`,
+`not traced`, `unusable`). A raster fragment spanning under 30 % of the VGS axis whose
+ink, followed from BOTH ends, does not run on to the frame (`trace_complete.*_ink_reaches_frame`)
+is `usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
 
 Table check: `verified` needs a consistent anchor at the table's own drain current (within
 2 %); consistent anchors only at a nearby current (within the 0.75-1.34 ratio used for

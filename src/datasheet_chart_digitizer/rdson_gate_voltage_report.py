@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import math
+import textwrap
 from pathlib import Path
 
 import cv2
@@ -233,8 +234,11 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
             if not curve.get("usable", True):
                 color = (150, 150, 150)
             if len(pts):
-                # one polyline per gap-free segment: a gap is never drawn as data
-                breaks = [0] + [i + 1 for i in range(len(pts) - 1) if pts[i + 1, 0] - pts[i, 0] > 2.5] + [len(pts)]
+                # one polyline per gap-free segment: a gap is never drawn as
+                # data. The breaks are the curve's OWN unread intervals, the
+                # ones readouts refuse (review R3-2: a contact removal between
+                # points 2 px apart was drawn through), plus any pixel jump.
+                breaks = [0] + [i + 1 for i in range(len(pts) - 1) if _breaks_between(curve, i, pts)] + [len(pts)]
                 for a, b in zip(breaks, breaks[1:]):
                     segment = np.round(pts[a:b]).astype(np.int32).reshape(-1, 1, 2)
                     cv2.polylines(body, [segment], False, color, 1, cv2.LINE_AA)
@@ -271,20 +275,31 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
             unit_y="mOhm" if unit == "mOhm" else "Ohm" if unit == "Ohm" else "?",
             line_aa=True, halo=True,
         )
-    header = _header_lines(row, panel)
-    legend = _legend_lines(row)
+    width_px = body.shape[1] - 8
+    header = _header_lines(row, panel, width_px)
+    legend = _legend_lines(row, width_px)
     line_h = 17
     top = np.full((line_h * len(header) + 6, body.shape[1], 3), 255, dtype=np.uint8)
     bottom = np.full((line_h * len(legend) + 6, body.shape[1], 3), 255, dtype=np.uint8)
     for i, (text, color) in enumerate(header):
-        cv2.putText(top, text, (4, 14 + i * line_h), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+        cv2.putText(top, text, (4, 14 + i * line_h), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     for i, (text, color) in enumerate(legend):
-        cv2.putText(bottom, text, (4, 14 + i * line_h), cv2.FONT_HERSHEY_SIMPLEX, 0.42, color, 1, cv2.LINE_AA)
+        cv2.putText(bottom, text, (4, 14 + i * line_h), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     canvas = np.vstack([top, body, bottom])
     path = out_dir / "overlays" / panel.part / f"{stem}.rds_vgs_overlay.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), canvas)
     row["overlay"] = str(path.relative_to(out_dir))
+
+
+def _breaks_between(curve: dict, i: int, pts) -> bool:
+    if pts[i + 1, 0] - pts[i, 0] > 2.5:
+        return True
+    points = curve.get("points") or []
+    if i + 1 >= len(points):
+        return False
+    a, b = points[i][0], points[i + 1][0]
+    return any(g0 <= a + 1e-4 and b - 1e-4 <= g1 for g0, g1 in curve.get("gaps", []))
 
 
 def _px(axis: NumericAxis, value: float) -> float:
@@ -296,25 +311,52 @@ _STATE_SHORT = {"not_on_chart": "n/c", "not_in_extracted_trace": "not traced", "
 _HEADER_WRAP = 118
 
 
-def _header_lines(row: dict, panel: LocatedPanel):
-    """Title, status, and EVERY reason, wrapped; nothing is dropped (review R2-5)."""
+_FONT, _FONT_SCALE = cv2.FONT_HERSHEY_SIMPLEX, 0.42
+
+
+def _text_px(text: str) -> int:
+    return cv2.getTextSize(text, _FONT, _FONT_SCALE, 1)[0][0]
+
+
+def _wrapped(text: str, color, width_px: int | None = None) -> list:
+    """Word-wrap one overlay line; nothing is clipped (review R3-7).
+
+    Breaks only at spaces, to the rendered pixel width when it is known (the
+    overlay canvas) and to _HEADER_WRAP characters otherwise. A single token
+    longer than the width stays whole on its own line rather than being cut
+    mid-word.
+    """
+    if width_px is None:
+        parts = textwrap.wrap(text, width=_HEADER_WRAP, subsequent_indent="    ",
+                              break_long_words=False, break_on_hyphens=False)
+        return [(part, color) for part in parts] or [("", color)]
+    out, line = [], ""
+    for word in text.split():
+        candidate = f"{line} {word}" if line else (("    " if out else "") + word)
+        if line and _text_px(candidate) > width_px:
+            out.append(line)
+            line = "    " + word
+        else:
+            line = candidate
+    out.append(line)
+    return [(part, color) for part in out]
+
+
+def _header_lines(row: dict, panel: LocatedPanel, width_px: int | None = None):
+    """Title, status, and EVERY reason, word-wrapped; nothing is dropped or clipped (R2-5, R3-7)."""
     status = row.get("status", "?")
     color = (0, 120, 0) if status == "ok" else (0, 0, 200)
-    lines = [
-        (f"{panel.part} p{panel.page} fig {panel.diagram}: {panel.title[:70]}", (0, 0, 0)),
-        (f"STATUS {status.upper()}  validation={row.get('validation', {}).get('verdict', '?')}  "
-         f"trace={row.get('trace_method', '-')}  ticks={row.get('calibration', {}).get('tick_source', '-')[:40]}  "
-         f"reasons: {len(row.get('reasons', []))}", color),
-    ]
+    lines = _wrapped(f"{panel.part} p{panel.page} fig {panel.diagram}: {panel.title}", (0, 0, 0), width_px)
+    lines += _wrapped(
+        f"STATUS {status.upper()}  validation={row.get('validation', {}).get('verdict', '?')}  "
+        f"trace={row.get('trace_method', '-')}  ticks={row.get('calibration', {}).get('tick_source', '-')}  "
+        f"reasons: {len(row.get('reasons', []))}", color, width_px)
     for reason in row.get("reasons", []):
-        text = f"- {reason}"
-        while text:
-            lines.append((text[:_HEADER_WRAP], color))
-            text = ("    " + text[_HEADER_WRAP:]) if len(text) > _HEADER_WRAP else ""
+        lines += _wrapped(f"- {reason}", color, width_px)
     return lines
 
 
-def _legend_lines(row: dict):
+def _legend_lines(row: dict, width_px: int | None = None):
     lines = []
     for curve in row.get("curves", []):
         color = _COLORS[curve["curve_index"] % len(_COLORS)]
@@ -325,17 +367,17 @@ def _legend_lines(row: dict):
         )
         dark = tuple(int(0.6 * c) for c in color)
         if not curve.get("usable", True):
-            lines.append((f"c{curve['curve_index']} NOT USABLE (grey): {curve.get('not_usable_reason', '')[:80]}", (90, 90, 90)))
+            lines += _wrapped(f"c{curve['curve_index']} NOT USABLE (grey): {curve.get('not_usable_reason', '')}", (90, 90, 90), width_px)
             continue
-        lines.append((f"c{curve['curve_index']} {curve['label']}  [{reads}] mOhm (typical curve)", dark))
+        lines += _wrapped(f"c{curve['curve_index']} {curve['label']}  [{reads}] mOhm (typical curve)", dark, width_px)
     for anchor in row.get("validation", {}).get("anchors", []):
         spec = anchor["row"]
         text = (f"table VGS={spec['vgs_v']:g}V ID={spec['id_a']}A {spec['temperature_kind']}={spec['temperature_c']:g}C typ={spec['typ_mohm']} "
                 f"max={spec['max_mohm']} -> {anchor['verdict']}")
         if "chart_mohm" in anchor:
             text += f" chart={anchor['chart_mohm']:.3g}"
-        lines.append((text[:120], _ANCHOR_COLOR))
-    lines.append(("markers: + table typ, x table max, diamond = readout at 2.5/3.3/4.5 V (dashed)", (90, 90, 90)))
-    lines.append(("readout states: n/c = not on chart (off the source curve's span); not traced = outside/inside a gap "
-                  "of the extracted trace (source may continue)", (90, 90, 90)))
+        lines += _wrapped(text, _ANCHOR_COLOR, width_px)
+    lines += _wrapped("markers: + table typ, x table max, diamond = readout at 2.5/3.3/4.5 V (dashed)", (90, 90, 90), width_px)
+    lines += _wrapped("readout states: n/c = not on chart (off the source curve's span); not traced = outside/inside a gap "
+                      "of the extracted trace (source may continue)", (90, 90, 90), width_px)
     return lines
