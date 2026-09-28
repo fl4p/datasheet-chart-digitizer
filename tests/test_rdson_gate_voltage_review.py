@@ -43,6 +43,48 @@ def _panel(name: str, page: int, diagram: str) -> dict:
     return rows[0]
 
 
+_CAPTURE: dict[str, dict] = {}
+
+
+def _captured(name: str) -> dict:
+    """Run a part with `_curves` and `readouts` instrumented.
+
+    Returns {(page, diagram): {"traces", "calibration", "scale", "gray",
+    "readout_calls"}}: the REAL inputs of `_curves` for each panel, so a test
+    can re-run it on real traces with one real feature changed, and the gap
+    lists the production code handed to `readouts`. Uses the module
+    attributes, so a mutation harness patch on either is honoured.
+    """
+    if name not in _CAPTURE:
+        panels: dict = {}
+        current: dict = {}
+        real_curves, real_readouts = rgv._curves, rgv.readouts
+
+        def curves_spy(traces, calibration, scale, gray=None):
+            current.clear()
+            current.update({"traces": traces, "calibration": calibration, "scale": scale, "gray": gray,
+                            "readout_calls": []})
+            result = real_curves(traces, calibration, scale, gray)
+            panels[len(panels)] = dict(current)
+            return result
+
+        def readouts_spy(points, log_y, gaps=None, *args, **kwargs):
+            if "readout_calls" in current:
+                current["readout_calls"].append({"first_vgs": points[0][0] if len(points) else None,
+                                                 "gaps": [list(g) for g in gaps or []]})
+            return real_readouts(points, log_y, gaps, *args, **kwargs)
+
+        OUT_ROOT.mkdir(exist_ok=True)
+        with patch.object(rgv, "_curves", curves_spy), patch.object(rgv, "readouts", readouts_spy):
+            with tempfile.TemporaryDirectory(prefix="rdsvgs-capture-", dir=OUT_ROOT) as tmp:
+                rows, _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
+        keyed = {}
+        for index, row in enumerate(r for r in rows if "curves" in r):
+            keyed[(row["page"], row["diagram"])] = dict(panels[index], row=row)
+        _CAPTURE[name] = keyed
+    return _CAPTURE[name]
+
+
 def _temperature(curve: dict):
     return curve.get("temperature_c", curve.get("tj_c"))
 
@@ -130,6 +172,16 @@ class LeaderTests(unittest.TestCase):
             for vgs, rds in curve["points"]:
                 # Opus B: six leader points, 1.364-1.431 V at ~30.3 mOhm
                 self.assertFalse(1.36 <= vgs <= 1.45 and 29.5 <= rds <= 31.0, (curve["curve_index"], vgs, rds))
+            # Round 3: after the stub reordering the 9 A branch carried the
+            # whole 9 A leader again, a flat 30.3-30.6 mOhm run 1.37-1.84 V.
+            # The branches cross 30 mOhm steeply (one or two points); a flat
+            # run there, >= 0.1 V long within 1 mOhm, is the leader.
+            flat = [(v, r) for v, r in curve["points"] if 29.5 <= r <= 31.0]
+            for i in range(len(flat)):
+                run = [(v, r) for v, r in flat if flat[i][0] <= v <= flat[i][0] + 0.1]
+                if len(run) >= 5 and run[-1][0] - run[0][0] >= 0.09:
+                    self.assertGreater(max(r for _v, r in run) - min(r for _v, r in run), 1.0,
+                                       (curve["curve_index"], run[:3]))
 
     def test_rq6e080aj_keeps_the_8a_steep_branch(self):
         # Review R2-3: v1 served 9 points 1.754-1.865 V, 39.8-29.0 mOhm on the
@@ -155,8 +207,20 @@ class GapTests(unittest.TestCase):
     def _check_gaps_explicit(self, row):
         for curve in row["curves"]:
             px = [p[0] for p in curve["points_px"]]
-            jumps = [(a, b) for a, b in zip(px, px[1:]) if b - a > 2.5]
-            self.assertEqual(len(jumps), len(curve.get("gaps", [])), (row["part"], curve["curve_index"], jumps[:3]))
+            vgs = [p[0] for p in curve["points"]]
+            gaps = [list(g) for g in curve.get("gaps", [])]
+            jumps = [[round(vgs[i], 4), round(vgs[i + 1], 4)] for i in range(len(px) - 1) if px[i + 1] - px[i] > 2.5]
+            # every pixel jump is a listed gap ...
+            def listed(interval, among):
+                return any(abs(interval[0] - g[0]) < 2e-4 and abs(interval[1] - g[1]) < 2e-4 for g in among)
+
+            for jump in jumps:
+                self.assertTrue(listed(jump, gaps), (row["part"], curve["curve_index"], jump, gaps))
+            # ... and every listed gap is a jump or an annotation contact,
+            # which opens an interval however close its neighbours (R3-2)
+            contacts = [list(g) for g in curve.get("gap_kinds", {}).get("annotation_contact", [])]
+            for gap in gaps:
+                self.assertTrue(listed(gap, jumps) or listed(gap, contacts), (row["part"], curve["curve_index"], gap))
             for reading in curve["readouts"]:
                 for g0, g1 in curve.get("gaps", []):
                     if g0 < reading["vgs_v"] < g1:
@@ -231,18 +295,32 @@ class GapTests(unittest.TestCase):
 class UsableFlagTests(unittest.TestCase):
     """Opus E: fragments with false points must be flagged, not served silently."""
 
+    def _fragment_row(self, v0, v1):
+        # The REAL RQ6E080AJ main curve (c2, 1.88-9.96 V), cut to v0..v1 V:
+        # both ends inside the plot and neither end's ink running to the
+        # frame (the curve is flat there), i.e. an unattributable fragment.
+        cap = _captured("RQ6E080AJ_Rohm")[(7, "12")]
+        cal = cap["calibration"]
+        main = max(cap["traces"], key=lambda t: len(t.points_px))
+        kept = [p for p in main.points_px if v0 <= cal.x_axis.value(p[0]) <= v1]
+        piece = traces_mod.Trace(kept, "raster", None, 0)
+        curves, reasons, _ = rgv._curves([piece], cal, cap["scale"], cap["gray"])
+        return curves[0], reasons
+
     def test_short_fragments_open_at_both_ends_are_not_usable(self):
-        row = _panel("RQ6E080AJ_Rohm", 7, "12")
-        fragments = [
-            c for c in row["curves"]
-            if not c["trace_complete"]["left_end_at_frame"] and not c["trace_complete"]["right_end_at_frame"]
-            and (c["vgs_range_v"][1] - c["vgs_range_v"][0]) < 3.0
-        ]
-        self.assertTrue(fragments)
-        for curve in fragments:
-            self.assertIs(curve.get("usable"), False)
-            self.assertTrue(all(r["status"] == "curve_not_usable" for r in curve["readouts"]))
-        self.assertNotEqual(row["status"], "ok")
+        # 4.0-6.9 V is 29 % of the 0-10 V axis: under the 30 % limit
+        curve, reasons = self._fragment_row(4.0, 6.9)
+        self.assertFalse(curve["trace_complete"]["left_ink_reaches_frame"])
+        self.assertFalse(curve["trace_complete"]["right_ink_reaches_frame"])
+        self.assertIs(curve.get("usable"), False)
+        self.assertTrue(all(r["status"] == "curve_not_usable" for r in curve["readouts"]))
+        self.assertIn("curve_0_not_usable (fragment)", reasons)
+
+    def test_a_fragment_over_the_span_limit_is_usable(self):
+        # 4.0-7.1 V is 31 %: the same real ink, now over the limit
+        curve, _reasons = self._fragment_row(4.0, 7.1)
+        self.assertIs(curve.get("usable"), True)
+        self.assertEqual(_readout(curve, 4.5)["status"], "read")
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
@@ -366,10 +444,11 @@ class RoundTwoTests(unittest.TestCase):
     def test_r2_5_header_shows_every_reason(self):
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
         panel = type("P", (), {"part": row["part"], "page": row["page"], "diagram": row["diagram"], "title": row["title"]})
-        header = "".join(t.replace("    ", "", 1) if t.startswith("    ") else "\n" + t for t, _c in report._header_lines(row, panel))
+        header = " ".join(t for t, _c in report._header_lines(row, panel)).split()
+        header = " " + " ".join(header) + " "
         self.assertGreater(len(row["reasons"]), 4)
         for reason in row["reasons"]:
-            self.assertIn(reason, header)
+            self.assertIn(" " + " ".join(reason.split()) + " ", header)
 
     def test_r2_6_fdp8870_frame_sits_on_the_printed_frame(self):
         # printed frame and 2 V rule: filled rule at 253-255 px (reviewer)
@@ -418,6 +497,409 @@ class RoundTwoTests(unittest.TestCase):
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
         kinds = [c["gap_kinds"] for c in row["curves"]]
         self.assertTrue(any(any(g0 < 7.6 < g1 for g0, g1 in k["untraced_section"]) for k in kinds), kinds)
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundThreeTests(unittest.TestCase):
+    """Round-3 findings (Codex R3-1/R3-2, Opus N3-1..N3-5), each on its real case."""
+
+    # -- R3-1: the three mutants that survived round 2 -----------------------
+
+    def _csd_curve(self):
+        row = next(r for r in _results("CSD17306Q5A_TI") if r.get("curves"))
+        curve = min(row["curves"], key=lambda c: c["curve_index"])
+        return row, curve
+
+    def test_r3_1a_readouts_refuse_the_interior_edges_of_an_unread_interval(self):
+        # Real CSD17306Q5A 25 C points around 3.3 V; the interval between the
+        # sampled point just below 3.3 V and the second point above it is
+        # declared unread. Targets a quarter pixel inside either bound are
+        # inside it and must be refused; the bounds themselves are measured
+        # points and are read; a quarter pixel outside is read.
+        row, curve = self._csd_curve()
+        one_px = abs(row["calibration"]["x_axis"]["m"])
+        pts = [tuple(p) for p in curve["points"]]
+        i = max(k for k, (v, _r) in enumerate(pts) if v <= 3.3)
+        g0, g1 = pts[i][0], pts[i + 2][0]
+        self.assertLess(g1 - g0, 3 * one_px)
+        served = pts[: i + 1] + pts[i + 2:]
+        inside = (g0 + 0.25 * one_px, g1 - 0.25 * one_px)
+        outside = (g0 - 0.25 * one_px, g1 + 0.25 * one_px)
+        got = report.readouts(served, False, [(g0, g1)], one_px, targets=inside + (g0, g1) + outside)
+        self.assertEqual([r["status"] for r in got[:2]], ["not_in_extracted_trace"] * 2, got[:2])
+        self.assertEqual([r["status"] for r in got[2:]], ["read"] * 4, got[2:])
+        self.assertAlmostEqual(got[2]["rds_mohm"], pts[i][1], places=3)
+
+    def test_r3_1b_wsr3090_arrow_contacts_are_typed_and_cover_every_removal(self):
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        removed_total = 0
+        for curve in row["curves"]:
+            contacts = curve["gap_kinds"]["annotation_contact"]
+            removed = curve["annotation_contact_removed_vgs_v"]
+            removed_total += len(removed)
+            self.assertEqual(len(removed), curve["points_removed_as_annotation_contact"])
+            for vgs in removed:
+                self.assertTrue(any(g0 < vgs < g1 for g0, g1 in contacts), (curve["curve_index"], vgs, contacts))
+                self.assertFalse(any(g0 < vgs < g1 for g0, g1 in curve["gap_kinds"]["gap"]))
+            if removed:
+                self.assertTrue(any(r.startswith(f"curve_{curve['curve_index']}_annotation_contacts (")
+                                    for r in row["reasons"]), row["reasons"])
+        # reviewer: c0 at 7.98-8.08 V on the arrowhead, c1 at 8.34-8.37 and
+        # 8.44-8.52 V on the shaft
+        by_index = {c["curve_index"]: c["gap_kinds"]["annotation_contact"] for c in row["curves"]}
+        for index, vgs in ((0, 7.98), (0, 8.05), (1, 8.35), (1, 8.44192), (1, 8.50)):
+            self.assertTrue(any(g0 < vgs < g1 for g0, g1 in by_index[index]), (index, vgs, by_index[index]))
+        self.assertGreaterEqual(removed_total, 18)
+
+    def test_r3_1b_contact_removal_touches_only_the_wsr3090_arrows(self):
+        # Opus round 3: no annotation-contact removal on any other raster panel
+        for name, page, diagram in (("RQ3E110AJ_Rohm", 7, "12"), ("RQ6E080AJ_Rohm", 7, "12"),
+                                    ("RQ3E180AJ_Rohm", 7, "12"), ("BRCS020N03RA_LCSC_C22449012", 4, "5")):
+            for curve in _panel(name, page, diagram)["curves"]:
+                self.assertEqual(curve["points_removed_as_annotation_contact"], 0, (name, curve["curve_index"]))
+        # and on WSR3090 only the points the reviewer measured as pulled by
+        # the arrow (az_wsr_contacts.txt), +-1 px (0.0096 V): c0 7.98-8.08 V
+        # on the arrowhead; c1 8.34-8.37 V (shaft above) and 8.44-8.52 V
+        # (shaft below). Their neighbours sit in the curve band and stay.
+        pulled = {0: [(7.98, 8.08)], 1: [(8.34, 8.37), (8.44, 8.52)]}
+        for curve in _panel("WSR3090_LCSC_C719278", 3, "2")["curves"]:
+            for vgs in curve["annotation_contact_removed_vgs_v"]:
+                self.assertTrue(any(lo - 0.0096 <= vgs <= hi + 0.0096 for lo, hi in pulled.get(curve["curve_index"], [])),
+                                (curve["curve_index"], vgs))
+
+    def test_r3_1c_production_readouts_receive_every_unread_interval(self):
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        row = cap["row"]
+        self.assertEqual(len(cap["readout_calls"]), len(row["curves"]))
+        for curve, call in zip(row["curves"], cap["readout_calls"]):
+            every = sorted(g for spans in curve["gap_kinds"].values() for g in spans)
+            self.assertTrue(curve["gap_kinds"]["untraced_section"] or curve["gap_kinds"]["annotation_contact"])
+            self.assertEqual(sorted(call["gaps"]), [list(g) for g in every], curve["curve_index"])
+
+    def test_r3_1c_a_readout_inside_an_untraced_section_is_refused(self):
+        # Codex round 3: the real WSR3090 curves with every sample 4.40-4.60 V
+        # removed. The ink there is continuous, so the stretch is an
+        # untraced_section -- and 4.5 V inside it must not be read.
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        cal = cap["calibration"]
+        cut = []
+        for trace in cap["traces"]:
+            kept = [p for p in trace.points_px if not 4.40 <= cal.x_axis.value(p[0]) <= 4.60]
+            cut.append(traces_mod.Trace(kept, trace.method, trace.style, trace.merged_columns, dict(trace.params),
+                                        dict(trace.binding), trace.bridged_columns, list(trace.contact_removed_x)))
+        curves, reasons, _ = rgv._curves(cut, cal, cap["scale"], cap["gray"])
+        for curve in curves:
+            self.assertTrue(any(g0 < 4.5 < g1 for g0, g1 in curve["gap_kinds"]["untraced_section"]), curve["gap_kinds"])
+            self.assertEqual(_readout(curve, 4.5)["status"], "not_in_extracted_trace")
+
+    # -- R3-2 -------------------------------------------------------------------
+
+    def test_r3_2_contact_between_close_neighbours_opens_an_unread_interval(self):
+        # Codex: c1's 8.44192 V point was removed; its neighbours (814 and
+        # 816 px) are 2 px apart, so v3 listed nothing and read 6.6812 there.
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        curve = next(c for c in row["curves"] if any(abs(v - 8.44192) < 0.002 for v in c["annotation_contact_removed_vgs_v"]))
+        self.assertTrue(any(g0 < 8.44192 < g1 for g0, g1 in curve["gap_kinds"]["annotation_contact"]))
+        one_px = abs(row["calibration"]["x_axis"]["m"])
+        got = report.readouts(curve["points"], False, curve["gaps"], one_px, targets=(8.44192,))[0]
+        self.assertEqual(got["status"], "not_in_extracted_trace", got)
+        # and the overlay does not draw through it
+        pts = __import__("numpy").asarray(curve["points_px"], dtype=float)
+        i = max(k for k, (v, _r) in enumerate(curve["points"]) if v < 8.44192)
+        self.assertLessEqual(pts[i + 1, 0] - pts[i, 0], 2.5)
+        self.assertTrue(report._breaks_between(curve, i, pts))
+
+    # -- R3-3 / N3-1 ------------------------------------------------------------
+
+    def test_r3_3_every_admitted_raster_track_passes_on_its_own_points(self):
+        # v3 admitted two RQ3E180AJ tracks (n=5 and n=6) only through a final
+        # point on the 30.3 mOhm leader junction that the stub rule removed
+        # afterwards; the residues (4 and 5 points) failed the admission rule.
+        for name, page, diagram in (("RQ3E180AJ_Rohm", 7, "12"), ("RQ6E080AJ_Rohm", 7, "12"),
+                                    ("RQ3E110AJ_Rohm", 7, "12")):
+            cap = _captured(name)[(page, diagram)]
+            plot = cap["calibration"].plot
+            width, height = plot.x1 - plot.x0, plot.y1 - plot.y0
+            for trace in cap["traces"]:
+                own = trace.points_px
+                self.assertTrue(traces_mod._long_enough({"points": own}, width, height), (name, own[:3], len(own)))
+                self.assertGreaterEqual(len(own), 5, (name, own[:3]))
+
+    def test_r3_3_the_v3_leader_junction_track_is_not_admitted(self):
+        # The real v3 RQ3E180AJ 9 A top: four points on the branch (v3 CSV
+        # c0, reviewer: 4/4 on ink) plus its final point on the 30.3 mOhm
+        # leader junction at (446, 362.5) (reviewer's orphan_probe). With the
+        # junction it spans 236 px >= 197 px (25 % of the height) and v3
+        # admitted it; without it, 40 px. Stubs go first, so it is refused.
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        plot = cap["calibration"].plot
+        points = [(434.0, 132.0), (436.0, 127.0), (437.0, 145.0), (438.0, 167.0), (446.0, 362.5)]
+        track = {"points": list(points), "x": 446, "y": 362.5, "run": (361, 364), "slope": 0.0, "merged": 0}
+        width, height = cap["gray"].shape[1], plot.y1 - plot.y0
+        self.assertTrue(traces_mod._long_enough({"points": points}, width, height))
+        kept = traces_mod._admit_tracks([track], __import__("numpy").zeros(width, dtype=bool), width, height, plot)
+        self.assertEqual(kept, [])
+        self.assertEqual(track["dropped_stubs"], [(446.0, 362.5)])
+
+    def test_r3_3_steep_admission_needs_five_points(self):
+        # The real RQ6E080AJ 8 A branch (9 points, 208 px tall: the reviewer
+        # confirmed all on the right line's ink), thinned to 5 and to 4 of its
+        # own points, same height: 5 are a branch, 4 are not.
+        cap = _captured("RQ6E080AJ_Rohm")[(7, "12")]
+        plot = cap["calibration"].plot
+        branch = min(cap["traces"], key=lambda t: len(t.points_px)).points_px
+        self.assertEqual(len(branch), 9)
+        width, height = cap["gray"].shape[1], plot.y1 - plot.y0
+        five = [branch[i] for i in (0, 2, 4, 6, 8)]
+        four = [branch[i] for i in (0, 3, 5, 8)]
+        self.assertTrue(traces_mod._long_enough({"points": five}, width, height))
+        self.assertFalse(traces_mod._long_enough({"points": four}, width, height))
+
+    # -- R3-4 / N3-2 ------------------------------------------------------------
+
+    def test_r3_4_a_steep_branch_is_not_erased_as_a_grid_rule(self):
+        # Opus: x=460 px (the 18 A branch, dark in 48 of 380 lower rows) was
+        # erased as a rule next to the real 1.5 V rule at 466 px.
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        grid = row["raster_grid_rules_px"]
+        self.assertTrue(any(abs(x - 460) <= 1 for x in grid["x_refused_not_a_rule"]), grid)
+        self.assertFalse(any(abs(x - 460) <= 1 for x in grid["x_erased"]), grid)
+        # the real rules stay erased, including 4.5 V (x=913), whose ink is
+        # hidden behind the legend box for 12 % of its height
+        for rule in (317, 393, 466, 541, 617, 690, 764, 838, 913):
+            self.assertTrue(any(abs(x - rule) <= 1 for x in grid["x_erased"]), (rule, grid))
+        # the 18 A branch is served continuously through 460 px, from its top
+        # (48 mOhm) through the 36.9-29.6 mOhm stretch v3 left untraced
+        branch = next(c for c in row["curves"] if c["points"] and abs(c["points"][0][0] - 1.418) < 0.01)
+        on_branch = [(v, r) for v, r in branch["points"] if 1.418 <= v <= 1.47]
+        self.assertTrue(any(29.6 <= r <= 36.9 for _v, r in on_branch), on_branch)
+        self.assertFalse(any(g0 < 1.45 < g1 for g0, g1 in branch["gaps"]), branch["gaps"])
+        # the tail readout is unchanged (reviewer ink 3.36, v3 3.3947)
+        tail = max(row["curves"], key=lambda c: c["n_points"])
+        self.assertAlmostEqual(_readout(tail, 4.5)["rds_mohm"], 3.39, delta=0.04)
+
+    def test_r3_4_rule_verification_on_the_real_pixels(self):
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        cal, gray = cap["calibration"], cap["gray"]
+        ticks = [t.pixel for t in cal.x_axis.ticks]
+        kept = rgv._verified_rules(gray, (317.0, 393.0, 460.0, 466.0, 541.0, 913.0, 988.0), cal.plot, ticks,
+                                   vertical=True)
+        self.assertNotIn(460.0, kept)
+        for rule in (317.0, 393.0, 466.0, 541.0, 913.0):
+            self.assertIn(rule, kept)
+
+    # -- R3-5 / N3-3 ------------------------------------------------------------
+
+    def test_r3_5_dropped_stub_points_are_recorded_and_are_on_ink(self):
+        for name, vgs, rds, x, y in (("RQ3E180AJ_Rohm", 1.29, 40.0, 436, 209.5), ("RQ3E110AJ_Rohm", 1.94, 24.05, 384, 206)):
+            cap = _captured(name)[(7, "12")]
+            row, gray = cap["row"], cap["gray"]
+            stubs = [s for c in row["curves"] for s in c["dropped_end_stub_points"]]
+            match = [s for s in stubs if abs(s[2] - x) <= 1 and abs(s[3] - y) <= 1.5]
+            self.assertTrue(match, (name, stubs))
+            self.assertAlmostEqual(match[0][0], vgs, delta=0.01)
+            self.assertAlmostEqual(match[0][1], rds, delta=0.3)
+            self.assertLess(int(gray[int(round(y)) - 2:int(round(y)) + 3, x - 2:x + 3].min()), 150)
+            self.assertTrue(any("_end_stub_points_dropped (" in r for r in row["reasons"]), row["reasons"])
+
+    def test_r3_5_stub_length_and_remainder_boundaries(self):
+        # Real RQ3E180AJ 9 A branch samples (its first 12 points), with a
+        # lost stretch opened after the first k points by deleting 4 of them:
+        # a stub of 1-2 points is dropped if >= 3 points remain; 3 points
+        # are not a stub; a remainder of 2 is not enough to drop against.
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        branch = next(t for t in cap["traces"] if t.points_px[0][0] < 445).points_px
+        erased = __import__("numpy").zeros(cap["gray"].shape[1], dtype=bool)
+
+        def dropped(k, rest):
+            points = list(branch[:k]) + list(branch[k + 4:k + 4 + rest])
+            return len(traces_mod._drop_orphan_ends(points, erased)[1])
+
+        self.assertEqual(dropped(1, 8), 1)
+        self.assertEqual(dropped(2, 8), 2)
+        self.assertEqual(dropped(3, 8), 0)
+        self.assertEqual(dropped(1, 3), 1)
+        self.assertEqual(dropped(1, 2), 0)
+
+    # -- R3-6 / N3-4 ------------------------------------------------------------
+
+    def test_r3_6_twin_branches_get_the_same_flag_from_their_ink(self):
+        row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        twins = [c for c in row["curves"] if c["points"] and c["vgs_range_v"][1] < 1.9]
+        self.assertEqual(len(twins), 2, [c["vgs_range_v"] for c in row["curves"]])
+        self.assertEqual({c["usable"] for c in twins}, {True})
+        for curve in twins:
+            self.assertTrue(curve["trace_complete"]["left_ink_reaches_frame"], curve["trace_complete"])
+        self.assertFalse(any("both ends inside the plot" in r for r in row["reasons"]))
+
+    # -- R3-7 / N3-5 ------------------------------------------------------------
+
+    def test_r3_7_overlay_text_is_word_wrapped_and_never_clipped(self):
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        panel = type("P", (), {"part": row["part"], "page": row["page"], "diagram": row["diagram"], "title": row["title"]})
+        width = 700
+        for lines in (report._header_lines(row, panel, width), report._legend_lines(row, width)):
+            for text, _c in lines:
+                if len(text.split()) > 1:
+                    self.assertLessEqual(report._text_px(text), width, text)
+        joined = " ".join(" ".join(t.split()) for t, _c in report._header_lines(row, panel, width))
+        self.assertIn(" ".join(row["calibration"]["tick_source"].split()), joined)
+        # every token of every reason arrives whole (no word split across lines)
+        tokens = set(joined.split())
+        for reason in row["reasons"]:
+            for token in reason.split():
+                self.assertIn(token, tokens, reason)
+        # the NOT USABLE legend line carries its whole reason
+        legend = " ".join(" ".join(t.split()) for t, _c in report._legend_lines(row, width))
+        for curve in row["curves"]:
+            if not curve.get("usable", True):
+                self.assertIn(" ".join(curve["not_usable_reason"].split()), legend)
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class BoundaryTests(unittest.TestCase):
+    """Every boundary and kind decision pinned on real data (review R3-1).
+
+    Where no real panel sits near a threshold, the test takes a REAL curve
+    and a REAL table row and moves the one number the threshold judges to
+    either side of it, so a mutated threshold flips a verdict.
+    """
+
+    def _ao3400a(self):
+        row = next(r for r in _results("AO3400A_UMW_C347475") if r.get("validation"))
+        cap = _captured("AO3400A_UMW_C347475")[(row["page"], row["diagram"])]
+        spec_rows = parse_rdson_spec_rows(DS / "AO3400A_UMW_C347475.pdf")
+        return row, cap, spec_rows
+
+    def _anchor(self, row, cap, spec_row):
+        return report.validate_against_table(row["curves"], [spec_row], cap["calibration"], cap["scale"])["anchors"][0]
+
+    def test_ao3400a_real_anchors_are_each_inconsistent(self):
+        # real datasheet disagreement: chart +30 / +34 / +80 % over table typ
+        row, _cap, _spec = self._ao3400a()
+        self.assertEqual(row["validation"]["verdict"], "inconsistent")
+        verdicts = {a["row"]["vgs_v"]: a["verdict"] for a in row["validation"]["anchors"]}
+        self.assertEqual(verdicts, {10.0: "inconsistent", 4.5: "inconsistent", 2.5: "inconsistent"})
+
+    def test_irlb8748_real_anchors_are_each_consistent(self):
+        # the largest real residual that is consistent: +11.0 % at 4.5 V
+        row = next(r for r in _results("IRLB8748_IFX") if r.get("validation"))
+        self.assertEqual({a["verdict"] for a in row["validation"]["anchors"]}, {"consistent"})
+        self.assertEqual(row["validation"]["verdict"], "verified")
+
+    def test_typ_tolerance_is_twenty_percent(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        chart = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)["chart_mohm"]
+        slack = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)["reading_resolution_mohm_per_px"]
+        # |chart - typ| <= 0.20 typ + slack  <=>  typ >= (chart - slack) / 1.20
+        edge = (chart - slack) / 1.20
+        for typ, verdict in ((edge * 1.002, "consistent"), (edge * 0.998, "inconsistent")):
+            spec = dataclasses.replace(base, typ_mohm=typ, max_mohm=None)
+            self.assertEqual(self._anchor(row, cap, spec)["verdict"], verdict, typ)
+
+    def test_max_overshoot_tolerance_is_five_percent(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        anchor = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)
+        chart, slack = anchor["chart_mohm"], anchor["reading_resolution_mohm_per_px"]
+        edge = (chart - slack) / 1.05
+        for mx, verdict in ((edge * 1.002, "consistent"), (edge * 0.998, "inconsistent")):
+            spec = dataclasses.replace(base, typ_mohm=None, max_mohm=mx)
+            self.assertEqual(self._anchor(row, cap, spec)["verdict"], verdict, mx)
+
+    def test_exact_drain_current_is_within_two_percent(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        anchor = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)
+        chart_id = anchor["chart_id_a"]
+        for id_a, match in ((chart_id / 1.019, "exact"), (chart_id / 1.021, "approximate_drain_current"),
+                            (chart_id / 0.981, "exact"), (chart_id / 0.979, "approximate_drain_current")):
+            spec = dataclasses.replace(base, id_a=id_a)
+            self.assertEqual(self._anchor(row, cap, spec).get("condition_match"), match, id_a)
+
+    def test_drain_current_evaluation_window(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        chart_id = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)["chart_id_a"]
+        lo, hi = 0.75, 1.34  # the documented window (README), not read back from the code
+        for ratio, evaluable in ((lo * 1.01, True), (lo * 0.99, False), (hi * 0.99, True), (hi * 1.01, False)):
+            spec = dataclasses.replace(base, id_a=chart_id / ratio)
+            verdict = self._anchor(row, cap, spec)["verdict"]
+            self.assertEqual(verdict != "not_evaluable", evaluable, (ratio, verdict))
+
+    def test_temperature_match_window(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        for dt, evaluable in ((0.9, True), (1.1, False), (-0.9, True), (-1.1, False)):
+            spec = dataclasses.replace(base, temperature_c=base.temperature_c + dt)
+            verdict = self._anchor(row, cap, spec)["verdict"]
+            self.assertEqual(verdict != "not_evaluable", evaluable, (dt, verdict))
+
+    def test_an_inconsistent_anchor_outranks_an_exact_consistent_one(self):
+        import dataclasses
+        row, cap, spec_rows = self._ao3400a()
+        base = next(r for r in spec_rows if r.vgs_v == 4.5)
+        anchor = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 4.5)
+        good = dataclasses.replace(base, typ_mohm=anchor["chart_mohm"], max_mohm=None)
+        result = report.validate_against_table(row["curves"], [good, base], cap["calibration"], cap["scale"])
+        self.assertEqual([a["verdict"] for a in result["anchors"]], ["consistent", "inconsistent"])
+        self.assertEqual(result["verdict"], "inconsistent")
+        only_good = report.validate_against_table(row["curves"], [good], cap["calibration"], cap["scale"])
+        self.assertEqual(only_good["verdict"], "verified")
+
+    def test_readout_end_tolerance_is_one_pixel(self):
+        # real IRLB8743 25 C curve starts at 3.38 V: 3.3 V is 8 px off it
+        row = next(r for r in _results("IRLB8743_IFX") if r.get("curves"))
+        one_px = abs(row["calibration"]["x_axis"]["m"])
+        curve = max(row["curves"], key=lambda c: c["vgs_range_v"][0])
+        self.assertAlmostEqual(curve["vgs_range_v"][0], 3.38, delta=0.03)
+        v0 = curve["points"][0][0]
+        got = report.readouts(curve["points"], False, [], one_px,
+                              targets=(v0 - 0.9 * one_px, v0 - 1.1 * one_px))
+        self.assertEqual(got[0]["status"], "read")
+        self.assertAlmostEqual(got[0]["rds_mohm"], curve["points"][0][1], places=3)
+        self.assertEqual(got[1]["status"], "not_on_chart")
+        self.assertEqual(_readout(curve, 3.3)["status"], "not_on_chart")
+
+    def test_gap_threshold_is_between_two_and_three_pixels(self):
+        # real WSR3090 25 C curve, flat clean stretch near 9.5 V: one missing
+        # column (a 2-px step) is sampling, two (3 px) are an unread interval
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        cal = cap["calibration"]
+        base = max(cap["traces"], key=lambda t: sum(1 for p in t.points_px if cal.x_axis.value(p[0]) > 9.3))
+        xs = sorted(p[0] for p in base.points_px if 9.4 <= cal.x_axis.value(p[0]) <= 9.6)
+        mid = xs[len(xs) // 2]
+        for missing, expect_gap in ((1, False), (2, True)):
+            kept = [p for p in base.points_px if not mid <= p[0] < mid + missing]
+            trace = traces_mod.Trace(kept, base.method, base.style, base.merged_columns, dict(base.params),
+                                     dict(base.binding), base.bridged_columns, list(base.contact_removed_x))
+            curve = rgv._curves([trace], cal, cap["scale"], cap["gray"])[0][0]
+            hit = [g for g in curve["gaps"] if g[0] < cal.x_axis.value(mid) < g[1]]
+            self.assertEqual(bool(hit), expect_gap, (missing, curve["gaps"]))
+            if hit:
+                self.assertIn(hit[0], curve["gap_kinds"]["untraced_section"])
+
+    def test_a_stretch_with_no_ink_is_a_gap_not_an_untraced_section(self):
+        # the same real curve with its ink blanked over 9.40-9.60 V (the
+        # reviewer's white-paper case): no ink between the ends -> "gap"
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        cal = cap["calibration"]
+        gray = cap["gray"].copy()
+        base = max(cap["traces"], key=lambda t: sum(1 for p in t.points_px if cal.x_axis.value(p[0]) > 9.3))
+        cols = [int(p[0]) for p in base.points_px if 9.40 <= cal.x_axis.value(p[0]) <= 9.60]
+        gray[:, min(cols):max(cols) + 1] = 255
+        kept = [p for p in base.points_px if not 9.40 <= cal.x_axis.value(p[0]) <= 9.60]
+        trace = traces_mod.Trace(kept, base.method, base.style, base.merged_columns, dict(base.params),
+                                 dict(base.binding), base.bridged_columns, list(base.contact_removed_x))
+        curve = rgv._curves([trace], cal, cap["scale"], gray)[0][0]
+        self.assertTrue(any(g0 < 9.5 < g1 for g0, g1 in curve["gap_kinds"]["gap"]), curve["gap_kinds"])
+        self.assertFalse(any(g0 < 9.5 < g1 for g0, g1 in curve["gap_kinds"]["untraced_section"]))
 
 
 if __name__ == "__main__":
