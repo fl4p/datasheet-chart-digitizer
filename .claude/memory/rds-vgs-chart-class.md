@@ -32,6 +32,16 @@ v3 output `batch15_v3/`, `batch15_v3_manifest.json`, `CHANGELOG-v2-v3.md`.
 mutants, all killed; log in out/rds_vgs_mutation_check.log) -- rerun it after
 any change to the class: Codex showed round-1 tests passed with fixes off.
 
+Review round 3 (Codex + Opus on v3, plus Fab's own v3 overlay pass: R3-1..R3-14)
+fixed in 7c2160e..9905d9d; v4 output `batch15_v4/`, `CHANGELOG-v3-v4.md`.
+Fab human-verified 11 v3 panels (all but RQ3E110AJ, BRCS020N03RA, FDP8870,
+RQ3E180AJ); they are frozen goldens in `tests/fixtures/rds_vgs_golden/`
+(PROVENANCE.md; SHA-256 per PDF; skip loudly, never pass, on a missing PDF).
+Change a golden only via REBLESSED.json with a note -- never edit the fixture.
+The mutation harness (105 mutants + 2 documented equivalents) runs the goldens
+with every mutant. Tick labels of the Rohm image charts are OCR, not text layer;
+FDP8870's tails are coincident in the source PDF (drawings 716/719).
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
