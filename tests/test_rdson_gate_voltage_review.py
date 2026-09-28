@@ -15,10 +15,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import pymupdf
-
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces_mod
+from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
 
 rgv_vector_traces = rgv.vector_traces
@@ -90,31 +89,68 @@ class ClippingTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
 class LeaderTests(unittest.TestCase):
-    """Finding 2: label leader lines served as curve data."""
+    """Finding 2: label leader lines served as curve data.
 
-    def test_rq6e080aj_serves_no_leader_values(self):
-        # Source curve band at 2.10 / 2.20 V: 20.5 / 18.7 mOhm (+-1.4); the
+    Each test asserts the REAL curve points are present (reviewer-measured
+    values) AND the leader points absent, so an empty result cannot pass
+    (review R2-2).
+    """
+
+    def _usable_value_at(self, row, vgs):
+        values = []
+        for curve in row["curves"]:
+            if not curve.get("usable", True):
+                continue
+            pts = curve["points"]
+            near = [r for v, r in pts if abs(v - vgs) <= 0.01]
+            if near:
+                values.append(near[0])
+        return values
+
+    def test_rq6e080aj_serves_the_curve_and_no_leader_values(self):
+        # Source curve at 2.10 / 2.20 V: 20.5 / 18.7 mOhm (reviewer); the
         # 4.0 A label leader sits at ~26.3 mOhm.
         row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        for vgs, expected in ((2.10, 20.5), (2.20, 18.7)):
+            values = self._usable_value_at(row, vgs)
+            self.assertTrue(any(abs(v - expected) <= 1.5 for v in values), (vgs, values))
         for curve in row["curves"]:
             for vgs, rds in curve["points"]:
                 if 2.05 <= vgs <= 2.30:
                     self.assertLess(rds, 22.5, (curve["curve_index"], vgs, rds))
 
-    def test_rq3e180aj_has_no_leader_jog_and_keeps_its_knee(self):
+    def test_rq3e180aj_serves_the_18a_branch_and_knee_and_no_leader_jog(self):
         row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        # reviewer: 18 A branch 13.86 mOhm at 1.5495 V, 11.65 at 1.5999 V; knee
+        # continuous to the tail (2.5005 V: 4.245)
+        for vgs, expected, tol in ((1.5495, 13.86, 1.2), (1.5999, 11.65, 1.0), (2.0, 5.5, 1.5), (2.5005, 4.245, 0.3)):
+            values = self._usable_value_at(row, vgs)
+            self.assertTrue(any(abs(v - expected) <= tol for v in values), (vgs, values))
         for curve in row["curves"]:
             for vgs, rds in curve["points"]:
                 # Opus B: six leader points, 1.364-1.431 V at ~30.3 mOhm
                 self.assertFalse(1.36 <= vgs <= 1.45 and 29.5 <= rds <= 31.0, (curve["curve_index"], vgs, rds))
-        # the knee between the steep branches and the tail is traced
-        covered = [vgs for curve in row["curves"] for vgs, _ in curve["points"] if 1.8 <= vgs <= 2.2]
-        self.assertGreater(len(covered), 20)
+
+    def test_rq6e080aj_keeps_the_8a_steep_branch(self):
+        # Review R2-3: v1 served 9 points 1.754-1.865 V, 39.8-29.0 mOhm on the
+        # right (8 A) steep line, checked on the crop's pixels (the column run
+        # at each point is the right line's ink). v2 dropped them with the
+        # leader; they must be served again, and only them -- no leader tail.
+        row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        branch = [
+            (v, r) for curve in row["curves"] for v, r in curve["points"]
+            if 1.75 <= v <= 1.87 and 29.0 <= r <= 40.0
+        ]
+        self.assertGreaterEqual(len(branch), 6, branch)
+        for vgs, expected in ((1.7956, 36.90), (1.8370, 33.09)):
+            self.assertTrue(any(abs(v - vgs) < 0.008 and abs(r - expected) < 1.5 for v, r in branch), (vgs, branch))
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
 class GapTests(unittest.TestCase):
     """Opus A: trace gaps were bridged by straight chords and could be read across."""
+
+    GAP_REASONS = ("_gaps (", "_untraced_sections (", "_annotation_contacts (")
 
     def _check_gaps_explicit(self, row):
         for curve in row["curves"]:
@@ -128,38 +164,52 @@ class GapTests(unittest.TestCase):
 
     @unittest.skipUnless(HAVE_TESSERACT, "needs tesseract")
     def test_raster_gaps_are_explicit_and_never_read_across(self):
-        # v1: BRCS020N03RA 125 C curve chord 3.73->4.02 V (3.9 % of the axis,
-        # under the old 4 % limit); RQ3E180AJ curve 1 jump 25.5->17.2 mOhm.
+        found_any = False
         for name, page, diagram in (("BRCS020N03RA_LCSC_C22449012", 4, "5"), ("RQ3E180AJ_Rohm", 7, "12"),
-                                    ("RQ6E080AJ_Rohm", 7, "12")):
+                                    ("RQ6E080AJ_Rohm", 7, "12"), ("WSR3090_LCSC_C719278", 3, "2")):
             row = _panel(name, page, diagram)
             self._check_gaps_explicit(row)
             if any(c.get("gaps") for c in row["curves"]):
+                found_any = True
                 self.assertNotEqual(row["status"], "ok")
-                self.assertTrue(any("trace_gaps" in r for r in row["reasons"]), row["reasons"])
+                self.assertTrue(any(k in r for r in row["reasons"] for k in self.GAP_REASONS), row["reasons"])
+        self.assertTrue(found_any)
+
+    def test_a_readout_inside_a_gap_is_refused(self):
+        # Real CSD17306Q5A 25 C curve with every point between 3.0 and 4.0 V
+        # removed: 3.3 V lies inside the gap and must NOT be interpolated
+        # (review R2-2: a mutant that ignores gaps read 6.8 mOhm here).
+        row = _panel("CSD17306Q5A_TI", 4, "7")
+        curve = next(c for c in row["curves"] if _temperature(c) == 25.0)
+        points = [(v, r) for v, r in curve["points"] if not 3.0 < v < 4.0]
+        gap = [max(v for v, _ in points if v <= 3.0), min(v for v, _ in points if v >= 4.0)]
+        got = {r["vgs_v"]: r for r in report.readouts(points, False, [gap])}
+        self.assertEqual(got[3.3]["status"], "not_in_extracted_trace", got[3.3])
+        self.assertIsNone(got[3.3]["rds_mohm"])
+        self.assertEqual(got[4.5]["status"], "read")
 
     @unittest.skipUnless(HAVE_TESSERACT, "needs tesseract")
     def test_rq6e080aj_has_no_chord_across_the_steep_branch(self):
         # v1 curve 1 chorded from (1.865 V, 29.0) to (2.03 V, 26.2) where the
-        # curve is ~22 mOhm.
-        # The real curve falls monotonically from ~30 mOhm at 1.88 V to 18.7 at
-        # 2.20 V (reviewer); a chord or leader point would sit above it. Every
-        # served point between 1.95 and 2.25 V must be at most 1 mOhm above the
-        # straight line through those two measured points, which lies above
-        # this convex curve.
+        # curve is ~22 mOhm. The real curve falls from ~30 mOhm at 1.88 V to
+        # 18.7 at 2.20 V (reviewer); it must be served there, and every served
+        # point must lie at most 1 mOhm above the straight line through those
+        # two measured points (which lies above this convex curve).
         row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        served = [(v, r) for c in row["curves"] if c.get("usable", True) for v, r in c["points"] if 1.95 <= v <= 2.25]
+        self.assertGreater(len(served), 15)
         for curve in row["curves"]:
             for vgs, rds in curve["points"]:
                 if 1.95 <= vgs <= 2.25:
                     ceiling = 30.0 + (18.7 - 30.0) * (vgs - 1.88) / (2.20 - 1.88) + 1.0
                     self.assertLessEqual(rds, ceiling, (curve["curve_index"], vgs, rds))
 
-    def test_a_gap_injected_into_a_vector_curve_blocks_ok(self):
+    def test_a_gap_injected_into_a_vector_curve_blocks_ok_and_its_readout(self):
         def gapped(page, transform, plot):
             found, swatches, leaders = rgv_vector_traces(page, transform, plot)
             for trace in found:
-                xs = [p[0] for p in trace.points_px]
-                lo, hi = min(xs) + 0.45 * (max(xs) - min(xs)), min(xs) + 0.55 * (max(xs) - min(xs))
+                # remove 3.0-4.0 V (crop pixels via the TI x axis: 0 V at 242, 10 V at 1042)
+                lo, hi = 242 + 3.0 * 80.0, 242 + 4.0 * 80.0
                 trace.points_px = [p for p in trace.points_px if not lo < p[0] < hi]
             return found, swatches, leaders
 
@@ -170,9 +220,11 @@ class GapTests(unittest.TestCase):
             results, _ = rgv.digitize_pdf(DS / "CSD17306Q5A_TI.pdf", Path(tmp))
         row = next(r for r in results if r["diagram"] == "7")
         self.assertNotEqual(row["status"], "ok")
-        self.assertTrue(any("trace_gaps" in r for r in row["reasons"]), row["reasons"])
+        self.assertTrue(any("_gaps (" in r for r in row["reasons"]), row["reasons"])
         for curve in row["curves"]:
             self.assertEqual(len(curve["gaps"]), 1)
+            self.assertEqual(_readout(curve, 3.3)["status"], "not_in_extracted_trace")
+            self.assertEqual(_readout(curve, 4.5)["status"], "read")
 
 
 @unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
@@ -222,15 +274,20 @@ class CoverageTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
 class RasterCoverageHonestyTests(unittest.TestCase):
-    def test_wsr3090_does_not_claim_source_absence_where_it_lost_the_trace(self):
-        # The source has the hot curves at 4.5 V (9.466 / 8.699 mOhm).
+    def test_wsr3090_serves_the_hot_curves_and_does_not_claim_absence(self):
+        # The source has the hot curves at 4.5 V (9.466 / 8.699 mOhm) and the
+        # cold one at 6.461 (reviewer). Curves that start inside the plot say
+        # not_in_extracted_trace to their left, never not_on_chart.
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
-        at_45 = [_readout(c, 4.5) for c in row["curves"]]
-        read = sorted(r["rds_mohm"] for r in at_45 if r["status"] == "read")
-        hot_values_present = any(abs(v - 9.466) < 0.25 for v in read) and any(abs(v - 8.699) < 0.25 for v in read)
-        if not hot_values_present:
-            self.assertFalse(any(r["status"] == "not_on_chart" for r in at_45), at_45)
-            self.assertTrue(any("partial_raster_trace" in reason for reason in row["reasons"]), row["reasons"])
+        read = sorted(_readout(c, 4.5)["rds_mohm"] for c in row["curves"] if _readout(c, 4.5)["status"] == "read")
+        for expected in (9.466, 8.699, 6.461):
+            self.assertTrue(any(abs(v - expected) < 0.1 for v in read), (expected, read))
+        for curve in row["curves"]:
+            if not curve["trace_complete"]["left_end_at_frame"]:
+                self.assertEqual(_readout(curve, 3.3)["status"], "not_in_extracted_trace")
+        self.assertTrue(any("partial_raster_trace" in reason for reason in row["reasons"]))
+        # three printed curves; un-OCRed label ink must not add a fourth
+        self.assertEqual(len(row["curves"]), 3)
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
@@ -272,6 +329,95 @@ class ValidationScopeTests(unittest.TestCase):
         rows = {r.vgs_v: r for r in parse_rdson_spec_rows(DS / "CSD17302Q5A_TI.pdf")}
         self.assertIsNone(rows[3.0].max_mohm)
         self.assertEqual(getattr(rows[3.0], "unparsed_cells", {}).get("max"), "12..8")
+
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundTwoTests(unittest.TestCase):
+    """Review round 2 (R2-1, R2-4..R2-8), each on the real case it was found on."""
+
+    def test_r2_1_single_curve_keeps_the_printed_kind(self):
+        # RQ3E110AJ prints "Ta=25C"; OCR reads "T.=25C" -> the kind is kept as
+        # "T (subscript unread)", not dropped to null.
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        self.assertEqual([c["temperature_kind"] for c in row["curves"]], ["T (subscript unread)"])
+
+    def test_r2_1_missing_temperature_is_a_reason(self):
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        for curve in row["curves"]:
+            self.assertIsNone(curve.get("temperature_c"))
+            self.assertTrue(
+                any(r.startswith(f"curve_{curve['curve_index']}_temperature_c_unknown") for r in row["reasons"]),
+                row["reasons"],
+            )
+
+    def test_r2_4_legend_distinguishes_readout_states(self):
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        # every WSR3090 curve starts inside the plot at 3.38 V: 3.3 V is
+        # not_in_extracted_trace and must be shown as such, not as "n/c"
+        states = {_readout(c, 3.3)["status"] for c in row["curves"]}
+        self.assertEqual(states, {"not_in_extracted_trace"})
+        lines = [t for t, _c in report._legend_lines(row) if t.startswith("c")]
+        self.assertEqual(len(lines), 3)
+        for line in lines:
+            self.assertIn("3.3V:not traced", line)
+            self.assertNotIn("3.3V:n/c", line)
+
+    def test_r2_5_header_shows_every_reason(self):
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        panel = type("P", (), {"part": row["part"], "page": row["page"], "diagram": row["diagram"], "title": row["title"]})
+        header = "".join(t.replace("    ", "", 1) if t.startswith("    ") else "\n" + t for t, _c in report._header_lines(row, panel))
+        self.assertGreater(len(row["reasons"]), 4)
+        for reason in row["reasons"]:
+            self.assertIn(reason, header)
+
+    def test_r2_6_fdp8870_frame_sits_on_the_printed_frame(self):
+        # printed frame and 2 V rule: filled rule at 253-255 px (reviewer)
+        row = _panel("FDP8870_onsemi", 5, "9")
+        self.assertLessEqual(abs(row["plot_box_px"]["x0"] - 254), 2, row["plot_box_px"])
+        ticks = row["calibration"]["x_axis"]["ticks"]
+        self.assertEqual((ticks[0]["value"], round(ticks[0]["pixel"])), (2.0, 254))
+
+    def test_r2_7_wsr3090_points_are_not_pulled_onto_the_arrows(self):
+        # c0 was +3.5 px at the 125 C arrowhead (7.98-8.08 V), c1 -5 px on the
+        # arrow shaft at 8.33-8.37 V. At 65.4 px/mOhm those are >= 0.05 mOhm;
+        # any served point there must lie within 0.05 mOhm (3.3 px) of the
+        # chord between the curve's own points 0.12 V either side.
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        checked = 0
+        for curve in row["curves"]:
+            pts = curve["points"]
+            for vgs, rds in pts:
+                if 7.95 <= vgs <= 8.10 or 8.30 <= vgs <= 8.40:
+                    left = [(v, r) for v, r in pts if vgs - 0.14 <= v <= vgs - 0.10]
+                    right = [(v, r) for v, r in pts if vgs + 0.10 <= v <= vgs + 0.14]
+                    if not left or not right:
+                        continue
+                    (v0, r0), (v1, r1) = left[0], right[-1]
+                    expected = r0 + (r1 - r0) * (vgs - v0) / (v1 - v0)
+                    self.assertLess(abs(rds - expected), 0.05, (curve["curve_index"], vgs, rds, expected))
+                    checked += 1
+        self.assertGreater(checked, 10)
+
+    def test_r2_8_continuous_ink_is_not_called_a_gap(self):
+        # v2 reported "gap 1.94-2.05 V": one edge point at 1.94 V, then the
+        # near-vertical double line the column tracker does not sample. The ink
+        # is continuous (reviewer pixel dump), so no stretch there may be
+        # called a gap; the lone edge point is not served; the untraced top is
+        # reported as a partial trace.
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        curve = row["curves"][0]
+        self.assertEqual(curve["gap_kinds"]["gap"], [])
+        self.assertFalse(any("_gaps (" in r for r in row["reasons"]), row["reasons"])
+        self.assertGreater(curve["vgs_range_v"][0], 2.0)
+        self.assertTrue(any(r.startswith("curve_0_partial_raster_trace") for r in row["reasons"]))
+
+    def test_r2_8_unsampled_stretch_on_continuous_ink_is_an_untraced_section(self):
+        # WSR3090 curve 2: 7.56-7.78 V, where the 25 C curve runs along the
+        # 5 mOhm rule; the ink is continuous, so it is an untraced section.
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        kinds = [c["gap_kinds"] for c in row["curves"]]
+        self.assertTrue(any(any(g0 < 7.6 < g1 for g0, g1 in k["untraced_section"]) for k in kinds), kinds)
 
 
 if __name__ == "__main__":
