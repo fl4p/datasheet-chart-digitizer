@@ -239,7 +239,7 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     plot_labels = _plot_labels(words, transform, calibration.plot, extra)
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
     binding_notes.extend(_apply_page_temperature_note(traces, page))
-    curves, curve_reasons, refusal = _curves(traces, calibration, scale)
+    curves, curve_reasons, refusal = _curves(traces, calibration, scale, gray)
     row["curves"] = curves
     row["label_binding_notes"] = binding_notes
     row["labels_seen"] = [{"text": l.text, "params": l.params} for l in plot_labels if l.params]
@@ -411,7 +411,7 @@ def _split_gaps(line):
 # --------------------------------------------------------------------------- curves
 
 
-def _curves(traces: list[Trace], calibration: Calibration, scale: float):
+def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=None):
     plot = calibration.plot
     reasons: list[str] = []
     curves: list[dict] = []
@@ -477,14 +477,37 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
                 f"curve_{index}_rdson_rises_with_vgs_by_{rise / y_span:.1%}_of_axis "
                 "(RDS(on) does not increase with VGS: the trace is not a curve of this chart)"
             )
-        gaps = [
-            [round(a[0], 4), round(b[0], 4)]
-            for a, b in zip(points, points[1:]) if b[2] - a[2] > GAP_PX
-        ]
-        curve["gaps"] = gaps
-        if gaps:
-            spans = ", ".join(f"{g0:.2f}..{g1:.2f} V" for g0, g1 in gaps[:4])
-            reasons.append(f"curve_{index}_trace_gaps ({spans}; not bridged, no readout inside)")
+        # Three kinds of unread stretch, all listed in `gaps` and never read
+        # across; they differ in cause (review R2-7, R2-8):
+        # - annotation_contact: points removed where an arrow/label touches;
+        # - untraced_section: the ink is continuous between the ends, but the
+        #   column tracker did not sample it (steep or obstructed section);
+        # - gap: no curve ink between the ends in the tracked band.
+        removed = trace.contact_removed_x
+        kinds: dict[str, list] = {"gap": [], "untraced_section": [], "annotation_contact": []}
+        for a, b in zip(points, points[1:]):
+            if b[2] - a[2] <= GAP_PX:
+                continue
+            span = [round(a[0], 4), round(b[0], 4)]
+            if any(a[2] < x < b[2] for x in removed):
+                kinds["annotation_contact"].append(span)
+            elif trace.method == "raster" and _ink_connects(gray, a[2:], b[2:]):
+                kinds["untraced_section"].append(span)
+            else:
+                kinds["gap"].append(span)
+        curve["gaps"] = sorted(span for spans in kinds.values() for span in spans)
+        curve["gap_kinds"] = kinds
+        wording = {
+            "gap": "no curve ink traced there",
+            "untraced_section": "ink is continuous there but was not sampled",
+            "annotation_contact": "points pulled off the curve by a touching arrow/label were removed",
+        }
+        for kind, spans in kinds.items():
+            if spans:
+                listed = ", ".join(f"{g0:.2f}..{g1:.2f} V" for g0, g1 in spans[:6])
+                more = f" +{len(spans) - 6} more" if len(spans) > 6 else ""
+                reasons.append(f"curve_{index}_{kind}s ({listed}{more}; {wording[kind]}; no readout inside)")
+        curve["points_removed_as_annotation_contact"] = len(removed)
         fragment = open_left and open_right and (points[-1][0] - points[0][0]) < USABLE_MIN_SPAN_FRACTION * x_span
         curve["usable"] = not fragment
         if fragment:
@@ -499,9 +522,21 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
                 for v in READOUT_VGS_V
             ]
         else:
-            curve["readouts"] = readouts(points, log_y, gaps, abs(calibration.x_axis.m), open_left, open_right)
+            curve["readouts"] = readouts(points, log_y, curve["gaps"], abs(calibration.x_axis.m), open_left, open_right)
         curves.append(curve)
     return curves, reasons, refusal
+
+
+def _ink_connects(gray, a, b) -> bool:
+    """True when every column between two trace points holds dark ink between their heights."""
+    if gray is None:
+        return False
+    (x0, y0), (x1, y1) = a, b
+    top, bottom = int(min(y0, y1)) - 3, int(max(y0, y1)) + 4
+    for x in range(int(round(x0)) + 1, int(round(x1))):
+        if not (gray[max(0, top):bottom, x] < 150).any():
+            return False
+    return True
 
 
 def _open_ends(trace: Trace, plot: PlotBox) -> tuple[bool, bool]:
@@ -557,14 +592,22 @@ def _curve_label(trace: Trace) -> str:
 
 
 def _binding_reasons(curves: list[dict], labels: list[Label]) -> list[str]:
+    """Every curve without a temperature (or, where IDs label curves, an ID) is named.
+
+    A temperature is a required parameter of this chart class: a curve with no
+    temperature is reported whether its label was unbound, contradicted, or
+    never read at all (review R2-1: RQ3E180AJ's unread "Ta=25C" box gave no
+    reason). ID is required only where the chart labels curves by ID.
+    """
     reasons = []
     keys = {k for c in curves for k in ("temperature_c", "id_a") if k in c["parameter_binding"]}
     if len(curves) > 1 and not keys:
         reasons.append("curve_parameters_unlabelled: several curves, no Tj/ID label binds to any")
     for curve in curves:
-        for key in keys:
+        for key in sorted(keys | {"temperature_c"}):
             if curve.get(key) is None:
-                reasons.append(f"curve_{curve['curve_index']}_{key}_unknown ({curve['parameter_binding'].get(key, 'no label')})")
+                why = curve["parameter_binding"].get(key, "no temperature label read on the panel or page")
+                reasons.append(f"curve_{curve['curve_index']}_{key}_unknown ({why})")
     return reasons
 
 

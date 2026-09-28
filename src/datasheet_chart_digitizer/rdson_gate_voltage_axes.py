@@ -288,9 +288,36 @@ def _calibrate(
         x_axis, y_axis = raw_x, raw_y
         binding = f"label_centroids_only ({error})"
     scatter = max(x_axis.residual_px, y_axis.residual_px)
+    plot = _seat_on_outer_tick_rules(plot, vertical, horizontal, x_axis, y_axis)
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
     return Calibration(plot, x_axis, y_axis, source, binding, MAX_AXIS_RESIDUAL_PT * transform.scale_x, scatter)
+
+
+def _seat_on_outer_tick_rules(plot: PlotBox, vertical, horizontal, x_axis, y_axis) -> PlotBox:
+    """Move a frame edge that sits on no rule onto the outer tick's rule just inside it.
+
+    The 150 dpi page-frame detector put FDP8870's left edge at 242 px, 12 px
+    left of the printed frame (a filled rule at 253-255 px that is also the
+    2 V tick; review R2-6). An edge is moved only when it has no full-span rule
+    within 2 px AND the outermost consumed tick lies on a rule no more than
+    15 px inside it. Calibration is unaffected: it comes from the ticks.
+    """
+    def seat(edge: int, lines, tick: float, inward: int) -> int:
+        if any(abs(line - edge) <= 2 for line in lines):
+            return edge
+        if 0 < (tick - edge) * inward <= 15 and any(abs(line - tick) <= 1.5 for line in lines):
+            return int(round(tick))
+        return edge
+
+    xs = sorted(t.pixel for t in x_axis.ticks)
+    ys = sorted(t.pixel for t in y_axis.ticks)
+    return PlotBox(
+        seat(plot.x0, vertical, xs[0], +1),
+        seat(plot.y0, horizontal, ys[0], +1),
+        seat(plot.x1, vertical, xs[-1], -1),
+        seat(plot.y1, horizontal, ys[-1], -1),
+    )
 
 
 def _axis_or_robust(labels: list[TextLabel], plot: PlotBox, orientation: str, dropped: list[str]) -> NumericAxis:

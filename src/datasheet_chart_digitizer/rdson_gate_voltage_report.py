@@ -292,16 +292,25 @@ def _px(axis: NumericAxis, value: float) -> float:
     return (coordinate - axis.b) / axis.m
 
 
+_STATE_SHORT = {"not_on_chart": "n/c", "not_in_extracted_trace": "not traced", "curve_not_usable": "unusable"}
+_HEADER_WRAP = 118
+
+
 def _header_lines(row: dict, panel: LocatedPanel):
+    """Title, status, and EVERY reason, wrapped; nothing is dropped (review R2-5)."""
     status = row.get("status", "?")
     color = (0, 120, 0) if status == "ok" else (0, 0, 200)
     lines = [
         (f"{panel.part} p{panel.page} fig {panel.diagram}: {panel.title[:70]}", (0, 0, 0)),
         (f"STATUS {status.upper()}  validation={row.get('validation', {}).get('verdict', '?')}  "
-         f"trace={row.get('trace_method', '-')}  ticks={row.get('calibration', {}).get('tick_source', '-')}", color),
+         f"trace={row.get('trace_method', '-')}  ticks={row.get('calibration', {}).get('tick_source', '-')[:40]}  "
+         f"reasons: {len(row.get('reasons', []))}", color),
     ]
-    for reason in row.get("reasons", [])[:4]:
-        lines.append((f"- {reason[:110]}", color))
+    for reason in row.get("reasons", []):
+        text = f"- {reason}"
+        while text:
+            lines.append((text[:_HEADER_WRAP], color))
+            text = ("    " + text[_HEADER_WRAP:]) if len(text) > _HEADER_WRAP else ""
     return lines
 
 
@@ -310,7 +319,8 @@ def _legend_lines(row: dict):
     for curve in row.get("curves", []):
         color = _COLORS[curve["curve_index"] % len(_COLORS)]
         reads = "  ".join(
-            f"{r['vgs_v']:g}V:{r['rds_mohm']:.3g}" if r["rds_mohm"] is not None else f"{r['vgs_v']:g}V:n/c"
+            f"{r['vgs_v']:g}V:{r['rds_mohm']:.3g}" if r["rds_mohm"] is not None
+            else f"{r['vgs_v']:g}V:{_STATE_SHORT.get(r['status'], r['status'])}"
             for r in curve.get("readouts", [])
         )
         dark = tuple(int(0.6 * c) for c in color)
@@ -326,4 +336,6 @@ def _legend_lines(row: dict):
             text += f" chart={anchor['chart_mohm']:.3g}"
         lines.append((text[:120], _ANCHOR_COLOR))
     lines.append(("markers: + table typ, x table max, diamond = readout at 2.5/3.3/4.5 V (dashed)", (90, 90, 90)))
+    lines.append(("readout states: n/c = not on chart (off the source curve's span); not traced = outside/inside a gap "
+                  "of the extracted trace (source may continue)", (90, 90, 90)))
     return lines

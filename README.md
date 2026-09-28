@@ -136,9 +136,16 @@ Readout states: `read`; `not_on_chart` (outside the source curve's plotted span 
 claimed where the trace is known to be complete there: vector paths, or raster ends on the
 frame); `not_in_extracted_trace` (outside or inside a gap of a raster trace that stopped
 inside the plot -- the source may have the curve there); `curve_not_usable`. Nothing is
-extrapolated and nothing is interpolated across a gap: gaps are listed per curve
-(`gaps`) and drawn as breaks in the overlay; only columns hidden under a vertical grid
-rule the tracker itself erased are bridged (`columns_interpolated_across_erased_grid_rules`).
+extrapolated and nothing is interpolated across an unread stretch. Unread stretches are
+listed per curve (`gaps`, with their kind in `gap_kinds`) and drawn as breaks in the
+overlay: `gap` (no curve ink traced there), `untraced_section` (the ink is continuous but
+the column tracker did not sample it, e.g. a near-vertical stretch), `annotation_contact`
+(points pulled off the curve by a touching arrow or label were removed). Only columns
+hidden under a vertical grid rule the tracker itself erased are bridged
+(`columns_interpolated_across_erased_grid_rules`). `temperature_kind` is null only when
+`temperature_c` is null, and every curve without a temperature carries a
+`curve_N_temperature_c_unknown` reason. The overlay header lists every reason (wrapped);
+the legend shows each readout's state (`n/c`, `not traced`, `unusable`).
 A raster fragment with both ends inside the plot spanning under 30 % of the VGS axis is
 `usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
 

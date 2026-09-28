@@ -59,6 +59,7 @@ class Trace:
     params: dict[str, float | None] = field(default_factory=dict)
     binding: dict[str, str] = field(default_factory=dict)
     bridged_columns: int = 0
+    contact_removed_x: list = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -458,6 +459,8 @@ def raster_traces(
     for track in tracks:
         _cut_leader_ends(track, text_boxes_px)
     tracks = [piece for track in tracks for piece in _split_leader_runs(track)]
+    for track in tracks:
+        _remove_contact_bumps(track)
     kept = [
         t for t in tracks
         if len(t["points"]) >= 3 and _long_enough(t, width, height)
@@ -466,10 +469,32 @@ def raster_traces(
     kept = _drop_duplicates(kept)
     out = []
     for t in kept:
-        points, filled = _bridge_erased_rules(t["points"], erased_cols)
+        points, filled = _bridge_erased_rules(_drop_orphan_ends(t["points"], erased_cols), erased_cols)
         out.append(Trace([(float(px), float(py)) for px, py in points], "raster", None, t["merged"],
-                         bridged_columns=filled))
+                         bridged_columns=filled, contact_removed_x=t.get("contact_removed_x", [])))
     return out
+
+
+def _drop_orphan_ends(points, erased_cols: np.ndarray, keep_min: int = 3):
+    """Drop 1-2 point stubs cut off from the track's end by a real gap.
+
+    On RQ3E180AJ both steep branches ended in one point at 30.3 mOhm, a
+    column after a gap: the point where the ID leader meets the branch
+    (review round 2). A stub that short carries no curve shape, only the
+    risk of being annotation ink.
+    """
+    def real_gap(a, b) -> bool:
+        lo, hi = sorted((a[0], b[0]))
+        missing = range(int(lo) + 1, int(hi))
+        return hi - lo > 2.5 and not all(0 <= c < erased_cols.shape[0] and erased_cols[c] for c in missing)
+
+    points = list(points)
+    for _end in range(2):
+        cut = [i for i in range(1, min(len(points), keep_min + 1)) if real_gap(points[i - 1], points[i])]
+        if cut and len(points) - cut[-1] >= keep_min:
+            points = points[cut[-1]:]
+        points = points[::-1]
+    return points
 
 
 def _bridge_erased_rules(points, erased_cols: np.ndarray):
@@ -576,6 +601,58 @@ LEADER_FLAT_SLOPE = 0.15     # px/px along the run: a (near) horizontal rule
 LEADER_MIN_RUN_PX = 8
 
 
+BUMP_WINDOW_PX = 16
+BUMP_CORE_PX = 3.0      # a thin anti-aliased line stair-steps +-2 px; an arrow pulls 3-5 px
+BUMP_EDGE_PX = 1.5
+
+
+def _remove_contact_bumps(track: dict) -> None:
+    """Drop points where an arrow or label stroke touching the curve pulls the trace.
+
+    Where an annotation arrow meets a flat stretch of curve, the column's ink
+    run widens and its centre shifts off the curve (WSR3090: +4 px at the
+    125 C arrowhead near 7.98 V, -5 px on its shaft near 8.33 V; review R2-7).
+    Away from the steep region an RDS(VGS) curve is smooth over +-16 px. A
+    point more than 3 px off a quadratic fitted to its neighbours (its own
+    +-3 px excluded; local slope under 1 px/px) is a contact core; neighbours
+    within 5 px deviating the same way by 1.5 px or more go with it. The
+    points are removed, leaving an explicit gap; nothing is interpolated.
+    """
+    for _round in range(3):  # refit after each removal: pulled points bias their own fit
+        if not _remove_contact_bumps_once(track):
+            return
+
+
+def _remove_contact_bumps_once(track: dict) -> bool:
+    points = track["points"]
+    n = len(points)
+    if n < 2 * BUMP_WINDOW_PX:
+        return False
+    xs = np.asarray([p[0] for p in points], dtype=float)
+    ys = np.asarray([p[1] for p in points], dtype=float)
+    deviation = np.zeros(n)
+    flat = np.zeros(n, dtype=bool)
+    for i in range(n):
+        window = (np.abs(xs - xs[i]) <= BUMP_WINDOW_PX) & (np.abs(xs - xs[i]) > 3)
+        if window.sum() < 12:
+            continue
+        coeffs = np.polyfit(xs[window], ys[window], 2)
+        flat[i] = abs(np.polyval(np.polyder(coeffs), xs[i])) < 1.0
+        deviation[i] = ys[i] - np.polyval(coeffs, xs[i])
+    core = flat & (np.abs(deviation) >= BUMP_CORE_PX)
+    drop = core.copy()
+    for i in np.flatnonzero(core):
+        near = flat & (np.abs(xs - xs[i]) <= 5) & (np.sign(deviation) == np.sign(deviation[i])) & (
+            np.abs(deviation) >= BUMP_EDGE_PX
+        )
+        drop |= near
+    if drop.any():
+        track["points"] = [p for p, bad in zip(points, drop) if not bad]
+        track["contact_removed_x"] = track.get("contact_removed_x", []) + [float(x) for x in xs[drop]]
+        return True
+    return False
+
+
 def _split_leader_runs(track: dict) -> list[dict]:
     """Remove flat straight runs a steep curve jumps onto: those are leaders.
 
@@ -641,8 +718,11 @@ def _long_enough(track: dict, width: int, height: int) -> bool:
     xs = [p[0] for p in track["points"]]
     ys = [p[1] for p in track["points"]]
     x_span, y_span = max(xs) - min(xs), max(ys) - min(ys)
+    # A steep near-threshold branch may cover only a few columns (RQ6E080AJ's
+    # 8 A branch: 8 px wide, 1.75-1.87 V, 40 -> 29 mOhm; review R2-3), so the
+    # steep test counts columns, not a fraction of the width.
     return x_span >= MIN_CURVE_SPAN_FRACTION * width or (
-        y_span >= 0.25 * height and x_span >= 0.02 * width
+        y_span >= 0.25 * height and len(xs) >= 5
     )
 
 
@@ -999,6 +1079,9 @@ def bind_labels(
                 traces[0].params[key] = None
                 traces[0].binding[key] = "conflicting_labels_single_curve"
                 diagnostics.append(f"{key}_labels_conflict_on_single_curve")
+        # the single-curve path must carry the printed kind too (review R2-1:
+        # RQ3E110AJ's "Ta=25C" lost its kind here)
+        _attach_temperature_kinds(traces, labeled)
         return diagnostics
     for key, seen in list(values.items()):
         if key in varying:
