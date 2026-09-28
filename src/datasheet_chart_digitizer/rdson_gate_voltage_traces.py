@@ -369,7 +369,9 @@ def raster_traces(
     _extend_converged(tracks)
     tracks = _join_fragments([t for t in tracks if len(t["points"]) >= 3])
     height = plot.y1 - plot.y0
-    kept = [t for t in tracks if _long_enough(t, width, height) and not _is_straight_rule(t)]
+    for track in tracks:
+        _cut_leader_ends(track, text_boxes_px)
+    kept = [t for t in tracks if len(t["points"]) >= 3 and _long_enough(t, width, height) and not _is_straight_rule(t)]
     kept = _drop_duplicates(kept)
     return [Trace([(float(px), float(py)) for px, py in t["points"]], "raster", None, t["merged"]) for t in kept]
 
@@ -394,6 +396,43 @@ def _extend_converged(tracks: list[dict]) -> None:
         track["merged"] += len(tail)
         track["converged"] = True
         track["x"], track["y"], track["run"], track["slope"] = holder["x"], holder["y"], holder["run"], holder["slope"]
+
+
+def _cut_leader_ends(track: dict, text_boxes_px) -> None:
+    """Cut a straight end that runs into a label box: that is its leader line.
+
+    A leader drawn from a label to its curve joins the curve's ink, and the
+    column tracker can follow it off the curve (RQ6E080AJ: the "ID = 4.0A"
+    leader). A leader is straight; a curve end is not. An end is cut when its
+    last >= 15 px fit one straight line within 0.8 px and finish within 25 px
+    of a label box.
+    """
+    for reverse in (False, True):
+        points = track["points"][::-1] if reverse else track["points"]
+        if len(points) < 20:
+            return
+        end = points[-1]
+        if not any(
+            box[0] - 25 <= end[0] <= box[2] + 25 and box[1] - 25 <= end[1] <= box[3] + 25
+            for box in text_boxes_px
+        ):
+            continue
+        n = 15
+        while n < len(points) and _straight(points[-(n + 1):]):
+            n += 1
+        if n >= 15 and _straight(points[-n:]):
+            kept = points[:-n]
+            track["points"] = kept[::-1] if reverse else kept
+            track["leader_cut"] = track.get("leader_cut", 0) + n
+
+
+def _straight(points) -> bool:
+    xs = np.asarray([p[0] for p in points], dtype=float)
+    ys = np.asarray([p[1] for p in points], dtype=float)
+    if xs.max() - xs.min() < 10:
+        return False
+    slope, intercept = np.polyfit(xs, ys, 1)
+    return float(np.max(np.abs(slope * xs + intercept - ys))) <= 0.8
 
 
 def _is_straight_rule(track: dict) -> bool:
@@ -773,7 +812,7 @@ def bind_labels(
                     target.params[other_key] = other
                     target.binding[other_key] = how
         diagnostics.extend(_bind_by_elimination(key, traces, labeled))
-    diagnostics.extend(_temperature_order_check(traces))
+    diagnostics.extend(_temperature_order_check(traces, values.get("tj_c", set())))
     return diagnostics
 
 
@@ -818,6 +857,10 @@ def _bind_one(label: Label, traces: list[Trace], swatches: list[Swatch], plot: P
         (_distance_to_trace(cx, cy, label, trace), index) for index, trace in enumerate(traces)
     )
     limit = LABEL_BIND_MAX_PX_FRACTION * max(plot.x1 - plot.x0, plot.y1 - plot.y0)
+    if all(trace.method == "raster" for trace in traces):
+        # A raster chart's arrows cannot be followed: a label is bound by
+        # proximity only when it sits against its curve.
+        limit = min(limit, 1.0 * (label.y1 - label.y0))
     best, index = distances[0]
     if best > limit:
         return None, "too_far_from_any_curve"
@@ -902,26 +945,55 @@ def _distance_to_trace(cx: float, cy: float, label: Label, trace: Trace) -> floa
     return float(np.min(np.hypot(dx, dy)))
 
 
-def _temperature_order_check(traces: list[Trace]) -> list[str]:
-    """A hotter die has the higher RDS(on): a bound pair that says otherwise is unbound."""
+def _temperature_order_check(traces: list[Trace], printed: set[float] | None = None) -> list[str]:
+    """A hotter die has the higher RDS(on): bindings that say otherwise are unbound.
+
+    Compared by the median pixel offset over the shared VGS span, so the
+    low-VGS crossing below the zero-temperature-coefficient point (where a hot
+    curve legitimately sits LOWER) cannot flip the verdict. Two checks, both
+    only ever REMOVE a binding: a bound pair in the wrong order, and a curve
+    bound to the hottest (coldest) printed temperature with any other traced
+    curve above (below) it.
+    """
     bound = [t for t in traces if t.params.get("tj_c") is not None]
     diagnostics: list[str] = []
+
+    def median_offset(upper: Trace, lower: Trace) -> float | None:
+        lo = max(min(p[0] for p in upper.points_px), min(p[0] for p in lower.points_px))
+        hi = min(max(p[0] for p in upper.points_px), max(p[0] for p in lower.points_px))
+        if hi - lo < 5:
+            return None
+        xs = np.linspace(lo, hi, 25)
+        up_y = np.interp(xs, *zip(*sorted(upper.points_px)))
+        low_y = np.interp(xs, *zip(*sorted(lower.points_px)))
+        return float(np.median(up_y - low_y))  # < 0: "upper" really is higher
+
+    def unbind(*items: Trace) -> None:
+        for trace in items:
+            trace.params["tj_c"] = None
+            trace.binding["tj_c"] = "contradicted_by_temperature_order"
+
     for i, a in enumerate(bound):
         for b in bound[i + 1:]:
             if a.params["tj_c"] == b.params["tj_c"]:
                 continue
             hot, cold = (a, b) if a.params["tj_c"] > b.params["tj_c"] else (b, a)
-            lo = max(min(p[0] for p in hot.points_px), min(p[0] for p in cold.points_px))
-            hi = min(max(p[0] for p in hot.points_px), max(p[0] for p in cold.points_px))
-            if hi - lo < 5:
-                continue
-            xs = np.linspace(lo, hi, 25)
-            hot_y = np.interp(xs, *zip(*sorted(hot.points_px)))
-            cold_y = np.interp(xs, *zip(*sorted(cold.points_px)))
-            # pixel y grows downwards: the hotter curve must be ABOVE (smaller y)
-            if float(np.median(hot_y - cold_y)) > 0:
-                for trace in (hot, cold):
-                    trace.params["tj_c"] = None
-                    trace.binding["tj_c"] = "contradicted_by_temperature_order"
+            offset = median_offset(hot, cold)
+            if offset is not None and offset > 0:
+                unbind(hot, cold)
                 diagnostics.append("temperature_binding_contradicts_rdson_order")
+    if printed and len(printed) > 1:
+        hottest, coldest = max(printed), min(printed)
+        for trace in [t for t in traces if t.params.get("tj_c") in (hottest, coldest)]:
+            for other in traces:
+                if other is trace:
+                    continue
+                offset = median_offset(other, trace)
+                if offset is None:
+                    continue
+                above = offset < 0
+                if (trace.params["tj_c"] == hottest and above) or (trace.params["tj_c"] == coldest and not above):
+                    unbind(trace)
+                    diagnostics.append("extreme_temperature_binding_has_a_curve_beyond_it")
+                    break
     return diagnostics

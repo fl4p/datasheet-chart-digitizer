@@ -287,6 +287,33 @@ class GuardTests(unittest.TestCase):
         self.assertTrue(all(t.params["tj_c"] is None for t in traces))
 
 
+@unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
+class ExtremeTemperatureTests(unittest.TestCase):
+    def test_hottest_label_on_a_curve_with_another_curve_above_is_unbound(self):
+        # Winsok WSR3090 failure mode, rebuilt on real TI traces: the only
+        # label that binds says 125 C (the hottest printed) but sits on the
+        # LOWER curve, and the 25 C label binds to nothing.
+        with _scratch("rdsvgs-extreme-") as tmp:
+            results, _ = rgv.digitize_pdf(_pdf("CSD17306Q5A_TI"), Path(tmp))
+        row = _panel(results, 4, "7")
+        plot = PlotBox(**row["plot_box_px"])
+        traces = [
+            traces_mod.Trace([tuple(p) for p in c["points_px"]], "raster")
+            for c in row["curves"]
+        ]
+        lower = max(traces, key=lambda t: sum(p[1] for p in t.points_px) / len(t.points_px))
+        x, y = lower.points_px[len(lower.points_px) // 2]
+        labels = [
+            traces_mod.Label("TJ=125°C", x + 2, y + 3, x + 60, y + 20, {"tj_c": 125.0}),
+            traces_mod.Label("TJ=25°C", plot.x0 + 5, plot.y0 + 5, plot.x0 + 60, plot.y0 + 20, {"tj_c": 25.0}),
+            # a third printed temperature keeps elimination from binding the rest
+            traces_mod.Label("TJ=100°C", plot.x0 + 5, plot.y0 + 30, plot.x0 + 60, plot.y0 + 45, {"tj_c": 100.0}),
+        ]
+        notes = traces_mod.bind_labels(traces, labels, [], plot)
+        self.assertIn("extreme_temperature_binding_has_a_curve_beyond_it", notes)
+        self.assertTrue(all(t.params["tj_c"] is None for t in traces))
+
+
 class RobustLadderTests(unittest.TestCase):
     # Recorded 2026-09-28 from the real RQ3E180AJ (Rohm) Fig.12 crop: the
     # page-OCR tick readings of its 0..5 V axis in 0.5 V steps. OCR dropped
