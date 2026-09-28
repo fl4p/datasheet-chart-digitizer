@@ -53,8 +53,8 @@ def _panel(results: list[dict], page: int, diagram: str) -> dict:
     return matches[0]
 
 
-def _curve(row: dict, tj_c: float) -> dict:
-    matches = [c for c in row["curves"] if c["tj_c"] == tj_c]
+def _curve(row: dict, temperature_c: float) -> dict:
+    matches = [c for c in row["curves"] if c["temperature_c"] == temperature_c]
     assert len(matches) == 1, [c["label"] for c in row["curves"]]
     return matches[0]
 
@@ -72,7 +72,7 @@ class SpecTableTests(unittest.TestCase):
             got,
             [(3.0, 22.0, 4.2, 5.4, "mΩ"), (4.5, 22.0, 3.3, 4.2, "mΩ"), (8.0, 22.0, 2.9, 3.7, "mΩ")],
         )
-        self.assertTrue(all(r.tj_source == "table_default_25C_assumed" for r in rows))
+        self.assertTrue(all(r.temperature_source == "table_heading" and r.temperature_kind == "Ta" for r in rows))
 
     def test_ir_second_row_values_sit_on_their_own_baseline(self):
         rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("IRLB8748_IFX"))}
@@ -81,7 +81,7 @@ class SpecTableTests(unittest.TestCase):
 
     def test_ohm_values_convert_and_an_adjacent_temperature_binds_its_row(self):
         rows = parse_rdson_spec_rows(_pdf("FDP8870_onsemi"))
-        got = [(r.vgs_v, r.tj_c, r.typ_mohm, r.max_mohm) for r in rows]
+        got = [(r.vgs_v, r.temperature_c, r.typ_mohm, r.max_mohm) for r in rows]
         self.assertIn((10.0, 25.0, 3.4, 4.1), got)
         self.assertIn((4.5, 25.0, 4.0, 4.6), got)
         # "TJ = 175oC" is printed one baseline below its row: it must not be
@@ -138,7 +138,7 @@ class EndToEndTests(unittest.TestCase):
             self.assertLess(abs(anchor["residual_vs_typ_mohm"]), 0.05)
         cold, hot = _curve(row, 25.0), _curve(row, 125.0)
         self.assertEqual(cold["id_a"], 22.0)
-        self.assertEqual(cold["parameter_binding"]["tj_c"], "leader_line")
+        self.assertEqual(cold["parameter_binding"]["temperature_c"], "leader_line")
         self.assertAlmostEqual(_readout(cold, 3.3)["rds_mohm"], 3.88, delta=0.05)
         self.assertAlmostEqual(_readout(hot, 3.3)["rds_mohm"], 5.51, delta=0.05)
         self.assertEqual(_readout(cold, 3.3)["note"], "typical curve, not a guaranteed value")
@@ -166,8 +166,8 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(row["status"], "review_required")
         self.assertTrue(any("id_a_unknown" in r for r in row["reasons"]), row["reasons"])
         self.assertEqual(row["validation"]["verdict"], "not_evaluable")
-        self.assertTrue(all(c["tj_c"] == 25.0 for c in row["curves"]))
-        self.assertTrue(all(c["parameter_binding"]["tj_c"] == "page_note_unless_otherwise_noted" for c in row["curves"]))
+        self.assertTrue(all(c["temperature_c"] == 25.0 for c in row["curves"]))
+        self.assertTrue(all(c["parameter_binding"]["temperature_c"] == "page_note_unless_otherwise_noted" for c in row["curves"]))
 
     def test_a_chart_that_contradicts_its_table_is_inconsistent_not_ok(self):
         # UMW's AO3400A table claims 20 mOhm typ at 4.5 V; its chart shows ~27.
@@ -179,7 +179,7 @@ class EndToEndTests(unittest.TestCase):
         row = _panel(self.results["CSD17306Q5A_TI"], 4, "7")
         self.assertTrue((self.out / row["overlay"]).is_file())
         lines = (self.out / row["points_csv"]).read_text().splitlines()
-        self.assertEqual(lines[0].split(","), ["curve_index", "curve_label", "tj_c", "id_a", "vgs_v", "rds_mohm", "crop_x_px", "crop_y_px"])
+        self.assertEqual(lines[0].split(","), ["curve_index", "curve_label", "usable", "temperature_c", "temperature_kind", "id_a", "vgs_v", "rds_mohm", "crop_x_px", "crop_y_px"])
         self.assertGreater(len(lines), 500)
 
 
@@ -277,17 +277,17 @@ class GuardTests(unittest.TestCase):
             traces_mod.Trace([tuple(p) for p in c["points_px"]], "vector", ("s", c["curve_index"]))
             for c in row["curves"]
         ]
-        hot_index = next(i for i, c in enumerate(row["curves"]) if c["tj_c"] == 125.0)
+        hot_index = next(i for i, c in enumerate(row["curves"]) if c["temperature_c"] == 125.0)
         hot, cold = traces[hot_index], traces[1 - hot_index]
 
         def label_beside(trace, value):
             x, y = trace.points_px[len(trace.points_px) // 2]
-            return traces_mod.Label(f"TJ = {value}°C", x + 4, y - 30, x + 90, y - 14, {"tj_c": float(value)})
+            return traces_mod.Label(f"TJ = {value}°C", x + 4, y - 30, x + 90, y - 14, {"temperature_c": float(value)})
 
         # 25 C printed beside the hot curve and 125 C beside the cold one.
         notes = traces_mod.bind_labels(traces, [label_beside(hot, 25), label_beside(cold, 125)], [], plot)
         self.assertIn("temperature_binding_contradicts_rdson_order", notes)
-        self.assertTrue(all(t.params["tj_c"] is None for t in traces))
+        self.assertTrue(all(t.params["temperature_c"] is None for t in traces))
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
@@ -307,14 +307,14 @@ class ExtremeTemperatureTests(unittest.TestCase):
         lower = max(traces, key=lambda t: sum(p[1] for p in t.points_px) / len(t.points_px))
         x, y = lower.points_px[len(lower.points_px) // 2]
         labels = [
-            traces_mod.Label("TJ=125°C", x + 2, y + 3, x + 60, y + 20, {"tj_c": 125.0}),
-            traces_mod.Label("TJ=25°C", plot.x0 + 5, plot.y0 + 5, plot.x0 + 60, plot.y0 + 20, {"tj_c": 25.0}),
+            traces_mod.Label("TJ=125°C", x + 2, y + 3, x + 60, y + 20, {"temperature_c": 125.0}),
+            traces_mod.Label("TJ=25°C", plot.x0 + 5, plot.y0 + 5, plot.x0 + 60, plot.y0 + 20, {"temperature_c": 25.0}),
             # a third printed temperature keeps elimination from binding the rest
-            traces_mod.Label("TJ=100°C", plot.x0 + 5, plot.y0 + 30, plot.x0 + 60, plot.y0 + 45, {"tj_c": 100.0}),
+            traces_mod.Label("TJ=100°C", plot.x0 + 5, plot.y0 + 30, plot.x0 + 60, plot.y0 + 45, {"temperature_c": 100.0}),
         ]
         notes = traces_mod.bind_labels(traces, labels, [], plot)
         self.assertIn("extreme_temperature_binding_has_a_curve_beyond_it", notes)
-        self.assertTrue(all(t.params["tj_c"] is None for t in traces))
+        self.assertTrue(all(t.params["temperature_c"] is None for t in traces))
 
 
 class RobustLadderTests(unittest.TestCase):
@@ -351,7 +351,7 @@ class RobustLadderTests(unittest.TestCase):
 class ReadoutTests(unittest.TestCase):
     def test_readouts_never_extrapolate(self):
         points = [(3.5 + 0.01 * i, 10.0 - 0.01 * i) for i in range(600)]
-        got = {r["vgs_v"]: r for r in readouts(points, False, 10.0)}
+        got = {r["vgs_v"]: r for r in readouts(points, False)}
         self.assertEqual(got[2.5]["status"], "not_on_chart")
         self.assertEqual(got[3.3]["status"], "not_on_chart")
         self.assertEqual(got[4.5]["status"], "read")
@@ -359,8 +359,8 @@ class ReadoutTests(unittest.TestCase):
 
     def test_a_gap_in_the_trace_is_not_bridged(self):
         points = [(2.0 + 0.01 * i, 8.0) for i in range(100)] + [(4.0 + 0.01 * i, 6.0) for i in range(100)]
-        got = {r["vgs_v"]: r for r in readouts(points, False, 10.0)}
-        self.assertEqual(got[3.3]["status"], "not_on_chart")
+        got = {r["vgs_v"]: r for r in readouts(points, False, gaps=[(2.99, 4.0)])}
+        self.assertEqual(got[3.3]["status"], "not_in_extracted_trace")
         self.assertIn("gap", got[3.3]["detail"])
 
 

@@ -21,6 +21,8 @@ from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces_mod
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
 
+rgv_vector_traces = rgv.vector_traces
+
 DS = Path("/Users/fab/dev/ee/solar-charger-eval/ds")
 OUT_ROOT = Path(__file__).resolve().parents[1] / "out"
 HAVE_DS = DS.is_dir()
@@ -103,10 +105,105 @@ class LeaderTests(unittest.TestCase):
         row = _panel("RQ3E180AJ_Rohm", 7, "12")
         for curve in row["curves"]:
             for vgs, rds in curve["points"]:
-                self.assertFalse(1.37 <= vgs <= 1.45 and 29.5 <= rds <= 31.0, (curve["curve_index"], vgs, rds))
+                # Opus B: six leader points, 1.364-1.431 V at ~30.3 mOhm
+                self.assertFalse(1.36 <= vgs <= 1.45 and 29.5 <= rds <= 31.0, (curve["curve_index"], vgs, rds))
         # the knee between the steep branches and the tail is traced
         covered = [vgs for curve in row["curves"] for vgs, _ in curve["points"] if 1.8 <= vgs <= 2.2]
         self.assertGreater(len(covered), 20)
+
+
+@unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
+class GapTests(unittest.TestCase):
+    """Opus A: trace gaps were bridged by straight chords and could be read across."""
+
+    def _check_gaps_explicit(self, row):
+        for curve in row["curves"]:
+            px = [p[0] for p in curve["points_px"]]
+            jumps = [(a, b) for a, b in zip(px, px[1:]) if b - a > 2.5]
+            self.assertEqual(len(jumps), len(curve.get("gaps", [])), (row["part"], curve["curve_index"], jumps[:3]))
+            for reading in curve["readouts"]:
+                for g0, g1 in curve.get("gaps", []):
+                    if g0 < reading["vgs_v"] < g1:
+                        self.assertNotEqual(reading["status"], "read", reading)
+
+    @unittest.skipUnless(HAVE_TESSERACT, "needs tesseract")
+    def test_raster_gaps_are_explicit_and_never_read_across(self):
+        # v1: BRCS020N03RA 125 C curve chord 3.73->4.02 V (3.9 % of the axis,
+        # under the old 4 % limit); RQ3E180AJ curve 1 jump 25.5->17.2 mOhm.
+        for name, page, diagram in (("BRCS020N03RA_LCSC_C22449012", 4, "5"), ("RQ3E180AJ_Rohm", 7, "12"),
+                                    ("RQ6E080AJ_Rohm", 7, "12")):
+            row = _panel(name, page, diagram)
+            self._check_gaps_explicit(row)
+            if any(c.get("gaps") for c in row["curves"]):
+                self.assertNotEqual(row["status"], "ok")
+                self.assertTrue(any("trace_gaps" in r for r in row["reasons"]), row["reasons"])
+
+    @unittest.skipUnless(HAVE_TESSERACT, "needs tesseract")
+    def test_rq6e080aj_has_no_chord_across_the_steep_branch(self):
+        # v1 curve 1 chorded from (1.865 V, 29.0) to (2.03 V, 26.2) where the
+        # curve is ~22 mOhm.
+        # The real curve falls monotonically from ~30 mOhm at 1.88 V to 18.7 at
+        # 2.20 V (reviewer); a chord or leader point would sit above it. Every
+        # served point between 1.95 and 2.25 V must be at most 1 mOhm above the
+        # straight line through those two measured points, which lies above
+        # this convex curve.
+        row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        for curve in row["curves"]:
+            for vgs, rds in curve["points"]:
+                if 1.95 <= vgs <= 2.25:
+                    ceiling = 30.0 + (18.7 - 30.0) * (vgs - 1.88) / (2.20 - 1.88) + 1.0
+                    self.assertLessEqual(rds, ceiling, (curve["curve_index"], vgs, rds))
+
+    def test_a_gap_injected_into_a_vector_curve_blocks_ok(self):
+        def gapped(page, transform, plot):
+            found, swatches, leaders = rgv_vector_traces(page, transform, plot)
+            for trace in found:
+                xs = [p[0] for p in trace.points_px]
+                lo, hi = min(xs) + 0.45 * (max(xs) - min(xs)), min(xs) + 0.55 * (max(xs) - min(xs))
+                trace.points_px = [p for p in trace.points_px if not lo < p[0] < hi]
+            return found, swatches, leaders
+
+        OUT_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="rdsvgs-review-", dir=OUT_ROOT) as tmp, patch.object(
+            rgv, "vector_traces", gapped
+        ):
+            results, _ = rgv.digitize_pdf(DS / "CSD17306Q5A_TI.pdf", Path(tmp))
+        row = next(r for r in results if r["diagram"] == "7")
+        self.assertNotEqual(row["status"], "ok")
+        self.assertTrue(any("trace_gaps" in r for r in row["reasons"]), row["reasons"])
+        for curve in row["curves"]:
+            self.assertEqual(len(curve["gaps"]), 1)
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class UsableFlagTests(unittest.TestCase):
+    """Opus E: fragments with false points must be flagged, not served silently."""
+
+    def test_short_fragments_open_at_both_ends_are_not_usable(self):
+        row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        fragments = [
+            c for c in row["curves"]
+            if not c["trace_complete"]["left_end_at_frame"] and not c["trace_complete"]["right_end_at_frame"]
+            and (c["vgs_range_v"][1] - c["vgs_range_v"][0]) < 3.0
+        ]
+        self.assertTrue(fragments)
+        for curve in fragments:
+            self.assertIs(curve.get("usable"), False)
+            self.assertTrue(all(r["status"] == "curve_not_usable" for r in curve["readouts"]))
+        self.assertNotEqual(row["status"], "ok")
+
+
+@unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
+class SteepTopTests(unittest.TestCase):
+    """Opus D: steep tops were cut where the path's first vertex lay outside the frame."""
+
+    def test_vector_curves_reach_the_top_of_the_plot(self):
+        # y-axis tops: CSD17306 16 mOhm, IRLB8748 18 mOhm, SIS176LDN 50 mOhm
+        for name, page, diagram, top in (("CSD17306Q5A_TI", 4, "7", 16.0), ("IRLB8748_IFX", 6, "12", 18.0),
+                                         ("SIS176LDN_Vishay", 4, "t491", 50.0)):
+            row = _panel(name, page, diagram)
+            for curve in row["curves"]:
+                self.assertGreater(max(r for _v, r in curve["points"]), 0.97 * top, (name, curve["curve_index"]))
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")

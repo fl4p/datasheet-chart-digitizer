@@ -114,15 +114,40 @@ clusters are never runtime detector authority.
 `digitize-rds-vgs` scans the PDFs named in a `charts.json` (or given with `--pdf`) with its
 own caption/frame locator, because the shared finder misses most RDS(on)-versus-VGS panels.
 A panel is owned only when its x-axis title names VGS and not a drain current. It serves
-per-curve `(VGS [V], RDS(on) [mOhm])` points, each curve's Tj/ID when a label binds to it
-(legend swatch, leader line, proximity, or elimination -- otherwise `None`), readouts at
-2.5/3.3/4.5 V interpolated along the curve (`not_on_chart` outside its span, never
-extrapolated, always labelled "typical curve, not a guaranteed value"), and a tri-state check
-against the datasheet's RDS(on) table rows (`verified` / `inconsistent` / `not_evaluable`;
-a missing anchor is never a pass). Panel status is `ok` only when every gate passes and the
-validation is `verified`; otherwise `review_required` or `refused`, each with its reasons.
-Outputs: `rdson_gate_voltage.json`, `crops/`, `overlays/PART/*.rds_vgs_overlay.png`,
-`points/PART/*.rds_vgs_points.csv`, and OCR scratch under `work/`.
+per-curve `(VGS [V], RDS(on) [mOhm])` points with the curve's temperature *as printed*
+(`temperature_c` plus `temperature_kind`: Tj, Tc, Ta, or unspecified) and ID when a label
+binds to it (legend swatch, leader line, proximity, or elimination -- otherwise `None`).
+Readouts at 2.5/3.3/4.5 V are interpolated along the curve and always labelled "typical
+curve, not a guaranteed value". Outputs: `rdson_gate_voltage.json`, `crops/`,
+`overlays/PART/*.rds_vgs_overlay.png`, `points/PART/*.rds_vgs_points.csv`, OCR scratch
+under `work/`.
+
+Status rules (RDS(on)-vs-VGS):
+
+- `refused`: nothing is served -- axes not calibrated, RDS unit unreadable, no curve
+  traced, a curve rising with VGS, a non-linear x axis, or tick scatter too large.
+- `ok`: every gate passed with no reason at all, and the table check is `verified`. In
+  particular an `ok` panel has no curve with a gap, no partial raster trace, no curve
+  marked `usable: false`, no unbound curve parameter, and no readout in the states below
+  other than `read` / `not_on_chart`.
+- `review_required`: anything else; every cause is listed in `reasons`.
+
+Readout states: `read`; `not_on_chart` (outside the source curve's plotted span -- only
+claimed where the trace is known to be complete there: vector paths, or raster ends on the
+frame); `not_in_extracted_trace` (outside or inside a gap of a raster trace that stopped
+inside the plot -- the source may have the curve there); `curve_not_usable`. Nothing is
+extrapolated and nothing is interpolated across a gap: gaps are listed per curve
+(`gaps`) and drawn as breaks in the overlay; only columns hidden under a vertical grid
+rule the tracker itself erased are bridged (`columns_interpolated_across_erased_grid_rules`).
+A raster fragment with both ends inside the plot spanning under 30 % of the VGS axis is
+`usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
+
+Table check: `verified` needs a consistent anchor at the table's own drain current (within
+2 %); consistent anchors only at a nearby current (within the 0.75-1.34 ratio used for
+evaluation) give `consistent_at_approximate_conditions`; any inconsistent anchor gives
+`inconsistent`; otherwise `not_evaluable`. Each anchor states the temperature kind on
+both sides and any equivalence it assumed (e.g. chart Tc taken as table Ta), and an
+unreadable table cell (e.g. a max printed "12..8") is reported and not checked.
 
 Key capacitance-pipeline outputs:
 
