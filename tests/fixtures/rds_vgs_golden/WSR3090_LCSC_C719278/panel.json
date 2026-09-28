@@ -1,0 +1,193 @@
+{
+ "part": "WSR3090_LCSC_C719278",
+ "pdf_name": "WSR3090_LCSC_C719278.pdf",
+ "pdf_sha256": "1df5861af883cefe68c908815085e0b3f97f090a211e08c44a3176e319fdd9fd",
+ "page": 3,
+ "diagram": "2",
+ "title": "On-Resistance vs. G-S Voltage",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 30.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 15.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_partial_raster_trace (starts at 3.38 V inside the plot; stops at 9.90 V inside the plot; the source curve may continue)",
+  "curve_0_untraced_sections (4.84..4.88 V; ink is continuous there but was not sampled; no readout inside)",
+  "curve_0_annotation_contacts (7.97..8.00 V, 8.04..8.09 V; points pulled off the curve by a touching arrow/label were removed; no readout inside)",
+  "curve_1_partial_raster_trace (starts at 3.38 V inside the plot; stops at 10.00 V inside the plot; the source curve may continue)",
+  "curve_1_shares_196_columns_with_another_curve",
+  "curve_1_untraced_sections (6.95..7.06 V; ink is continuous there but was not sampled; no readout inside)",
+  "curve_1_annotation_contacts (8.33..8.37 V, 8.45..8.53 V; points pulled off the curve by a touching arrow/label were removed; no readout inside)",
+  "curve_2_partial_raster_trace (starts at 3.38 V inside the plot; stops at 10.00 V inside the plot; the source curve may continue)",
+  "curve_2_untraced_sections (4.10..4.13 V, 7.56..7.78 V; ink is continuous there but was not sampled; no readout inside)",
+  "curve_0_temperature_c_unknown (unbound)",
+  "curve_1_temperature_c_unknown (contradicted_by_temperature_order)",
+  "curve_2_temperature_c_unknown (unbound)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "raster",
+ "plot_box_px": {
+  "x0": 247,
+  "y0": 52,
+  "x1": 1082,
+  "y1": 706
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.009580838323353293,
+   "b": 0.6335329341317366,
+   "ticks": [
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 247.0
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 455.75000000000006
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 664.5
+    },
+    {
+     "text": "11",
+     "value": 11.0,
+     "pixel": 1082.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.01529051987767584,
+   "b": 13.795107033639145,
+   "ticks": [
+    {
+     "text": "13",
+     "value": 13.0,
+     "pixel": 52.00000000000006
+    },
+    {
+     "text": "11",
+     "value": 11.0,
+     "pixel": 182.80000000000007
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 444.4000000000001
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 575.2
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 706.0000000000001
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "T=unknown, ID=30A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 30.0,
+   "usable": true,
+   "n_points": 672,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 9.4923,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "T=unknown, ID=30A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 30.0,
+   "usable": true,
+   "n_points": 669,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 8.7244,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 2,
+   "label": "T=unknown, ID=30A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 30.0,
+   "usable": true,
+   "n_points": 668,
+   "points_csv": "points_c2.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_in_extracted_trace"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.4877,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

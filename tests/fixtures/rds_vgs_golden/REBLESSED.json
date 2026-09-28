@@ -1,0 +1,41 @@
+{
+ "_doc": "Explicit, reviewed deviations from the frozen v3 goldens. See PROVENANCE.md 'Re-blessing'.",
+ "entries": [
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "path": "curves/1/usable",
+   "frozen": false,
+   "now": true,
+   "finding": "R3-6",
+   "note": "R3-6 (Opus N3-4): usable is now judged from the ink followed to the frame, not from where the first column sample landed. c1 (the 4 A steep branch, 17 points) has its ink running to the top frame (reviewer pixel dump az_rq6.txt: columns 364-368 reach y=52), exactly like its twin c0, which was already usable. No point moved; its readouts change from 'curve_not_usable' to 'not_in_extracted_trace' (the branch ends at 1.88 V, so 2.5/3.3/4.5 V lie past its traced end).",
+   "date": "2026-09-28"
+  },
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "path": "curves/1/readouts/0/status",
+   "frozen": "curve_not_usable",
+   "now": "not_in_extracted_trace",
+   "finding": "R3-6",
+   "note": "follows from curves/1/usable (see that entry)",
+   "date": "2026-09-28"
+  },
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "path": "curves/1/readouts/1/status",
+   "frozen": "curve_not_usable",
+   "now": "not_in_extracted_trace",
+   "finding": "R3-6",
+   "note": "follows from curves/1/usable (see that entry)",
+   "date": "2026-09-28"
+  },
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "path": "curves/1/readouts/2/status",
+   "frozen": "curve_not_usable",
+   "now": "not_in_extracted_trace",
+   "finding": "R3-6",
+   "note": "follows from curves/1/usable (see that entry)",
+   "date": "2026-09-28"
+  }
+ ]
+}
