@@ -65,6 +65,8 @@ class Calibration:
     grid_binding: str
     residual_limit_px: float
     tick_scatter_px: float = 0.0
+    grid_x: tuple[float, ...] = ()   # full-span vertical rules found (crop px)
+    grid_y: tuple[float, ...] = ()   # full-span horizontal rules found (crop px)
 
 
 def _text_labels(words: PageText, transform: CropTransform, shape) -> list[TextLabel]:
@@ -291,7 +293,8 @@ def _calibrate(
     plot = _seat_on_outer_tick_rules(plot, vertical, horizontal, x_axis, y_axis)
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
-    return Calibration(plot, x_axis, y_axis, source, binding, MAX_AXIS_RESIDUAL_PT * transform.scale_x, scatter)
+    return Calibration(plot, x_axis, y_axis, source, binding, MAX_AXIS_RESIDUAL_PT * transform.scale_x, scatter,
+                       tuple(float(v) for v in vertical), tuple(float(v) for v in horizontal))
 
 
 def _seat_on_outer_tick_rules(plot: PlotBox, vertical, horizontal, x_axis, y_axis) -> PlotBox:

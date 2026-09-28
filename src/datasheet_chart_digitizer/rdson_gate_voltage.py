@@ -46,7 +46,7 @@ import json
 import os
 import math
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import cv2
@@ -176,9 +176,20 @@ def _panel_words(page, ocr_words: PageText) -> PageText:
 
 def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, stem) -> None:
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    words = _panel_words(page, words)
+    locator_words = words
+    words = _panel_words(page, locator_words)
+    # Keep each label's ORIGIN (review R3-8): the locator's words are OCR
+    # (of the whole page when it has no text layer, or of the panel region),
+    # never the text layer, which PyMuPDF supplies separately.
+    layer_labels = _text_labels(
+        PageText(words.page_num, words.width_pt, words.height_pt,
+                 words.words[: len(words.words) - len(locator_words.words)], "text_layer"),
+        transform, image.shape)
+    locator_labels = _text_labels(locator_words, transform, image.shape)
+    locator_name = _LOCATOR_SOURCE_NAMES.get(locator_words.text_source, f"locator_ocr ({locator_words.text_source})")
+    labels = layer_labels + locator_labels
     ocr_labels: list[TextLabel] | None = None
-    labels = _text_labels(words, transform, image.shape)
+    band_labels: list[TextLabel] | None = None
 
     def ocr() -> list[TextLabel]:
         nonlocal ocr_labels
@@ -187,6 +198,13 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         return ocr_labels
 
     hint = _plot_frame_px(panel, transform, gray)
+
+    def bands() -> list[TextLabel]:
+        nonlocal band_labels
+        if band_labels is None:
+            band_labels = _ocr_axis_band_labels(gray, hint, out_dir, panel, stem)
+        return band_labels
+
     try:
         calibration = _calibrate(gray, hint, labels, "text_layer", transform, page)
     except (RuntimeError, ValueError) as first:
@@ -194,16 +212,31 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
             calibration = _calibrate(gray, hint, labels + ocr(), "text_layer+ocr", transform, page)
         except (RuntimeError, ValueError) as second:
             try:
-                bands = _ocr_axis_band_labels(gray, hint, out_dir, panel, stem)
-                calibration = _calibrate(gray, hint, labels + bands, "text_layer+ocr_axis_bands", transform, page)
+                calibration = _calibrate(gray, hint, labels + bands(), "text_layer+ocr_axis_bands", transform, page)
             except (RuntimeError, ValueError) as third:
                 row["calibration_error"] = f"text layer: {first}; crop OCR: {second}; axis-band OCR: {third}"
                 raise PanelRefused(f"axes_uncalibrated: {third}") from third
+    calibration, completion = _complete_ticks(calibration, gray, hint, labels, ocr, bands, transform, page)
+    sources = [("text_layer", layer_labels), (locator_name, locator_labels),
+               ("crop_ocr", ocr_labels or []), ("axis_band_ocr", band_labels or [])]
+    origins = {"x_axis": _tick_origins(calibration.x_axis, calibration.plot, "x", sources),
+               "y_axis": _tick_origins(calibration.y_axis, calibration.plot, "y", sources)}
+    used = [o for axis in origins.values() for o in axis]
+    names = [name for name, _ in sources if name in used] + sorted({o for o in used if o not in dict(sources)})
+    suffix = calibration.tick_source[calibration.tick_source.index(" ("):] if " (" in calibration.tick_source else ""
+    calibration = replace(calibration, tick_source="+".join(names) + suffix)
     row["plot_box_px"] = asdict(calibration.plot)
     row["calibration"] = {
         "x_axis": axis_to_json(calibration.x_axis),
         "y_axis": axis_to_json(calibration.y_axis),
         "tick_source": calibration.tick_source,
+        "tick_origins": {
+            axis: [{"text": t.text, "value": t.value, "origin": o}
+                   for t, o in zip(getattr(calibration, axis).ticks, origins[axis])]
+            for axis in ("x_axis", "y_axis")
+        },
+        "used_tick_span": {axis: _used_span(getattr(calibration, axis)) for axis in ("x_axis", "y_axis")},
+        "tick_completion": completion,
         "grid_binding": calibration.grid_binding,
         "x_quantity": "VGS [V]",
     }
@@ -248,6 +281,9 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         raise PanelRefused(refusal)
     reasons.extend(_binding_reasons(curves, plot_labels))
     row["validation"] = validate_against_table(curves, spec_rows, calibration, scale)
+    reasons.extend(_flag_calibration_span(curves, row["validation"], calibration, scale))
+    for note in row["validation"]["diagnostics"]:
+        reasons.append(f"curve_{note['curve_index']}_exceeds_table_max_at_{note['vgs_v']:g}V ({note['text']})")
     if row["validation"]["verdict"] != "verified":
         reasons.append(f"validation_{row['validation']['verdict']}")
     row["status"] = "ok" if not reasons else "review_required"
@@ -260,6 +296,172 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
 
 
 # --------------------------------------------------------------------------- traces
+
+
+TICK_COMPLETION_MAX_SHIFT_PX = 1.5
+
+_LOCATOR_SOURCE_NAMES = {
+    "tesseract_fallback": "page_ocr",            # image-only page: whole page OCRed
+    "text_layer+tesseract_panel": "panel_ocr",   # text page, raster panel: its region OCRed
+}
+
+
+def _coordinates(axis) -> list[float]:
+    return sorted(axis.m * t.pixel + axis.b for t in axis.ticks)
+
+
+def _step(coords: list[float]) -> float:
+    steps = [b - a for a, b in zip(coords, coords[1:]) if b - a > 1e-9]
+    return float(np.median(steps)) if steps else 0.0
+
+
+def _used_span(axis) -> dict:
+    """The used ticks' extent, in value and in crop px (review R3-9)."""
+    ticks = sorted(axis.ticks, key=lambda t: t.value)
+    return {"values": [ticks[0].value, ticks[-1].value], "pixels": [round(ticks[0].pixel, 2), round(ticks[-1].pixel, 2)],
+            "n_ticks": len(ticks)}
+
+
+def _uncovered(axis, lo_px: float, hi_px: float) -> list[tuple[float, float]]:
+    """Stretches (coordinate) between the used ticks and the frame edges that
+    are longer than half a tick step -- printed ticks may be missing there."""
+    coords = _coordinates(axis)
+    step = _step(coords)
+    edges = sorted((axis.m * lo_px + axis.b, axis.m * hi_px + axis.b))
+    out = []
+    if step and coords[0] - edges[0] > 0.5 * step:
+        out.append((edges[0], coords[0]))
+    if step and edges[1] - coords[-1] > 0.5 * step:
+        out.append((coords[-1], edges[1]))
+    return out
+
+
+def _complete_ticks(calibration: Calibration, gray, hint, labels, ocr, bands, transform, page):
+    """Use every printed tick the sources provide (review R3-9).
+
+    RQ3E110AJ's panel OCR read the y labels 10-30 but not the right-aligned
+    single digits 0-8, and no x "0": the fit then served 3.3 and 4.5 V
+    readouts below its lowest used tick. When the used ticks stop more than
+    half a step short of a frame edge, the crop OCR and the axis-band OCR are
+    added and the axes refitted. The refit is accepted only if it keeps every
+    tick already used, its tick scatter stays within the residual limit, and it
+    moves the fit by <= TICK_COMPLETION_MAX_SHIFT_PX at each original tick (the
+    shift is recorded: on RQ3E110AJ the 10-30 mOhm ladder alone put 0 mOhm
+    0.8 px below the frame; the full 0-30 ladder moves the fit 0.9 px).
+    """
+    plot = calibration.plot
+    short = _uncovered(calibration.x_axis, plot.x0, plot.x1) + _uncovered(calibration.y_axis, plot.y0, plot.y1)
+    if not short:
+        return calibration, "not needed: the used ticks reach both frame edges on both axes (within half a step)"
+    try:
+        candidate = _calibrate(gray, hint, labels + ocr() + bands(), "text_layer+ocr+ocr_axis_bands", transform, page)
+    except (RuntimeError, ValueError) as error:
+        return calibration, f"tried crop and axis-band OCR to reach the frame edges; refit failed ({error}); kept the original ticks"
+    moved = 0.0
+    for name in ("x_axis", "y_axis"):
+        old, new = getattr(calibration, name), getattr(candidate, name)
+        if new.model != old.model or not {t.value for t in old.ticks} <= {t.value for t in new.ticks}:
+            return calibration, (f"tried crop and axis-band OCR; the refit on {name} dropped or changed ticks "
+                                 f"({sorted(t.value for t in old.ticks)} -> {sorted(t.value for t in new.ticks)}); kept the original ticks")
+        for tick in old.ticks:
+            moved = max(moved, abs((new.m * tick.pixel + new.b) - (old.m * tick.pixel + old.b)) / abs(old.m))
+    if moved > TICK_COMPLETION_MAX_SHIFT_PX:
+        return calibration, f"tried crop and axis-band OCR; the refit moved the fit {moved:.2f} px at an original tick; kept the original ticks"
+    if candidate.tick_scatter_px > candidate.residual_limit_px:
+        return calibration, (f"tried crop and axis-band OCR; the refit's tick scatter {candidate.tick_scatter_px:.2f} px "
+                             f"exceeds {candidate.residual_limit_px:.2f} px; kept the original ticks")
+    added = {name: sorted({t.value for t in getattr(candidate, name).ticks} - {t.value for t in getattr(calibration, name).ticks})
+             for name in ("x_axis", "y_axis")}
+    if not any(added.values()):
+        return calibration, "tried crop and axis-band OCR; they supplied no further consistent tick; kept the original ticks"
+    return replace(candidate, tick_source=calibration.tick_source), (
+        f"added ticks x {added['x_axis']} y {added['y_axis']} from crop/axis-band OCR to reach the frame edges; "
+        f"the fit moved <= {moved:.2f} px at the original ticks")
+
+
+def _tick_origins(axis, plot: PlotBox, orientation: str, sources) -> list[str]:
+    """Which source supplied each used tick's label: the first source holding
+    a label of the same text beside that tick (review R3-8)."""
+    out = []
+    for tick in axis.ticks:
+        origin = "unmatched"
+        for name, source_labels in sources:
+            for label in source_labels:
+                if label.text != tick.text:
+                    continue
+                if orientation == "x":
+                    beside = abs(label.cx - tick.pixel) <= 10 and label.cy > plot.y1 - 4
+                else:
+                    beside = abs(label.cy - tick.pixel) <= 10 and label.cx < plot.x0 + 4
+                if beside:
+                    origin = name
+                    break
+            if origin != "unmatched":
+                break
+        out.append(origin)
+    return out
+
+
+def _span_state(calibration: Calibration, vgs: float, y_value: float) -> dict:
+    """Is a reading inside the used ticks' span on both axes? If not, is the
+    extrapolation anchored by the frame edge sitting on the fitted tick
+    lattice (within 1 px)? (review R3-9)"""
+    notes, anchored_all = [], True
+    for name, axis, value, (lo_px, hi_px) in (
+        ("x", calibration.x_axis, vgs, (calibration.plot.x0, calibration.plot.x1)),
+        ("y", calibration.y_axis, y_value, (calibration.plot.y0, calibration.plot.y1)),
+    ):
+        coordinate = math.log10(value) if axis.model == "log10" else value
+        if axis.model == "log10" and value <= 0:
+            return {"state": "outside_unanchored", "detail": f"{name}: non-positive value on a log axis"}
+        coords = _coordinates(axis)
+        if coords[0] - 1e-9 <= coordinate <= coords[-1] + 1e-9:
+            continue
+        step = _step(coords)
+        below = coordinate < coords[0]
+        edge_px = min((lo_px, hi_px), key=lambda px: (axis.m * px + axis.b) if below else -(axis.m * px + axis.b))
+        edge = axis.m * edge_px + axis.b
+        end = coords[0] if below else coords[-1]
+        lattice = end + round((edge - end) / step) * step if step else edge
+        deviation = abs((lattice - axis.b) / axis.m - edge_px)
+        shown = (lambda c: 10 ** c) if axis.model == "log10" else (lambda c: c)
+        if step and deviation <= 1.0:
+            notes.append(f"{name} {shown(coordinate):.4g} beyond the used ticks ({shown(coords[0]):g}..{shown(coords[-1]):g}); "
+                         f"anchored: the frame edge at {edge_px} px is {deviation:.2f} px from the fitted lattice value {shown(lattice):.4g}")
+        else:
+            anchored_all = False
+            notes.append(f"{name} {shown(coordinate):.4g} beyond the used ticks ({shown(coords[0]):g}..{shown(coords[-1]):g}); "
+                         f"NOT anchored (frame edge {edge_px} px is {deviation:.2f} px off the fitted lattice)")
+    if not notes:
+        return {"state": "inside"}
+    return {"state": "outside_anchored" if anchored_all else "outside_unanchored", "detail": "; ".join(notes)}
+
+
+def _flag_calibration_span(curves: list[dict], validation: dict, calibration: Calibration, scale: float) -> list[str]:
+    """Mark every served reading by where it lies against the used ticks;
+    an unanchored extrapolation is a reason (keeps the panel off ok)."""
+    reasons = []
+    for curve in curves:
+        for reading in curve.get("readouts", []):
+            if reading.get("rds_mohm") is None:
+                continue
+            span = _span_state(calibration, reading["vgs_v"], reading["rds_mohm"] / scale)
+            reading["calibration_span"] = span["state"]
+            if "detail" in span:
+                reading["calibration_span_detail"] = span["detail"]
+            if span["state"] == "outside_unanchored":
+                reasons.append(f"curve_{curve['curve_index']}_readout_outside_calibrated_span "
+                               f"({reading['vgs_v']:g} V: {span['detail']})")
+    for anchor in validation.get("anchors", []):
+        if anchor.get("chart_mohm") is None:
+            continue
+        span = _span_state(calibration, anchor["row"]["vgs_v"], anchor["chart_mohm"] / scale)
+        anchor["calibration_span"] = span["state"]
+        if "detail" in span:
+            anchor["calibration_span_detail"] = span["detail"]
+        if span["state"] == "outside_unanchored":
+            reasons.append(f"table_anchor_{anchor['row']['vgs_v']:g}V_reading_outside_calibrated_span ({span['detail']})")
+    return reasons
 
 
 def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr, out_dir, panel, stem,
@@ -607,7 +809,66 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
         else:
             curve["readouts"] = readouts(points, log_y, curve["gaps"], abs(calibration.x_axis.m), open_left, open_right)
         curves.append(curve)
+    reasons.extend(_mark_coincident(curves, calibration))
     return curves, reasons, refusal
+
+
+COINCIDENT_PX = 0.75        # two curves closer than this in every shared column ...
+COINCIDENT_MIN_PX = 20      # ... over at least this many px of VGS are drawn on top of each other
+
+
+def _mark_coincident(curves: list[dict], calibration: Calibration) -> list[str]:
+    """Stretches where two served curves lie on top of each other (review R3-13).
+
+    FDP8870: from ~4.5 V the 1 A and 35 A outlines (PDF drawings 716 and 719)
+    have their vertices at the same heights (e.g. 621.07/623.11 pt at 6 V),
+    0.36 pt apart in x: the source draws the tails coincident, so both
+    curves serve the same values there. That is stated, per curve, instead
+    of serving two curves that silently share data.
+    """
+    columns = []
+    for curve in curves:
+        by_x: dict[int, list[float]] = {}
+        for x, y in curve.get("points_px", []):
+            by_x.setdefault(int(round(x)), []).append(y)
+        columns.append({x: float(np.mean(ys)) for x, ys in by_x.items()})
+    reasons = []
+    for curve in curves:
+        curve.setdefault("coincident_with", [])
+    for i in range(len(curves)):
+        for j in range(i + 1, len(curves)):
+            shared = sorted(set(columns[i]) & set(columns[j]))
+            # separation, median-filtered over 9 shared columns: two outlines
+            # rasterized from the same heights still differ by 1 px here and
+            # there (FDP8870's pair is offset 0.36 pt in x)
+            raw = np.asarray([abs(columns[i][x] - columns[j][x]) for x in shared])
+            smooth = [float(np.median(raw[max(0, k - 4):k + 5])) for k in range(len(raw))]
+            runs, current = [], []
+            for x, separation in zip(shared, smooth):
+                close = separation <= COINCIDENT_PX
+                if close and (not current or x - current[-1] <= 3):
+                    current.append(x)
+                else:
+                    if len(current) > 1:
+                        runs.append(current)
+                    current = [x] if close else []
+            if len(current) > 1:
+                runs.append(current)
+            for run in runs:
+                if run[-1] - run[0] < COINCIDENT_MIN_PX:
+                    continue
+                v0, v1 = calibration.x_axis.value(run[0]), calibration.x_axis.value(run[-1])
+                sep = float(np.median([abs(columns[i][x] - columns[j][x]) for x in run]))
+                worst = max(abs(columns[i][x] - columns[j][x]) for x in run)
+                for a, b in ((i, j), (j, i)):
+                    curves[a]["coincident_with"].append({
+                        "curve_index": curves[b]["curve_index"], "from_vgs_v": round(v0, 4), "to_vgs_v": round(v1, 4),
+                        "median_separation_px": round(sep, 2), "max_separation_px": round(worst, 2)})
+                reasons.append(
+                    f"curve_{curves[i]['curve_index']}_coincident_with_curve_{curves[j]['curve_index']} "
+                    f"({v0:.2f}..{v1:.2f} V, median separation {sep:.2f} px, max {worst:.2f} px: drawn on top of "
+                    "each other there, so both serve the same values; not separable in that range)")
+    return reasons
 
 
 def _ink_reaches_frame(gray, end, plot: PlotBox, side: str) -> bool:

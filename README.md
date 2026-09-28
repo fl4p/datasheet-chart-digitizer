@@ -156,6 +156,21 @@ to the image width and never clipped; the legend shows each readout's state (`n/
 ink, followed from BOTH ends, does not run on to the frame (`trace_complete.*_ink_reaches_frame`)
 is `usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
 
+Calibration provenance: `tick_source` names where the used tick labels came from
+(`text_layer`, `page_ocr` for an image-only page, `panel_ocr` for a raster panel on a text
+page, `crop_ocr`, `axis_band_ocr`), and `tick_origins` gives it per tick. When the used
+ticks stop more than half a step short of a frame edge, crop and axis-band OCR are added
+and the axes refitted (`tick_completion` says what happened). `used_tick_span` records
+each axis's used range. A served reading beyond it carries `calibration_span:
+outside_anchored` if the frame edge sits within 1 px of the fitted tick lattice, and
+otherwise `outside_unanchored` plus a `curve_N_readout_outside_calibrated_span` reason,
+which keeps the panel off `ok`. Two curves drawn on top of each other are listed in
+`coincident_with` on both, with a reason. A usable curve read above a table maximum at the
+table's VGS, which no anchor judged, is recorded in `validation.diagnostics` together with
+what is unknown about its bindings, without a verdict. The overlay marks every used tick
+in white bands outside the crop, draws traces in an Okabe-Ito palette (no dark colours) on
+white halos, labels each curve directly, and gives each curve a legend row with a swatch.
+
 Table check: `verified` needs a consistent anchor at the table's own drain current (within
 2 %); consistent anchors only at a nearby current (within the 0.75-1.34 ratio used for
 evaluation) give `consistent_at_approximate_conditions`; any inconsistent anchor gives
