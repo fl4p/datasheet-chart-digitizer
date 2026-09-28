@@ -100,16 +100,22 @@ def vector_traces(
     fx1, fy1 = transform.to_pt(plot.x1, plot.y1)
     width_pt, height_pt = fx1 - fx0, fy1 - fy0
     pieces: dict[tuple, list[list[tuple[float, float]]]] = {}
-    filled: list[Trace] = []
-    for drawing in page.get_drawings():
+    fill_groups: list[list] = []  # [fill, last drawing index, union bbox, polygons, last piece bbox]
+    for index, drawing in enumerate(page.get_drawings()):
         if drawing.get("type") == "f":
             outline = _filled_outline_polygon(drawing, (fx0, fy0, fx1, fy1))
-            if outline is not None:
-                filled.append(Trace(
-                    _polygon_centerline_px([transform.to_px(x, y) for x, y in outline], plot),
-                    "vector_filled_outline",
-                    (tuple(round(float(c), 2) for c in drawing.get("fill") or ()), "fill", ""),
-                ))
+            if outline is None:
+                continue
+            fill = tuple(round(float(c), 2) for c in drawing.get("fill") or ())
+            box = (min(p[0] for p in outline), min(p[1] for p in outline),
+                   max(p[0] for p in outline), max(p[1] for p in outline))
+            last = fill_groups[-1] if fill_groups else None
+            # touching is tested against the group's LAST piece, not its union
+            if last is not None and last[0] == fill and last[1] == index - 1 and _boxes_touch(last[4], box):
+                last[1], last[3], last[4] = index, last[3] + [outline], box
+                last[2] = (min(last[2][0], box[0]), min(last[2][1], box[1]), max(last[2][2], box[2]), max(last[2][3], box[3]))
+            else:
+                fill_groups.append([fill, index, box, [outline], box])
             continue
         if drawing.get("type") not in {"s", "fs"} or drawing.get("color") is None:
             continue
@@ -139,8 +145,19 @@ def vector_traces(
                 traces.append(Trace(densify(_as_function_of_x(px)), "vector", style))
             else:
                 short.append((style, chain))
-    if not traces and filled:
-        traces = filled
+    if not traces:
+        # One curve may be painted as several consecutive outline pieces
+        # (FDP8870: drawings 716+717+718 are the 1 A curve, its last 0.9 V in
+        # the second and third piece). Consecutive touching pieces of one fill
+        # form one curve; a group must span the usual curve width.
+        for fill, _last, box, polygons, _last_box in fill_groups:
+            if box[2] - box[0] < MIN_CURVE_SPAN_FRACTION * width_pt:
+                continue
+            traces.append(Trace(
+                _polygon_centerline_px([[transform.to_px(x, y) for x, y in poly] for poly in polygons], plot),
+                "vector_filled_outline",
+                (fill, "fill", ""),
+            ))
     curve_styles = {trace.style for trace in traces}
     swatches: list[Swatch] = []
     leaders: list[Leader] = []
@@ -186,22 +203,30 @@ def _filled_outline_polygon(drawing, frame) -> list[tuple[float, float]] | None:
     if fill is None or min(fill) >= 0.9:
         return None
     items = drawing.get("items", [])
-    if not items or any(item[0] not in {"l", "c"} for item in items):
+    if not items or any(item[0] not in {"l", "c", "re", "qu"} for item in items):
         return None
     vertices: list[tuple[float, float]] = []
     for item in items:
-        pts = [(item[1].x, item[1].y), (item[2].x, item[2].y)] if item[0] == "l" else _bezier(item[1], item[2], item[3], item[4], 6)
+        if item[0] == "l":
+            pts = [(item[1].x, item[1].y), (item[2].x, item[2].y)]
+        elif item[0] == "c":
+            pts = _bezier(item[1], item[2], item[3], item[4], 6)
+        else:
+            quad = item[1].quad if item[0] == "re" else item[1]
+            pts = [(quad.ul.x, quad.ul.y), (quad.ur.x, quad.ur.y), (quad.lr.x, quad.lr.y), (quad.ll.x, quad.ll.y)]
         for point in pts:
             if not vertices or math.dist(point, vertices[-1]) > 1e-6:
                 vertices.append(point)
-    if len(vertices) < 12:
+    if len(vertices) < 3:
         return None
     xs = [p[0] for p in vertices]
     ys = [p[1] for p in vertices]
-    width_pt = frame[2] - frame[0]
+    width_pt, height_pt = frame[2] - frame[0], frame[3] - frame[1]
     if min(xs) < frame[0] - 1 or max(xs) > frame[2] + 1 or min(ys) < frame[1] - 1 or max(ys) > frame[3] + 1:
         return None
-    if max(xs) - min(xs) < MIN_CURVE_SPAN_FRACTION * width_pt:
+    if max(xs) - min(xs) >= GRID_RULE_MIN_FRACTION * width_pt and max(ys) - min(ys) <= 1.0:
+        return None  # a grid rule painted as a thin filled rectangle
+    if max(ys) - min(ys) >= GRID_RULE_MIN_FRACTION * height_pt and max(xs) - min(xs) <= 1.0:
         return None
     area = 0.5 * abs(sum(x0 * y1 - x1 * y0 for (x0, y0), (x1, y1) in zip(vertices, vertices[1:] + vertices[:1])))
     perimeter = sum(math.dist(a, b) for a, b in zip(vertices, vertices[1:] + vertices[:1]))
@@ -210,14 +235,19 @@ def _filled_outline_polygon(drawing, frame) -> list[tuple[float, float]] | None:
     return vertices
 
 
-def _polygon_centerline_px(polygon_px: list[tuple[float, float]], plot: PlotBox) -> list[tuple[float, float]]:
-    """Column centres of ONE filled line polygon, rasterised on its own.
+def _boxes_touch(a, b, gap: float = 0.8) -> bool:
+    return a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]
 
-    One polygon is one curve, so no tracking is involved: each column's ink is
-    that curve's cross-section, and its centre is the curve at that column.
+
+def _polygon_centerline_px(polygons_px, plot: PlotBox) -> list[tuple[float, float]]:
+    """Column centres of ONE curve's filled outline piece(s), rasterised on their own.
+
+    One group of pieces is one curve, so no tracking is involved: each column's
+    ink is that curve's cross-section, and its centre is the curve there.
     """
     mask = np.zeros((plot.y1 + 4, plot.x1 + 4), dtype=np.uint8)
-    cv2.fillPoly(mask, [np.round(np.asarray(polygon_px) * 4).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
+    for polygon_px in polygons_px:
+        cv2.fillPoly(mask, [np.round(np.asarray(polygon_px) * 4).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
     points = []
     for x in range(plot.x0, plot.x1 + 1):
         rows = np.flatnonzero(mask[:, x])
