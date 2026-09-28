@@ -236,18 +236,58 @@ def _bezier(p0, p1, p2, p3, steps: int = 12) -> list[tuple[float, float]]:
 
 
 def _clip_polyline(points, rect) -> list[list[tuple[float, float]]]:
-    x0, y0, x1, y1 = rect
+    """Clip a polyline to the frame, KEEPING the in-frame part of crossing segments.
+
+    Each segment is clipped with Liang-Barsky, so a segment that enters (or
+    leaves) the frame contributes the piece between the frame edge and its
+    inside end. Dropping the whole segment instead cost IRLB8743's 125 C curve
+    everything between its first in-frame vertex and the top frame, including
+    its 3.3 V point (review finding 1, 2026-09-28).
+    """
     runs: list[list[tuple[float, float]]] = []
     current: list[tuple[float, float]] = []
-    for x, y in points:
-        if x0 <= x <= x1 and y0 <= y <= y1:
-            current.append((x, y))
-        elif current:
+    for a, b in zip(points, points[1:]):
+        piece = _clip_segment(a, b, rect)
+        if piece is None:
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        start, end = piece
+        if current and math.dist(current[-1], start) > 1e-6:
+            runs.append(current)
+            current = []
+        if not current:
+            current = [start]
+        current.append(end)
+        if end != b:  # the segment left the frame
             runs.append(current)
             current = []
     if current:
         runs.append(current)
-    return [run for run in runs if len(run) >= 2]
+    return [run for run in runs if len(run) >= 2 and math.dist(run[0], run[-1]) > 1e-6]
+
+
+def _clip_segment(a, b, rect):
+    """Liang-Barsky clip of segment a-b to rect; None when it misses the rect."""
+    x0, y0, x1, y1 = rect
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    t0, t1 = 0.0, 1.0
+    for p, q in ((-dx, a[0] - x0), (dx, x1 - a[0]), (-dy, a[1] - y0), (dy, y1 - a[1])):
+        if abs(p) < 1e-12:
+            if q < 0:
+                return None
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return None
+    start = a if t0 == 0.0 else (a[0] + t0 * dx, a[1] + t0 * dy)
+    end = b if t1 == 1.0 else (a[0] + t1 * dx, a[1] + t1 * dy)
+    return start, end
 
 
 def _is_rule(run, width_pt: float, height_pt: float) -> bool:
