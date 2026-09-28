@@ -152,8 +152,11 @@ class EndToEndTests(unittest.TestCase):
             self.assertEqual(_readout(cold, vgs)["status"], "not_on_chart")
             self.assertIsNone(_readout(cold, vgs)["rds_mohm"])
         self.assertAlmostEqual(_readout(cold, 4.5)["rds_mohm"], 6.11, delta=0.08)
+        # The curve ends ON the 10 V frame: that end is data, not a clip.
+        self.assertGreaterEqual(cold["vgs_range_v"][1], 9.99)
         rows = {a["row"]["vgs_v"]: a for a in row["validation"]["anchors"]}
-        self.assertEqual(rows[10.0]["verdict"], "not_evaluable")
+        self.assertEqual(rows[10.0]["verdict"], "consistent")
+        self.assertAlmostEqual(rows[10.0]["chart_mohm"], 4.20, delta=0.08)
 
     def test_filled_outline_curves_with_unbound_id_labels_go_to_review(self):
         row = _panel(self.results["FDP8870_onsemi"], 5, "9")

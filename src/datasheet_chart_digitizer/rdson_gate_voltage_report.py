@@ -24,18 +24,27 @@ ID_MATCH_RATIO = (0.75, 1.34)
 TJ_MATCH_C = 1.0
 
 
-def readouts(points, log_y: bool, x_span: float) -> list[dict]:
+def readouts(points, log_y: bool, x_span: float, end_tolerance_v: float = 0.0) -> list[dict]:
     """Interpolate RDS at the readout VGS values along the curve; never extrapolate."""
     vgs = np.asarray([p[0] for p in points])
     rds = np.asarray([p[1] for p in points])
     out = []
     for target in READOUT_VGS_V:
         entry: dict = {"vgs_v": target, "note": READOUT_NOTE}
-        if not (vgs[0] <= target <= vgs[-1]):
+        # A target within one pixel of a curve end is read AT that end (the
+        # trace's last point sits a rounding error short of, e.g., the 10 V
+        # frame); anything farther out is off the chart.
+        if vgs[0] - end_tolerance_v <= target < vgs[0]:
+            target_read = vgs[0]
+        elif vgs[-1] < target <= vgs[-1] + end_tolerance_v:
+            target_read = vgs[-1]
+        else:
+            target_read = target
+        if not (vgs[0] <= target_read <= vgs[-1]):
             entry.update({"rds_mohm": None, "status": "not_on_chart",
                           "detail": f"curve spans {vgs[0]:.3g}..{vgs[-1]:.3g} V"})
         else:
-            right = int(np.searchsorted(vgs, target))
+            right = int(np.searchsorted(vgs, target_read))
             left = max(0, right - 1)
             right = min(len(vgs) - 1, right)
             gap = vgs[right] - vgs[left]
@@ -44,9 +53,9 @@ def readouts(points, log_y: bool, x_span: float) -> list[dict]:
                               "detail": f"trace gap {vgs[left]:.3g}..{vgs[right]:.3g} V around this VGS"})
             else:
                 if log_y:
-                    value = 10 ** float(np.interp(target, vgs, np.log10(rds)))
+                    value = 10 ** float(np.interp(target_read, vgs, np.log10(rds)))
                 else:
-                    value = float(np.interp(target, vgs, rds))
+                    value = float(np.interp(target_read, vgs, rds))
                 entry.update({"rds_mohm": round(value, 4), "status": "read"})
         out.append(entry)
     return out
@@ -79,7 +88,7 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
             anchor.update({"verdict": "not_evaluable", "reason": f"{len(candidates)} curves match the row conditions"})
             continue
         curve = candidates[0]
-        value = _value_at(curve, row.vgs_v)
+        value = _value_at(curve, row.vgs_v, abs(calibration.x_axis.m))
         anchor["curve_index"] = curve["curve_index"]
         anchor["chart_id_a"] = curve.get("id_a")
         if value is None:
@@ -125,11 +134,12 @@ def _tj_matches(curve: dict, row: RdsonSpecRow) -> bool:
     return curve.get("tj_c") is not None and abs(curve["tj_c"] - row.tj_c) <= TJ_MATCH_C
 
 
-def _value_at(curve: dict, vgs: float) -> float | None:
+def _value_at(curve: dict, vgs: float, end_tolerance_v: float = 0.0) -> float | None:
     points = curve["points"]
     xs = [p[0] for p in points]
-    if not xs or not xs[0] <= vgs <= xs[-1]:
+    if not xs or not xs[0] - end_tolerance_v <= vgs <= xs[-1] + end_tolerance_v:
         return None
+    vgs = min(max(vgs, xs[0]), xs[-1])
     ys = [p[1] for p in points]
     return float(np.interp(vgs, xs, ys))
 

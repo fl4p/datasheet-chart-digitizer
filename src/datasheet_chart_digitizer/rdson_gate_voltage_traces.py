@@ -125,8 +125,8 @@ def vector_traces(
             else:
                 continue
             for run in _clip_polyline(points, (fx0 - 0.3, fy0 - 0.3, fx1 + 0.3, fy1 + 0.3)):
-                if _is_rule_or_tick(run, width_pt, height_pt, (fx0, fy0, fx1, fy1)):
-                    continue
+                if _is_rule(run, width_pt, height_pt):
+                    continue  # tick marks are left in: alone they chain into short non-curves
                 pieces.setdefault(style, []).append(run)
     traces: list[Trace] = []
     short: list[tuple[tuple, list[tuple[float, float]]]] = []
@@ -250,22 +250,20 @@ def _clip_polyline(points, rect) -> list[list[tuple[float, float]]]:
     return [run for run in runs if len(run) >= 2]
 
 
-def _is_rule_or_tick(run, width_pt: float, height_pt: float, frame) -> bool:
+def _is_rule(run, width_pt: float, height_pt: float) -> bool:
+    """A long axis-aligned stroke: a grid rule, never part of a curve.
+
+    Short axis-aligned strokes at the frame are NOT dropped here: a curve's
+    last flat segment ending on the right frame looks exactly like a tick
+    mark until it is chained to the rest of the curve (IRLB8748 lost its
+    9.8..10 V end that way).
+    """
     xs = [p[0] for p in run]
     ys = [p[1] for p in run]
     dx, dy = max(xs) - min(xs), max(ys) - min(ys)
     if dy <= AXIS_ALIGNED_TOLERANCE_PT and dx >= GRID_RULE_MIN_FRACTION * width_pt:
         return True
-    if dx <= AXIS_ALIGNED_TOLERANCE_PT and dy >= GRID_RULE_MIN_FRACTION * height_pt:
-        return True
-    near_edge = (
-        min(abs(min(xs) - frame[0]), abs(max(xs) - frame[2])) <= 0.6
-        or min(abs(min(ys) - frame[1]), abs(max(ys) - frame[3])) <= 0.6
-    )
-    short_axis = (dy <= AXIS_ALIGNED_TOLERANCE_PT and dx <= 0.05 * width_pt) or (
-        dx <= AXIS_ALIGNED_TOLERANCE_PT and dy <= 0.05 * height_pt
-    )
-    return near_edge and short_axis
+    return dx <= AXIS_ALIGNED_TOLERANCE_PT and dy >= GRID_RULE_MIN_FRACTION * height_pt
 
 
 def _chain(runs: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:

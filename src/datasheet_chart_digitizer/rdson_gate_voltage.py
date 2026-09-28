@@ -397,10 +397,13 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
     refusal = None
     ordered = sorted(traces, key=lambda t: float(np.median([p[1] for p in t.points_px])))
     for index, trace in enumerate(ordered):
+        # Only the top and bottom rails clip an RDS(VGS) curve (it leaves the
+        # RDS range there). A curve ending on the left/right frame has simply
+        # reached the end of the VGS axis; those points are data.
         at_frame = [
             (x, y) for x, y in trace.points_px
             if y <= plot.y0 + FRAME_CONTACT_PX or y >= plot.y1 - FRAME_CONTACT_PX
-            or x <= plot.x0 + FRAME_CONTACT_PX or x >= plot.x1 - FRAME_CONTACT_PX
+            or x < plot.x0 - FRAME_CONTACT_PX or x > plot.x1 + FRAME_CONTACT_PX
         ]
         interior = [p for p in trace.points_px if p not in set(at_frame)]
         runs_along = _longest_frame_run(at_frame, plot)
@@ -440,7 +443,7 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
                 f"curve_{index}_rdson_rises_with_vgs_by_{rise / y_span:.1%}_of_axis "
                 "(RDS(on) does not increase with VGS: the trace is not a curve of this chart)"
             )
-        curve["readouts"] = readouts(points, log_y, x_span)
+        curve["readouts"] = readouts(points, log_y, x_span, abs(calibration.x_axis.m))
         curves.append(curve)
     return curves, reasons, refusal
 
