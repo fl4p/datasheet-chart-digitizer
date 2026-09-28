@@ -67,3 +67,4 @@
 - [C(V) full-span grid capture hole](cv-full-span-grid-capture-hole.md) — approach window measured inside the capture; trace born on a rule scored perfect; off-rule approach + abandoned-stroke fallback
 - [cv-rank-is-not-identity-lane-assignment](cv-rank-is-not-identity-lane-assignment.md) — the bottom frame rail was served as Crss on every gray-grid panel; rank-in-column is not curve identity
 - [cv-coer-energy-and-anchor-only-tiers](cv-coer-energy-and-anchor-only-tiers.md) — pass_coer_energy / coss_anchor_only tiers for the 26/30 parts with no Qoss; coer_vint_v is unpopulated in fetlib
+- [rds-vgs-chart-class](rds-vgs-chart-class.md) — dsdig digitize-rds-vgs on unmerged feat/rds-vgs; batch-15 awaits Codex review + Fab overlay pass; no further batching
