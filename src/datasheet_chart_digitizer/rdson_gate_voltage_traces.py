@@ -58,6 +58,7 @@ class Trace:
     merged_columns: int = 0
     params: dict[str, float | None] = field(default_factory=dict)
     binding: dict[str, str] = field(default_factory=dict)
+    bridged_columns: int = 0
 
 
 @dataclass(frozen=True)
@@ -131,14 +132,20 @@ def vector_traces(
             else:
                 continue
             for run in _clip_polyline(points, (fx0 - 0.3, fy0 - 0.3, fx1 + 0.3, fy1 + 0.3)):
-                if _is_rule(run, width_pt, height_pt):
-                    continue  # tick marks are left in: alone they chain into short non-curves
+                if _is_full_span_rule(run, width_pt, height_pt):
+                    continue
+                # Shorter axis-aligned strokes stay in until chaining: a steep
+                # curve's vertical top (CSD17306 25 C, 11.9->16 mOhm) is one,
+                # and so is a curve's last flat segment on the right frame.
                 pieces.setdefault(style, []).append(run)
     traces: list[Trace] = []
     short: list[tuple[tuple, list[tuple[float, float]]]] = []
     for style, runs in pieces.items():
         for chain in _chain(runs):
             xs = [p[0] for p in chain]
+            ys = [p[1] for p in chain]
+            if _is_rule(chain, width_pt, height_pt):
+                continue  # a chain that is itself one long axis-aligned stroke: a rule
             span = max(xs) - min(xs)
             if span >= MIN_CURVE_SPAN_FRACTION * width_pt:
                 px = [transform.to_px(x, y) for x, y in chain]
@@ -320,6 +327,16 @@ def _clip_segment(a, b, rect):
     return start, end
 
 
+def _is_full_span_rule(run, width_pt: float, height_pt: float) -> bool:
+    """An axis-aligned stroke across >= 90 % of the frame: a grid rule or frame side."""
+    xs = [p[0] for p in run]
+    ys = [p[1] for p in run]
+    dx, dy = max(xs) - min(xs), max(ys) - min(ys)
+    return (dy <= AXIS_ALIGNED_TOLERANCE_PT and dx >= 0.9 * width_pt) or (
+        dx <= AXIS_ALIGNED_TOLERANCE_PT and dy >= 0.9 * height_pt
+    )
+
+
 def _is_rule(run, width_pt: float, height_pt: float) -> bool:
     """A long axis-aligned stroke: a grid rule, never part of a curve.
 
@@ -397,6 +414,7 @@ def raster_traces(
     """
     mask = raster_ink_mask(image_bgr, plot, grid_x, grid_y, text_boxes_px)
     erased_rows = _erased_rows(mask.shape[0], grid_y, mask)
+    erased_cols = _erased_rows(mask.shape[1], grid_x, mask.T)
     width = plot.x1 - plot.x0
     tracks: list[dict] = []
     active: list[dict] = []
@@ -439,9 +457,41 @@ def raster_traces(
     height = plot.y1 - plot.y0
     for track in tracks:
         _cut_leader_ends(track, text_boxes_px)
-    kept = [t for t in tracks if len(t["points"]) >= 3 and _long_enough(t, width, height) and not _is_straight_rule(t)]
+    tracks = [piece for track in tracks for piece in _split_leader_runs(track)]
+    kept = [
+        t for t in tracks
+        if len(t["points"]) >= 3 and _long_enough(t, width, height)
+        and not _is_straight_rule(t) and not _floating_flat_fragment(t, plot)
+    ]
     kept = _drop_duplicates(kept)
-    return [Trace([(float(px), float(py)) for px, py in t["points"]], "raster", None, t["merged"]) for t in kept]
+    out = []
+    for t in kept:
+        points, filled = _bridge_erased_rules(t["points"], erased_cols)
+        out.append(Trace([(float(px), float(py)) for px, py in points], "raster", None, t["merged"],
+                         bridged_columns=filled))
+    return out
+
+
+def _bridge_erased_rules(points, erased_cols: np.ndarray):
+    """Fill the columns WE erased under a vertical grid rule, and only those.
+
+    Removing a rule leaves the curve a few columns short where it crosses it;
+    those columns are known to hold the curve under the rule, so they are
+    interpolated (and counted). Any other missing column stays a gap, which is
+    reported and never read across (review finding A).
+    """
+    out: list[tuple[float, float]] = []
+    filled = 0
+    for (x0, y0), (x1, y1) in zip(points, points[1:]):
+        out.append((x0, y0))
+        missing = range(int(x0) + 1, int(x1))
+        if 0 < len(missing) <= 10 and all(0 <= c < erased_cols.shape[0] and erased_cols[c] for c in missing):
+            for c in missing:
+                out.append((float(c), y0 + (y1 - y0) * (c - x0) / (x1 - x0)))
+                filled += 1
+    if points:
+        out.append(points[-1])
+    return out, filled
 
 
 def _extend_converged(tracks: list[dict]) -> None:
@@ -464,6 +514,33 @@ def _extend_converged(tracks: list[dict]) -> None:
         track["merged"] += len(tail)
         track["converged"] = True
         track["x"], track["y"], track["run"], track["slope"] = holder["x"], holder["y"], holder["run"], holder["slope"]
+
+
+def _floating_flat_fragment(track: dict, plot: PlotBox) -> bool:
+    """A short, flat raster fragment with both ends inside the plot.
+
+    Un-OCRed label text is traced as exactly this: on WSR3090 the ink of
+    "TJ=25C" became a 4.23 mOhm "curve" from 6.9 to 8.6 V. A genuine curve
+    piece like it cannot be told apart from text, so it is dropped (a loss of
+    coverage, never wrong data). Steep fragments -- real branches near
+    threshold -- and anything spanning >= 30 % of the plot width are kept.
+    """
+    xs = np.asarray([p[0] for p in track["points"]], dtype=float)
+    ys = np.asarray([p[1] for p in track["points"]], dtype=float)
+    margin = 8.0
+    starts_inside = ys[0] > plot.y0 + margin and xs[0] > plot.x0 + margin
+    ends_inside = xs[-1] < plot.x1 - margin and ys[-1] < plot.y1 - margin
+    if not (starts_inside and ends_inside):
+        return False
+    if xs[-1] - xs[0] >= 0.30 * (plot.x1 - plot.x0):
+        return False
+    # net slope over 25-point windows: letter strokes jitter over a few
+    # pixels, a real near-threshold branch falls steadily
+    w = min(25, len(xs) - 1)
+    steepest = max(
+        ((ys[i + w] - ys[i]) / max(1.0, xs[i + w] - xs[i]) for i in range(len(xs) - w)), default=0.0
+    )
+    return steepest < 1.0
 
 
 def _cut_leader_ends(track: dict, text_boxes_px) -> None:
@@ -492,6 +569,56 @@ def _cut_leader_ends(track: dict, text_boxes_px) -> None:
             kept = points[:-n]
             track["points"] = kept[::-1] if reverse else kept
             track["leader_cut"] = track.get("leader_cut", 0) + n
+
+
+LEADER_STEEP_SLOPE = 1.0     # px/px just before the run: the curve was steep
+LEADER_FLAT_SLOPE = 0.15     # px/px along the run: a (near) horizontal rule
+LEADER_MIN_RUN_PX = 8
+
+
+def _split_leader_runs(track: dict) -> list[dict]:
+    """Remove flat straight runs a steep curve jumps onto: those are leaders.
+
+    An RDS(VGS) curve bends gradually from steep to flat. A track that is
+    steep over the last 8 px and then runs dead flat and straight for >= 12 px
+    has left its curve along a label leader (RQ6E080AJ: onto the 4.0 A leader
+    at 26.3 mOhm). A flat run FOLLOWED by a steep stretch is one too, since a
+    curve never steepens after flattening (RQ3E180AJ: a 30 mOhm jog from one
+    branch onto the other; review finding 2). The run is dropped and the
+    track split around it.
+    """
+    points = track["points"]
+    n = len(points)
+    if n < LEADER_MIN_RUN_PX + 8:
+        return [track]
+    xs = np.asarray([p[0] for p in points], dtype=float)
+    ys = np.asarray([p[1] for p in points], dtype=float)
+
+    def slope(a: int, b: int) -> float:
+        return (ys[b] - ys[a]) / max(1.0, xs[b] - xs[a])
+
+    i = 0
+    while i < n - 3:
+        j = i + 1
+        while j < n and abs(ys[j] - ys[i]) <= 1.5 and xs[j] - xs[j - 1] <= 3:
+            j += 1
+        run_x = xs[j - 1] - xs[i]
+        flat = run_x >= LEADER_MIN_RUN_PX and abs(ys[j - 1] - ys[i]) / max(1.0, run_x) <= LEADER_FLAT_SLOPE
+        steep_before = i >= 8 and slope(i - 8, i) >= LEADER_STEEP_SLOPE
+        # a curve never steepens again after flattening (it is convex), so a
+        # flat run followed by a steep stretch is a leader too (jog at the head)
+        steep_after = j + 8 < n and slope(j, j + 8) >= LEADER_STEEP_SLOPE
+        if flat and (steep_before or steep_after):
+            pieces = []
+            if i >= 3:
+                # the run's first point is already on the leader: not kept
+                pieces.append(dict(track, points=points[:i], own=i,
+                                   leader_cut=track.get("leader_cut", 0) + (j - i)))
+            if n - j >= 3:
+                pieces.extend(_split_leader_runs(dict(track, points=points[j:], own=n - j, converged=False)))
+            return pieces
+        i = j if flat else i + 1
+    return [track]
 
 
 def _straight(points) -> bool:
@@ -782,21 +909,44 @@ def _column_runs(column: np.ndarray, erased_rows: np.ndarray | None = None) -> l
 # --------------------------------------------------------------------------- labels
 
 _TEMP_RE = re.compile(
-    r"(?:\bT\s*[JjCcAa]?\s*[=:]\s*)?([+\-−]?\d{1,3}(?:\.\d+)?)\s*(?:[°º˚*]\s*C|℃|\s?deg\s*C)",
+    r"(?:\bT\s*(?P<sub>[JjCcAa.,_])?\s*[=:]\s*)?(?P<value>[+\-−]?\d{1,3}(?:\.\d+)?)\s*"
+    r"(?:[°º˚*]\s*C|℃|\s?deg\s*C|[°º˚](?!\s*F))",
 )
-_TEMP_PREFIXED_RE = re.compile(r"\bT\s*[JjCcAa.,_]?\s*[=:]\s*([+\-−]?\d{1,3}(?:\.\d+)?)")
+_TEMP_PREFIXED_RE = re.compile(r"\bT\s*(?P<sub>[JjCcAa.,_])?\s*[=:]\s*(?P<value>[+\-−]?\d{1,3}(?:\.\d+)?)")
+_TEMPERATURE_KINDS = {"j": "Tj", "c": "Tc", "a": "Ta"}
 # OCR spells the subscripted "ID" as "Ip", "lD", "1D" or "[p".
 _ID_RE = re.compile(r"(?:\bI\s*D|(?:\b|(?<=\[)|^)[Il1\[|]\s*[DdPp]|\bID)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(m?A)\b")
 PARAM_START_RE = re.compile(r"^[~\[(]?(?:T\s*[JjCcAa.,_]?|[Il1\[|]\s*[DdPp])\s*[=:]")
 
 
-def parse_label_params(text: str) -> dict[str, float]:
-    """Tj (or Tc/Ta) in C and ID in A named by one label line."""
-    params: dict[str, float] = {}
-    temps = {float(m.group(1).replace("−", "-")) for m in _TEMP_RE.finditer(text)}
-    temps |= {float(m.group(1).replace("−", "-")) for m in _TEMP_PREFIXED_RE.finditer(text)}
+def temperature_kind(subscript: str | None, prefixed: bool) -> str:
+    """Tj / Tc / Ta as printed; "T (subscript unread)" when OCR lost it."""
+    if not prefixed:
+        return "unspecified"
+    if subscript and subscript.lower() in _TEMPERATURE_KINDS:
+        return _TEMPERATURE_KINDS[subscript.lower()]
+    return "T (subscript unread)"
+
+
+def parse_label_params(text: str) -> dict:
+    """Temperature (with the kind the chart prints) and ID named by one label line.
+
+    The kind is kept apart from the value: TI prints Tc, Rohm Ta, IR Tj, and
+    treating them as one quantity is an assumption the validation must state
+    (review finding 4).
+    """
+    params: dict = {}
+    temps: set[float] = set()
+    kinds: set[str] = set()
+    for pattern in (_TEMP_RE, _TEMP_PREFIXED_RE):
+        for match in pattern.finditer(text):
+            temps.add(float(match.group("value").replace("−", "-")))
+            prefixed = match.group(0).lstrip()[:1] in {"T"}
+            kinds.add(temperature_kind(match.group("sub"), prefixed))
     if len(temps) == 1:
-        params["tj_c"] = temps.pop()
+        params["temperature_c"] = temps.pop()
+        named = kinds - {"unspecified"}
+        params["temperature_kind"] = named.pop() if len(named) == 1 else ("unspecified" if not named else "conflicting")
     currents = {
         float(m.group(1)) * (1e-3 if m.group(2).lower() == "ma" else 1.0)
         for m in _ID_RE.finditer(text)
@@ -826,11 +976,23 @@ def bind_labels(
     values: dict[str, set[float]] = {}
     for label in labeled:
         for key, value in label.params.items():
+            if key == "temperature_kind":
+                continue
             values.setdefault(key, set()).add(value)
     varying = [key for key, seen in values.items() if len(seen) > 1]
+    limit = LABEL_BIND_MAX_PX_FRACTION * max(plot.x1 - plot.x0, plot.y1 - plot.y0)
     if len(traces) == 1:
         for key, seen in values.items():
-            if len(seen) == 1:
+            carriers = [label for label in labeled if key in label.params]
+            touching = any(_distance_to_trace(0, 0, label, traces[0]) <= 2.0 * limit for label in carriers)
+            if len(seen) == 1 and touching and traces[0].method == "raster":
+                # One traced line with a curve label beside it: on a raster
+                # chart the other labelled curves may simply be untraced
+                # (RQ3E180AJ: "ID=9A" beside a line that is the 18 A branch).
+                traces[0].params[key] = None
+                traces[0].binding[key] = "single_label_may_belong_to_an_untraced_curve"
+                diagnostics.append(f"{key}_label_on_single_raster_line_not_bound")
+            elif len(seen) == 1:
                 traces[0].params[key] = next(iter(seen))
                 traces[0].binding[key] = "single_curve_panel_condition"
             else:
@@ -838,7 +1000,6 @@ def bind_labels(
                 traces[0].binding[key] = "conflicting_labels_single_curve"
                 diagnostics.append(f"{key}_labels_conflict_on_single_curve")
         return diagnostics
-    limit = LABEL_BIND_MAX_PX_FRACTION * max(plot.x1 - plot.x0, plot.y1 - plot.y0)
     for key, seen in list(values.items()):
         if key in varying:
             continue
@@ -874,14 +1035,32 @@ def bind_labels(
             target.params[key] = label.params[key]
             target.binding[key] = how
             for other_key, other in label.params.items():
+                if other_key == "temperature_kind":
+                    continue
                 if other_key != key and other_key in varying:
                     continue
                 if other_key != key and target.params.get(other_key) is None:
                     target.params[other_key] = other
                     target.binding[other_key] = how
         diagnostics.extend(_bind_by_elimination(key, traces, labeled))
-    diagnostics.extend(_temperature_order_check(traces, values.get("tj_c", set())))
+    diagnostics.extend(_temperature_order_check(traces, values.get("temperature_c", set())))
+    _attach_temperature_kinds(traces, labeled)
     return diagnostics
+
+
+def _attach_temperature_kinds(traces: list[Trace], labeled: list[Label]) -> None:
+    """Give each bound temperature the kind printed with that value."""
+    for trace in traces:
+        value = trace.params.get("temperature_c")
+        if value is None:
+            if "temperature_c" in trace.params:
+                trace.params["temperature_kind"] = None
+            continue
+        kinds = {
+            label.params.get("temperature_kind", "unspecified")
+            for label in labeled if label.params.get("temperature_c") == value
+        }
+        trace.params["temperature_kind"] = kinds.pop() if len(kinds) == 1 else "conflicting"
 
 
 def _bind_by_elimination(key: str, traces: list[Trace], labeled: list[Label]) -> list[str]:
@@ -1023,7 +1202,7 @@ def _temperature_order_check(traces: list[Trace], printed: set[float] | None = N
     bound to the hottest (coldest) printed temperature with any other traced
     curve above (below) it.
     """
-    bound = [t for t in traces if t.params.get("tj_c") is not None]
+    bound = [t for t in traces if t.params.get("temperature_c") is not None]
     diagnostics: list[str] = []
 
     def median_offset(upper: Trace, lower: Trace) -> float | None:
@@ -1038,21 +1217,21 @@ def _temperature_order_check(traces: list[Trace], printed: set[float] | None = N
 
     def unbind(*items: Trace) -> None:
         for trace in items:
-            trace.params["tj_c"] = None
-            trace.binding["tj_c"] = "contradicted_by_temperature_order"
+            trace.params["temperature_c"] = None
+            trace.binding["temperature_c"] = "contradicted_by_temperature_order"
 
     for i, a in enumerate(bound):
         for b in bound[i + 1:]:
-            if a.params["tj_c"] == b.params["tj_c"]:
+            if a.params["temperature_c"] == b.params["temperature_c"]:
                 continue
-            hot, cold = (a, b) if a.params["tj_c"] > b.params["tj_c"] else (b, a)
+            hot, cold = (a, b) if a.params["temperature_c"] > b.params["temperature_c"] else (b, a)
             offset = median_offset(hot, cold)
             if offset is not None and offset > 0:
                 unbind(hot, cold)
                 diagnostics.append("temperature_binding_contradicts_rdson_order")
     if printed and len(printed) > 1:
         hottest, coldest = max(printed), min(printed)
-        for trace in [t for t in traces if t.params.get("tj_c") in (hottest, coldest)]:
+        for trace in [t for t in traces if t.params.get("temperature_c") in (hottest, coldest)]:
             for other in traces:
                 if other is trace:
                     continue
@@ -1060,7 +1239,7 @@ def _temperature_order_check(traces: list[Trace], printed: set[float] | None = N
                 if offset is None:
                     continue
                 above = offset < 0
-                if (trace.params["tj_c"] == hottest and above) or (trace.params["tj_c"] == coldest and not above):
+                if (trace.params["temperature_c"] == hottest and above) or (trace.params["temperature_c"] == coldest and not above):
                     unbind(trace)
                     diagnostics.append("extreme_temperature_binding_has_a_curve_beyond_it")
                     break

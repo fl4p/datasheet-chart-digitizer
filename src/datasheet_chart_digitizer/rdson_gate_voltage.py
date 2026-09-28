@@ -75,6 +75,7 @@ from .rdson_gate_voltage_axes import (
 from .rdson_gate_voltage_locate import KIND, LocatedPanel, locate_panels
 from .rdson_gate_voltage_report import (
     READOUT_NOTE,
+    READOUT_VGS_V,
     readouts,
     validate_against_table,
     write_overlay,
@@ -87,12 +88,15 @@ from .rdson_gate_voltage_traces import (
     bind_labels,
     PARAM_START_RE,
     parse_label_params,
+    temperature_kind,
     raster_traces,
     vector_traces,
 )
 from .rdson_spec_table import RdsonSpecRow, parse_rdson_spec_rows
 
 MAX_RISE_FRACTION = 0.04
+GAP_PX = 2.5                    # consecutive trace columns further apart than this are a gap
+USABLE_MIN_SPAN_FRACTION = 0.30
 FRAME_CONTACT_PX = 2.5
 FRAME_RUN_FRACTION = 0.03
 MAX_BACKTRACK_PX = 3.0
@@ -223,13 +227,15 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         raise PanelRefused(f"rdson_unit_unreadable: y-axis title {unit_text!r}")
     row["calibration"]["y_to_mohm"] = scale
 
-    traces, swatches, leaders, method = _traces(page, transform, calibration, image, gray, words, labels, ocr)
+    traces, swatches, leaders, method, plot_ocr = _traces(
+        page, transform, calibration, image, gray, words, labels, ocr, out_dir, panel, stem
+    )
     row["trace_method"] = method
     if not traces:
         raise PanelRefused(f"no_curve_traced ({method})")
     extra = None
     if method == "raster":
-        extra = (ocr_labels or []) + ocr_plot_labels(gray, calibration.plot, out_dir, panel, stem)
+        extra = (ocr_labels or []) + plot_ocr
     plot_labels = _plot_labels(words, transform, calibration.plot, extra)
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
     binding_notes.extend(_apply_page_temperature_note(traces, page))
@@ -256,27 +262,42 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
 # --------------------------------------------------------------------------- traces
 
 
-def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr):
+def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr, out_dir, panel, stem):
     traces, swatches, leaders = vector_traces(page, transform, calibration.plot)
     if traces:
-        return traces, swatches, leaders, "vector"
-    xs, ys = _full_span_grid_lines(gray, calibration.plot)
-    boxes = _text_boxes_px(words, transform, calibration.plot)
+        return traces, swatches, leaders, "vector", []
+    plot = calibration.plot
+    xs, ys = _full_span_grid_lines(gray, plot)
+    plot_ocr = ocr_plot_labels(gray, plot, out_dir, panel, stem)
+    boxes = [b for b, text in _text_boxes_px(words, transform, plot) if _is_texty(text, b, plot)]
     boxes += [
-        (l.x0, l.y0, l.x1, l.y1) for l in ocr()
-        if isinstance(l, _BoxedLabel) and calibration.plot.x0 < l.cx < calibration.plot.x1
-        and calibration.plot.y0 < l.cy < calibration.plot.y1
+        (l.x0, l.y0, l.x1, l.y1) for l in [*ocr(), *plot_ocr]
+        if isinstance(l, _BoxedLabel) and plot.x0 < l.cx < plot.x1 and plot.y0 < l.cy < plot.y1
+        and _is_texty(l.text, (l.x0, l.y0, l.x1, l.y1), plot)
     ]
-    return raster_traces(image, calibration.plot, xs, ys, boxes), [], [], "raster"
+    return raster_traces(image, plot, xs, ys, boxes), [], [], "raster", plot_ocr
 
 
-def _text_boxes_px(words: PageText, transform, plot: PlotBox) -> list[tuple[float, float, float, float]]:
+def _is_texty(text: str, box, plot: PlotBox) -> bool:
+    """An OCR word that is plausibly printed text, not a curve stroke read as one.
+
+    Tesseract reads curve strokes as short junk ("l", "\\", "NX"): erasing
+    such a box erased RQ3E180AJ's knee (review finding 2). A label word here
+    carries a digit or "=", or at least four letters, and is no taller than
+    max(45 px, 6 % of the plot) at 300 dpi.
+    """
+    letters = sum(ch.isalpha() for ch in text)
+    looks_like_label = any(ch.isdigit() for ch in text) or "=" in text or letters >= 4
+    return looks_like_label and (box[3] - box[1]) <= max(45.0, 0.06 * (plot.y1 - plot.y0))
+
+
+def _text_boxes_px(words: PageText, transform, plot: PlotBox):
     boxes = []
     for w in words.words:
         x0, y0 = transform.to_px(w.x0, w.y0)
         x1, y1 = transform.to_px(w.x1, w.y1)
         if plot.x0 <= 0.5 * (x0 + x1) <= plot.x1 and plot.y0 <= 0.5 * (y0 + y1) <= plot.y1:
-            boxes.append((x0, y0, x1, y1))
+            boxes.append(((x0, y0, x1, y1), w.text))
     return boxes
 
 
@@ -333,7 +354,7 @@ def _drop_overlapping_duplicates(words: list) -> list:
 
 
 _PAGE_TEMPERATURE_NOTE_RE = re.compile(
-    r"T\s*[JCA]?\s*=\s*([+-]?\d{1,3})\s*(?:°|º|o)?\s*C\s*,?\s*unless\s+otherwise\s+(?:noted|specified|stated)",
+    r"T\s*(?P<sub>[JCA])?\s*=\s*(?P<value>[+-]?\d{1,3})\s*(?:°|º|o)?\s*C\s*,?\s*unless\s+otherwise\s+(?:noted|specified|stated)",
     re.IGNORECASE,
 )
 
@@ -345,16 +366,20 @@ def _apply_page_temperature_note(traces: list[Trace], page) -> list[str]:
     printed a temperature at all; a panel that prints its own temperatures
     never falls back to the page note.
     """
-    if any("tj_c" in trace.params for trace in traces):
+    if any("temperature_c" in trace.params for trace in traces):
         return []
-    notes = {float(m.group(1)) for m in _PAGE_TEMPERATURE_NOTE_RE.finditer(" ".join(page.get_text("text").split()))}
+    notes = {
+        (float(m.group("value")), temperature_kind(m.group("sub"), True))
+        for m in _PAGE_TEMPERATURE_NOTE_RE.finditer(" ".join(page.get_text("text").split()))
+    }
     if len(notes) != 1:
         return []
-    value = notes.pop()
+    value, kind = notes.pop()
     for trace in traces:
-        trace.params["tj_c"] = value
-        trace.binding["tj_c"] = "page_note_unless_otherwise_noted"
-    return [f"tj_c={value:g}_from_page_note"]
+        trace.params["temperature_c"] = value
+        trace.params["temperature_kind"] = kind
+        trace.binding["temperature_c"] = "page_note_unless_otherwise_noted"
+    return [f"temperature_c={value:g}_{kind}_from_page_note"]
 
 
 def _split_parameters(words: list) -> list[list]:
@@ -416,13 +441,15 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
         curve = {
             "curve_index": index,
             "trace_method": trace.method,
-            "tj_c": trace.params.get("tj_c"),
+            "temperature_c": trace.params.get("temperature_c"),
+            "temperature_kind": trace.params.get("temperature_kind"),
             "id_a": trace.params.get("id_a"),
             "parameter_binding": dict(trace.binding),
             "label": _curve_label(trace),
             "stroke_style": list(trace.style) if trace.style else None,
             "n_points": len(points),
             "frame_contact_points_dropped": len(at_frame),
+            "columns_interpolated_across_erased_grid_rules": trace.bridged_columns,
             "points": [[round(v, 5), round(r, 5)] for v, r, _x, _y in points],
             "points_px": [[round(x, 2), round(y, 2)] for _v, _r, x, y in points],
         }
@@ -431,6 +458,12 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
             curves.append(curve)
             continue
         curve["vgs_range_v"] = [round(points[0][0], 4), round(points[-1][0], 4)]
+        open_left, open_right = _open_ends(trace, plot)
+        curve["trace_complete"] = {"left_end_at_frame": not open_left, "right_end_at_frame": not open_right}
+        if open_left or open_right:
+            ends = [f"starts at {points[0][0]:.2f} V inside the plot"] * open_left + [
+                f"stops at {points[-1][0]:.2f} V inside the plot"] * open_right
+            reasons.append(f"curve_{index}_partial_raster_trace ({'; '.join(ends)}; the source curve may continue)")
         if runs_along > FRAME_RUN_FRACTION * (plot.x1 - plot.x0):
             reasons.append(f"curve_{index}_runs_along_the_frame_{runs_along:.0f}px_(clipped)")
         if trace.method == "vector" and backtrack_px(trace.points_px) > MAX_BACKTRACK_PX:
@@ -444,9 +477,47 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float):
                 f"curve_{index}_rdson_rises_with_vgs_by_{rise / y_span:.1%}_of_axis "
                 "(RDS(on) does not increase with VGS: the trace is not a curve of this chart)"
             )
-        curve["readouts"] = readouts(points, log_y, x_span, abs(calibration.x_axis.m))
+        gaps = [
+            [round(a[0], 4), round(b[0], 4)]
+            for a, b in zip(points, points[1:]) if b[2] - a[2] > GAP_PX
+        ]
+        curve["gaps"] = gaps
+        if gaps:
+            spans = ", ".join(f"{g0:.2f}..{g1:.2f} V" for g0, g1 in gaps[:4])
+            reasons.append(f"curve_{index}_trace_gaps ({spans}; not bridged, no readout inside)")
+        fragment = open_left and open_right and (points[-1][0] - points[0][0]) < USABLE_MIN_SPAN_FRACTION * x_span
+        curve["usable"] = not fragment
+        if fragment:
+            curve["not_usable_reason"] = (
+                "raster fragment with both ends inside the plot, spanning under 30 % of the "
+                "VGS axis: which curve it belongs to, and whether all of it is curve ink, is unverified"
+            )
+            reasons.append(f"curve_{index}_not_usable (fragment)")
+            curve["readouts"] = [
+                {"vgs_v": v, "note": READOUT_NOTE, "rds_mohm": None, "status": "curve_not_usable",
+                 "detail": curve["not_usable_reason"]}
+                for v in READOUT_VGS_V
+            ]
+        else:
+            curve["readouts"] = readouts(points, log_y, gaps, abs(calibration.x_axis.m), open_left, open_right)
         curves.append(curve)
     return curves, reasons, refusal
+
+
+def _open_ends(trace: Trace, plot: PlotBox) -> tuple[bool, bool]:
+    """Raster ends that stop inside the plot: the source may continue past them.
+
+    A vector trace is the whole source path, so its ends are the source's ends.
+    A raster trace that starts below the top rail and right of the left axis,
+    or stops short of the right frame, may simply have lost the rest.
+    """
+    if trace.method != "raster":
+        return False, False
+    (x_first, y_first), (x_last, y_last) = trace.points_px[0], trace.points_px[-1]
+    margin = 3 * FRAME_CONTACT_PX
+    open_left = y_first > plot.y0 + margin and x_first > plot.x0 + margin
+    open_right = x_last < plot.x1 - margin and y_last < plot.y1 - margin
+    return open_left, open_right
 
 
 def _longest_frame_run(points, plot: PlotBox) -> float:
@@ -474,9 +545,11 @@ def _max_rise(rds: list[float], log_y: bool) -> float:
 
 def _curve_label(trace: Trace) -> str:
     parts = []
-    if "tj_c" in trace.params:
-        tj = trace.params["tj_c"]
-        parts.append(f"Tj={tj:g}C" if tj is not None else "Tj=unknown")
+    if "temperature_c" in trace.params:
+        value = trace.params["temperature_c"]
+        kind = trace.params.get("temperature_kind") or "T"
+        kind = "T" if kind in {"unspecified", "conflicting", "T (subscript unread)"} else kind
+        parts.append(f"{kind}={value:g}C" if value is not None else "T=unknown")
     if "id_a" in trace.params:
         current = trace.params["id_a"]
         parts.append(f"ID={current:g}A" if current is not None else "ID=unknown")
@@ -485,7 +558,7 @@ def _curve_label(trace: Trace) -> str:
 
 def _binding_reasons(curves: list[dict], labels: list[Label]) -> list[str]:
     reasons = []
-    keys = {k for c in curves for k in ("tj_c", "id_a") if k in c["parameter_binding"]}
+    keys = {k for c in curves for k in ("temperature_c", "id_a") if k in c["parameter_binding"]}
     if len(curves) > 1 and not keys:
         reasons.append("curve_parameters_unlabelled: several curves, no Tj/ID label binds to any")
     for curve in curves:

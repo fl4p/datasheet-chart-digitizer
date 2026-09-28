@@ -38,7 +38,7 @@ Nothing here guesses: a row the parser cannot own is simply not returned.
 from __future__ import annotations
 
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import pymupdf
@@ -64,6 +64,9 @@ _RDS_LABEL_RE = re.compile(
     r"R\s*DS\s*\(?\s*on\s*\)?|on[-\s]*(?:state\s*)?resistance|R\s*DS\s*\(\s*ON",
     re.IGNORECASE,
 )
+_KIND_BY_CONDITION = {"TJ": "Tj", "TC": "Tc", "TA": "Ta"}
+# "(Ta = 25°C unless ...)", "@ TJ = 25°C", "Electrical Characteristics(Ta=25℃)"
+_HEADING_TEMPERATURE_RE = re.compile(r"\bT\s*([JjCcAa])\s*=\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)")
 _EXCLUDED_CONDITIONS = {"VDS", "VDD", "RG", "RGEN", "IS", "ISD", "IF", "F", "RL"}
 _HEADER_TOKENS = {
     "min": re.compile(r"^min(?:imum)?\.?$", re.I),
@@ -91,8 +94,9 @@ class RdsonSpecRow:
     page: int
     vgs_v: float
     id_a: float | None
-    tj_c: float
-    tj_source: str
+    temperature_c: float
+    temperature_kind: str
+    temperature_source: str
     min_mohm: float | None
     typ_mohm: float | None
     max_mohm: float | None
@@ -100,6 +104,8 @@ class RdsonSpecRow:
     pairing: str
     row_text: str
     bbox_pt: tuple[float, float, float, float]
+    unparsed_cells: dict = field(default_factory=dict)
+    temperature_evidence: str = ""
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -136,21 +142,26 @@ def _page_rows(page_num: int, words: list[Word]) -> list[RdsonSpecRow]:
     labels = [
         line.bbox for line in lines if _RDS_LABEL_RE.search(line.text)
     ]
+    headings = [
+        (_cy(line), _KIND_BY_CONDITION["T" + match.group(1).upper()], line.text)
+        for line in lines
+        for match in [_HEADING_TEMPERATURE_RE.search(line.text)] if match
+    ]
     rows: list[RdsonSpecRow] = []
     value_only: list[tuple[_Line, dict[str, float]]] = []
     condition_only: list[_Line] = []
     for line in lines:
         header = _header_for(line, headers)
-        values = _owned_values(line, header) if header is not None else {}
+        values, unparsed = _owned_values(line, header) if header is not None else ({}, {})
         if _is_rds_condition(line) and _near_rds_label(line, labels):
             if values:
-                row = _row(page_num, line, line, values, lines, header, "same_baseline")
+                row = _row(page_num, line, line, values, lines, header, "same_baseline", unparsed, headings)
                 if row is not None:
                     rows.append(row)
             else:
                 condition_only.append(line)
         elif values and not line.conditions and _near_rds_label(line, labels):
-            value_only.append((line, values))
+            value_only.append((line, values, unparsed))
     temperature_lines = [
         line for line in lines
         if line.conditions
@@ -158,21 +169,21 @@ def _page_rows(page_num: int, words: list[Word]) -> list[RdsonSpecRow]:
     ]
     for condition in condition_only:
         near = [
-            (value_line, values)
-            for value_line, values in value_only
+            (value_line, values, unparsed)
+            for value_line, values, unparsed in value_only
             if abs(_cy(value_line) - _cy(condition)) <= _ORPHAN_PAIR_WINDOW_PT
         ]
         claimants = [
             other for other in condition_only
-            if any(abs(_cy(v) - _cy(other)) <= _ORPHAN_PAIR_WINDOW_PT for v, _ in near)
+            if any(abs(_cy(v) - _cy(other)) <= _ORPHAN_PAIR_WINDOW_PT for v, _, _u in near)
         ]
         if len(near) != 1 or len(claimants) != 1:
             continue
-        value_line, values = near[0]
+        value_line, values, unparsed = near[0]
         header = _header_for(value_line, headers)
         row = _row(
             page_num, condition, value_line, values, lines, header,
-            "values_and_condition_on_separate_baselines",
+            "values_and_condition_on_separate_baselines", unparsed, headings,
         )
         if row is not None:
             rows.append(row)
@@ -192,7 +203,7 @@ def _attach_temperature_lines(
     is dropped rather than left at an assumed temperature.
     """
     drop: set[int] = set()
-    updates: dict[int, float] = {}
+    updates: dict[int, tuple[float, str, str]] = {}
     for line in temperature_lines:
         ly = _cy(line)
         near = sorted(
@@ -203,19 +214,22 @@ def _attach_temperature_lines(
         if not near:
             continue
         temps = [value for name, value, *_ in line.conditions]
-        if len(near) > 1 and near[1][0] - near[0][0] < 3.0 or len(set(temps)) != 1:
+        names = {_KIND_BY_CONDITION.get(name, "unspecified") for name, *_ in line.conditions}
+        if len(near) > 1 and near[1][0] - near[0][0] < 3.0 or len(set(temps)) != 1 or len(names) != 1:
             drop.update(index for _, index in near)
             continue
-        updates[near[0][1]] = temps[0]
+        updates[near[0][1]] = (temps[0], names.pop(), line.text)
     out = []
     for index, row in enumerate(rows):
         if index in drop:
             continue
         if index in updates:
-            if row.tj_source == "row_condition":
+            if row.temperature_source == "row_condition":
                 continue
+            value, kind, evidence = updates[index]
             row = RdsonSpecRow(**{
-                **asdict(row), "tj_c": updates[index], "tj_source": "adjacent_baseline_condition",
+                **asdict(row), "temperature_c": value, "temperature_kind": kind,
+                "temperature_source": "adjacent_baseline_condition", "temperature_evidence": evidence,
             })
         out.append(row)
     return out
@@ -269,17 +283,23 @@ def _header_for(line: _Line, headers) -> dict[str, float] | None:
     return max(above, key=lambda item: item[0])[1] if above else None
 
 
-def _owned_values(line: _Line, header: dict[str, float]) -> dict[str, float]:
-    """Numbers in header-owned value columns and outside condition spans."""
+def _owned_values(line: _Line, header: dict[str, float]) -> tuple[dict[str, float], dict[str, str]]:
+    """Numbers in header-owned value columns and outside condition spans.
+
+    A cell that holds digits but is not a number ("12..8" in CSD17302Q5A's
+    3 V max) is returned separately and never read as a value.
+    """
     positions = sorted(header.values())
     pitch = min((b - a for a, b in zip(positions, positions[1:])), default=40.0)
     tolerance = 0.5 * pitch
     values: dict[str, float] = {}
+    unparsed: dict[str, str] = {}
     for word, (start, end) in zip(line.words, line.spans):
         if any(start < c_end and end > c_start for *_, c_start, c_end in line.conditions):
             continue
-        match = _NUMBER_RE.match(word.text.strip())
-        if match is None:
+        token = word.text.strip()
+        match = _NUMBER_RE.match(token)
+        if match is None and not re.search(r"\d", token):
             continue
         center = 0.5 * (word.x0 + word.x1)
         ranked = sorted((abs(center - x), name) for name, x in header.items())
@@ -288,10 +308,13 @@ def _owned_values(line: _Line, header: dict[str, float]) -> dict[str, float]:
             continue
         if len(ranked) > 1 and ranked[1][0] - distance < 0.15 * pitch:
             continue
+        if match is None:
+            unparsed[column] = token
+            continue
         if column in values:
-            return {}
+            return {}, {}
         values[column] = float(match.group(1))
-    return values
+    return values, unparsed
 
 
 def _condition_names(line: _Line) -> set[str]:
@@ -321,14 +344,25 @@ def _row(
     lines: list[_Line],
     header: dict[str, float] | None,
     pairing: str,
+    unparsed: dict[str, str] | None = None,
+    headings: list | None = None,
 ) -> RdsonSpecRow | None:
     unit = _row_unit(condition, value_line, lines)
     vgs = next(value for name, value, *_ in condition.conditions if name == "VGS")
     current = next((value for name, value, *_ in condition.conditions if name == "ID"), None)
-    temps = [value for name, value, *_ in condition.conditions if name in {"TJ", "TC", "TA"}]
+    temps = [(value, name) for name, value, *_ in condition.conditions if name in {"TJ", "TC", "TA"}]
     if len(temps) > 1:
         return None
-    tj, tj_source = (temps[0], "row_condition") if temps else (25.0, "table_default_25C_assumed")
+    evidence = ""
+    if temps:
+        temperature, kind, source = temps[0][0], _KIND_BY_CONDITION[temps[0][1]], "row_condition"
+    else:
+        above = [h for h in (headings or []) if h[0] < _cy(condition)]
+        if above:
+            _y, kind, evidence = max(above, key=lambda h: h[0])
+            temperature, source = 25.0, "table_heading"
+        else:
+            temperature, kind, source = 25.0, "unspecified", "table_default_25C_assumed"
     scale = unit[1] if unit is not None else None
 
     def convert(key: str) -> float | None:
@@ -340,8 +374,9 @@ def _row(
         page=page_num,
         vgs_v=abs(vgs),
         id_a=abs(current) if current is not None else None,
-        tj_c=tj,
-        tj_source=tj_source,
+        temperature_c=temperature,
+        temperature_kind=kind,
+        temperature_source=source,
         min_mohm=convert("min"),
         typ_mohm=convert("typ"),
         max_mohm=convert("max"),
@@ -349,6 +384,8 @@ def _row(
         pairing=pairing,
         row_text=condition.text if condition is value_line else f"{value_line.text} || {condition.text}",
         bbox_pt=tuple(round(v, 2) for v in condition.bbox),  # type: ignore[arg-type]
+        unparsed_cells=dict(unparsed or {}),
+        temperature_evidence=evidence,
     )
 
 
