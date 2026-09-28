@@ -142,10 +142,11 @@ def digitize_panel(
             "crop_box_pt": list(panel.bbox_pt),
             "crop_dpi": CROP_DPI,
             "pixel_mapping": (
-                "crop pixel (u, v) <-> page point (crop_box_pt.x0 + u / scale, "
-                "crop_box_pt.y0 + v / scale), scale = crop_dpi / 72; "
-                "x_axis/y_axis map crop pixels to values: coordinate = m * pixel + b "
-                "(value = coordinate on a linear axis, 10**coordinate on log10)"
+                "crop pixel (u, v) <-> page point (crop_box_pt[0] + u / sx, crop_box_pt[1] + v / sy), "
+                "sx = crop width px / crop_box width pt, sy likewise (both ~ crop_dpi / 72); "
+                "calibration: coordinate = m * pixel + b on each axis (value = coordinate on a "
+                "linear axis, 10**coordinate on log10); y values are in the axis's own unit, "
+                "times y_to_mohm for mOhm"
             ),
             "readout_note": READOUT_NOTE,
             "spec_rows": [r.to_json() for r in spec_rows],
