@@ -1033,6 +1033,19 @@ class RoundThreeLateTests(unittest.TestCase):
                 for x, y in curve["points_px"]:
                     self.assertFalse(x0 - 3 <= x <= x1 + 3 and y0 - 3 <= y <= y1 + 3, (label, x, y))
 
+    def test_r3_12_direct_labels_never_sit_on_curve_ink(self):
+        # the panels where the first candidate spot would land on a curve
+        # (label placement ignoring ink put 35-60 traced points under labels)
+        for name, page, diagram in (("AO3400A_UMW_C347475", 3, "5"), ("WSR3090_LCSC_C719278", 3, "2"),
+                                    ("BRCS020N03RA_LCSC_C22449012", 4, "5")):
+            row = _panel(name, page, diagram)
+            self.assertEqual(len(row["overlay_curve_labels"]), len(row["curves"]), name)
+            for label in row["overlay_curve_labels"]:
+                x0, y0, x1, y1 = label["box_px"]
+                on_ink = [(x, y) for c in row["curves"] for x, y in c["points_px"]
+                          if x0 - 3 <= x <= x1 + 3 and y0 - 3 <= y <= y1 + 3]
+                self.assertEqual(on_ink, [], (name, label))
+
     def test_r3_12_unknown_labels_are_spelled_out(self):
         row = _panel("RQ3E180AJ_Rohm", 7, "12")
         legend = " ".join(t for t, _c in report._legend_lines(row, 4000))

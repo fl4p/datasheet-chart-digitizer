@@ -444,7 +444,7 @@ MUTANTS = {
         [L + "test_r3_12_legend_row_and_direct_label_per_curve"]),
     "labels_ignore_ink (R3-12)": (
         [patch.object(report, "LABEL_CLEARANCE_PX", -10000)],
-        [L + "test_r3_12_legend_row_and_direct_label_per_curve"]),
+        [L + "test_r3_12_legend_row_and_direct_label_per_curve", L + "test_r3_12_direct_labels_never_sit_on_curve_ink"]),
     "legend_without_temperature_kind (R3-12)": (
         [patch.object(report, "temperature_text", lambda curve: "T")],
         [L + "test_r3_12_legend_row_and_direct_label_per_curve", L + "test_r3_12_unknown_labels_are_spelled_out"]),
