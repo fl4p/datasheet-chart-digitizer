@@ -70,6 +70,7 @@ from .rdson_gate_voltage_axes import (
     _plot_frame_px,
     _text_labels,
     _y_unit,
+    ocr_plot_labels,
 )
 from .rdson_gate_voltage_locate import KIND, LocatedPanel, locate_panels
 from .rdson_gate_voltage_report import (
@@ -84,6 +85,7 @@ from .rdson_gate_voltage_traces import (
     Trace,
     backtrack_px,
     bind_labels,
+    PARAM_START_RE,
     parse_label_params,
     raster_traces,
     vector_traces,
@@ -224,7 +226,10 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     row["trace_method"] = method
     if not traces:
         raise PanelRefused(f"no_curve_traced ({method})")
-    plot_labels = _plot_labels(words, transform, calibration.plot, ocr_labels if method == "raster" else None)
+    extra = None
+    if method == "raster":
+        extra = (ocr_labels or []) + ocr_plot_labels(gray, calibration.plot, out_dir, panel, stem)
+    plot_labels = _plot_labels(words, transform, calibration.plot, extra)
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
     binding_notes.extend(_apply_page_temperature_note(traces, page))
     curves, curve_reasons, refusal = _curves(traces, calibration, scale)
@@ -299,7 +304,7 @@ def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels) -> list[
     selected = _drop_overlapping_duplicates(selected)
     out = []
     for line in group_words_into_lines(selected):
-        for segment in _split_gaps(line):
+        for segment in (piece for gap_part in _split_gaps(line) for piece in _split_parameters(gap_part)):
             text = line_text(segment)
             ax, ay, bx, by = line_bbox(segment)
             px0, py0 = transform.to_px(ax, ay)
@@ -349,6 +354,20 @@ def _apply_page_temperature_note(traces: list[Trace], page) -> list[str]:
         trace.params["tj_c"] = value
         trace.binding["tj_c"] = "page_note_unless_otherwise_noted"
     return [f"tj_c={value:g}_from_page_note"]
+
+
+def _split_parameters(words: list) -> list[list]:
+    """Split one text line where a second "T..=" / "I..=" assignment begins.
+
+    Two curve labels printed on one baseline ("TJ=100C   TJ=125C") must stay
+    two labels; parsed as one they name two temperatures and bind to nothing.
+    """
+    parts: list[list] = [[]]
+    for word in words:
+        if parts[-1] and PARAM_START_RE.match(word.text) and parse_label_params(line_text(parts[-1])):
+            parts.append([])
+        parts[-1].append(word)
+    return [part for part in parts if part]
 
 
 def _split_gaps(line):

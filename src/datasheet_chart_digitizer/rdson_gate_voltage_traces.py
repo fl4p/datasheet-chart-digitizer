@@ -678,7 +678,9 @@ _TEMP_RE = re.compile(
     r"(?:\bT\s*[JjCcAa]?\s*[=:]\s*)?([+\-−]?\d{1,3}(?:\.\d+)?)\s*(?:[°º˚*]\s*C|℃|\s?deg\s*C)",
 )
 _TEMP_PREFIXED_RE = re.compile(r"\bT\s*[JjCcAa.,_]?\s*[=:]\s*([+\-−]?\d{1,3}(?:\.\d+)?)")
-_ID_RE = re.compile(r"(?:\bI\s*D|\b[Il1]\s*[DdPp]|\bID)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(m?A)\b")
+# OCR spells the subscripted "ID" as "Ip", "lD", "1D" or "[p".
+_ID_RE = re.compile(r"(?:\bI\s*D|(?:\b|(?<=\[)|^)[Il1\[|]\s*[DdPp]|\bID)\s*[=:]\s*(\d+(?:\.\d+)?)\s*(m?A)\b")
+PARAM_START_RE = re.compile(r"^[~\[(]?(?:T\s*[JjCcAa.,_]?|[Il1\[|]\s*[DdPp])\s*[=:]")
 
 
 def parse_label_params(text: str) -> dict[str, float]:

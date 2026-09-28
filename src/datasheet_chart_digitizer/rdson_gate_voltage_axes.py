@@ -192,6 +192,37 @@ def _text_blobs(ink: np.ndarray) -> list[tuple[int, int, int, int]]:
     return [tuple(b) for b in merged]
 
 
+def ocr_plot_labels(gray, plot: PlotBox, out_dir: Path, panel, stem: str) -> list[TextLabel]:
+    """OCR the plot interior upscaled 2x and binarised, for in-plot curve labels.
+
+    Raster charts print "TJ=125C" or "ID=5A" small and anti-aliased; sparse OCR
+    of the 300 dpi crop misses most of them. Labels only ever feed the
+    conservative binder, which leaves a curve's parameter unknown rather than
+    guess, so a missed or misread label costs a binding, never a value.
+    """
+    if shutil.which("tesseract") is None:
+        return []
+    sub = gray[plot.y0 : plot.y1, plot.x0 : plot.x1]
+    if sub.size == 0:
+        return []
+    scale = 2.0
+    up = cv2.resize(sub, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+    _thr, binary = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    target = out_dir / "work" / "plot_ocr" / panel.part / f"{stem}.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(target), binary)
+    words = _tesseract_words(
+        target, clip=pymupdf.Rect(0, 0, binary.shape[1], binary.shape[0]), scale_x=1.0, scale_y=1.0,
+        psm=11, timeout=90.0, whitelist=None, min_confidence=40.0,
+    )
+    labels: list[TextLabel] = []
+    for x0, y0, x1, y1, text in words:
+        ax0, ay0 = plot.x0 + x0 / scale, plot.y0 + y0 / scale
+        ax1, ay1 = plot.x0 + x1 / scale, plot.y0 + y1 / scale
+        labels.append(_BoxedLabel(text, 0.5 * (ax0 + ax1), 0.5 * (ay0 + ay1), ax0, ax1, ay0, ay1))
+    return labels
+
+
 @dataclass(frozen=True)
 class _BoxedLabel(TextLabel):
     y0: float = 0.0
