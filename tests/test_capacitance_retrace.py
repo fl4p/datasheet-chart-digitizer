@@ -18,13 +18,23 @@ import math
 import unittest
 
 import numpy as np
+import pymupdf
 
 from datasheet_chart_digitizer.capacitance_retrace import (
+    CurveLabel,
     Frame,
     below_resolution_mask,
+    bind_labels,
+    curve_crossings,
+    filled_outline_centerline,
+    join_paths,
+    lowest_curve,
     own_frame,
+    pdf_curve_labels,
+    pdf_tick_labels,
     suppress_curve_ink,
     track_raster_curves,
+    vector_curve_paths,
 )
 from datasheet_chart_digitizer.gridline_anchor import detect_axis_lines
 
@@ -156,6 +166,133 @@ class FrameTests(unittest.TestCase):
         self.assertTrue(any(abs(c - rule_y) > 1.0 for c in biased), f"fixture must bias the raw detector: {biased}")
         self.assertEqual(len(clean), 1)
         self.assertAlmostEqual(clean[0], rule_y, delta=0.01)
+
+
+# ------------------------------------------------------------------ vector
+
+
+def _vector_page(draw):
+    document = pymupdf.open()
+    page = document.new_page(width=400, height=300)
+    draw(page)
+    return document, page
+
+
+FRAME_PT = pymupdf.Rect(100, 50, 300, 250)
+
+
+def _draw_frame(page) -> None:
+    shape = page.new_shape()
+    shape.draw_rect(FRAME_PT)
+    shape.finish(color=(0.5, 0.5, 0.5), width=0.4)
+    shape.commit()
+
+
+def _polyline(page, points, width=1.0, color=(0, 0, 0)) -> None:
+    shape = page.new_shape()
+    shape.draw_polyline([pymupdf.Point(*p) for p in points])
+    shape.finish(color=color, width=width, closePath=False)
+    shape.commit()
+
+
+class VectorTests(unittest.TestCase):
+    def test_crossing_paths_sharing_a_vertex_stay_separate_and_bind_by_labels(self) -> None:
+        xs = [100 + 200 * k / 12 for k in range(13)]
+        flat = [(x, 150 + 0.02 * (x - 100)) for x in xs]  # Ciss (NXP: the flat one)
+        steep = [(x, 130 + 0.2 * (x - 100)) for x in xs]  # Coss: above at low VDS, below at the end
+        crossing_x = 100 + 20 / 0.18
+        # both paths pass through ONE shared vertex at the crossing (PSMN6R1 at 432 pt)
+        flat.insert(7, (crossing_x, 150 + 0.02 * (crossing_x - 100)))
+        steep.insert(7, (crossing_x, 150 + 0.02 * (crossing_x - 100)))
+        crss = [(x, 220 + 0.05 * (x - 100)) for x in xs]
+
+        def draw(page):
+            _draw_frame(page)
+            for path in (flat, steep, crss):
+                _polyline(page, path)
+            page.insert_text((303, 157), "Ciss", fontsize=7)
+            page.insert_text((303, 176), "Coss", fontsize=7)
+            page.insert_text((303, 234), "Crss", fontsize=7)
+
+        document, page = _vector_page(draw)
+        with document:
+            curves = vector_curve_paths(page, FRAME_PT)
+            self.assertEqual(len(curves), 3)
+            labels = pdf_curve_labels(page, FRAME_PT)
+            binding, evidence = bind_labels([c.points for c in curves], labels)
+        by_name = {name: curves[i].points for name, i in binding.items()}
+        # the flat path is Ciss END TO END, the steep one Coss: no swap at the crossing
+        self.assertLess(abs(by_name["Ciss"][0][1] - by_name["Ciss"][-1][1]), 5)
+        self.assertGreater(abs(by_name["Coss"][0][1] - by_name["Coss"][-1][1]), 30)
+        self.assertEqual(len(curve_crossings(by_name["Ciss"], by_name["Coss"])), 1)
+        self.assertTrue(evidence["decisive"])
+
+    def test_labels_that_cannot_decide_refuse(self) -> None:
+        a = [(float(x), 100.0) for x in range(0, 101, 5)]
+        b = [(float(x), 104.0) for x in range(0, 101, 5)]
+        c = [(float(x), 200.0) for x in range(0, 101, 5)]
+        # both labels printed between two converging curves, 0.2 px apart
+        labels = [CurveLabel("Ciss", (105, 99, 115, 105)), CurveLabel("Coss", (105, 99.2, 115, 105.2))]
+        with self.assertRaises(RuntimeError):
+            bind_labels([a, b, c], labels)
+
+    def test_crss_is_the_lowest_curve_or_refuse(self) -> None:
+        a = [(float(x), 100.0) for x in range(0, 101, 5)]
+        b = [(float(x), 150.0 + x) for x in range(0, 101, 5)]
+        c = [(float(x), 220.0 - x) for x in range(0, 101, 5)]  # crosses b: no single lowest curve
+        with self.assertRaises(RuntimeError):
+            lowest_curve([a, b, c])
+        self.assertEqual(lowest_curve([a, b, [(x, 260.0) for x, _ in a]]), 2)
+
+    def test_path_drawn_past_the_frame_is_clipped_not_dropped(self) -> None:
+        # NXP PSMN2R4-30YLD draws each curve from x = 74 pt and clips at render time
+        def draw(page):
+            _draw_frame(page)
+            _polyline(page, [(20, 120), (100, 120), (200, 140), (300, 160)])
+
+        document, page = _vector_page(draw)
+        with document:
+            curves = vector_curve_paths(page, FRAME_PT)
+        self.assertEqual(len(curves), 1)
+        self.assertAlmostEqual(curves[0].points[0][0], FRAME_PT.x0, delta=0.4)
+
+    def test_ambiguous_join_refuses(self) -> None:
+        with self.assertRaises(RuntimeError):
+            join_paths([[(0, 0), (1, 1)], [(1, 1), (2, 2)], [(1, 1), (2, 0)]])
+        self.assertEqual(join_paths([[(0, 0), (1, 1)], [(1, 1), (2, 2)]]), [[(0, 0), (1, 1), (2, 2)]])
+
+    def test_filled_outline_keeps_the_steep_head(self) -> None:
+        # a 2 pt thick curve drawn as a filled outline, near-vertical at the left (AON6226 Coss head)
+        top = [(100.0, 60.0), (101.0, 120.0), (110.0, 160.0), (200.0, 180.0)]
+        bottom = [(p[0] + 1.0, p[1] + 2.0) for p in reversed(top)]
+        items = []
+        ring = top + bottom + [top[0]]
+        for a, b in zip(ring, ring[1:]):
+            items.append(("l", pymupdf.Point(*a), pymupdf.Point(*b)))
+        centre = filled_outline_centerline(items, 100.0, 201.0, 0.1)
+        self.assertLess(min(y for _x, y in centre), 70.0)  # the head's height survives
+        mid = [y for x, y in centre if abs(x - 150.0) < 0.05][0]
+        # upper edge 168.89, lower edge (shifted +1, +2) 170.67 at x = 150
+        self.assertAlmostEqual(mid, (168.89 + 170.67) / 2, delta=0.05)
+
+    def test_neighbour_axis_labels_are_not_consumed_and_superscripts_are_decades(self) -> None:
+        def draw(page):
+            _draw_frame(page)
+            # this chart's y labels, right-aligned against the frame
+            page.insert_text((88, 252), "10", fontsize=7)
+            for y in (150, 52):
+                page.insert_text((84, y + 2), "10", fontsize=7)
+            page.insert_text((91.8, y - 1), "3", fontsize=5)
+            page.insert_text((91.8, 149), "2", fontsize=5)
+            # a neighbouring panel's x label 30 pt further left (AOL1454's "24")
+            page.insert_text((50, 250), "24", fontsize=7)
+
+        document, page = _vector_page(draw)
+        with document:
+            labels = pdf_tick_labels(page, FRAME_PT, "y")
+        values = sorted(v for _t, v, _x, _y in labels)
+        self.assertNotIn(24.0, values)
+        self.assertEqual(values, [10.0, 100.0, 1000.0])
 
 
 if __name__ == "__main__":
