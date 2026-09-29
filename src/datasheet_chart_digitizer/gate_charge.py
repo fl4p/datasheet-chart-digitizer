@@ -20,6 +20,7 @@ from .find_charts import (
     process_pdf,
     run_tesseract_page_text,
 )
+from .gate_charge_grid_anchor import GateYGrid, seat_gate_y_ticks, served_value
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -94,6 +95,8 @@ class GateChargeResult:
     y_ticks_px: tuple[tuple[float, float], ...] = ()
     x_tick_unit: str | None = None
     y_tick_unit: str = "V"
+    # gate_charge_grid_anchor: VGS ticks seated on their rules + served check
+    y_grid: dict | None = None
 
     def to_manifest(self) -> dict[str, object]:
         payload = asdict(self)
@@ -182,6 +185,15 @@ def digitize_gate_charge(
                             )
                             if recalibrated is not None:
                                 vpl, y_ticks_px, x_tick_unit = recalibrated
+                                # OCR label centres identify values only: seat
+                                # them on their rules and read Vpl there
+                                seated = seat_gate_y_ticks(
+                                    _result_crop_gray(doc[panel.page - 1], result),
+                                    list(y_ticks_px),
+                                    result.plot_box_px,
+                                )
+                                y_ticks_px = seated.ticks_px
+                                vpl = served_value(y_ticks_px, float(result.vpl_y_px))
                                 retained_diagnostics = tuple(
                                     item
                                     for item in result.diagnostics
@@ -193,18 +205,25 @@ def digitize_gate_charge(
                                         "vpl_outside_expected_range",
                                     }
                                 )
+                                grid_diagnostics = (
+                                    ()
+                                    if seated.check.status == "verified"
+                                    else (f"y_axis_grid_check_{seated.check.status}",)
+                                )
                                 result = replace(
                                     result,
                                     vpl=vpl,
-                                    status="ok",
+                                    status="ok" if not grid_diagnostics else "low_confidence",
                                     y_tick_count=len(y_ticks_px),
                                     y_ticks_px=y_ticks_px,
                                     x_tick_unit=x_tick_unit,
+                                    y_grid=seated.payload(),
                                     diagnostics=tuple(
                                         dict.fromkeys(
                                             (
                                                 *retained_diagnostics,
                                                 *bounded_diagnostics,
+                                                *grid_diagnostics,
                                             )
                                         )
                                     ),
@@ -604,6 +623,18 @@ def _digitize_panel(
         local_y_ticks = panel_y_ticks
     local_y_ticks = _y_ticks_with_zero(local_y_ticks, panel_rect)
     local_y_ticks = _drop_glyph_offset_tick(local_y_ticks)
+    y_grid: GateYGrid | None = None
+    if len(local_y_ticks) >= 2:
+        # The labels identify VGS values; the line Vpl is read through is
+        # taken from the rules they name, and checked where it is served.
+        y_grid = seat_gate_y_ticks(
+            np.asarray(crop.convert("L")),
+            [(value, (y - crop_rect.y0) * scale) for value, y in local_y_ticks],
+            plot_box,
+        )
+        local_y_ticks = [
+            (value, crop_rect.y0 + px / scale) for value, px in y_grid.ticks_px
+        ]
     axis_grid_inferred = False
     if len(local_y_ticks) < 2 and raster_grid is not None:
         grid_ys = raster_grid[1]
@@ -732,6 +763,11 @@ def _digitize_panel(
     implausible_box = _plot_box_aspect_implausible(plot_box)
     if implausible_box:
         diagnostics.append("plot_box_aspect_implausible")
+    # Unevaluable is not a pass: a VGS line that misses its rules, or that
+    # could not be checked against them, does not make an "ok" Vpl.
+    grid_problem = y_grid is not None and y_grid.check.status != "verified"
+    if grid_problem:
+        diagnostics.append(f"y_axis_grid_check_{y_grid.check.status}")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)
@@ -760,6 +796,7 @@ def _digitize_panel(
         or not vpl_expected_for_source
         or extrapolated_vpl
         or implausible_box
+        or grid_problem
     ):
         status = "low_confidence"
     else:
@@ -799,6 +836,7 @@ def _digitize_panel(
         x_ticks_px=x_ticks_px,
         y_ticks_px=y_ticks_px,
         x_tick_unit=x_tick_unit,
+        y_grid=None if y_grid is None else y_grid.payload(),
     )
     if non_gate_reason is not None and mixed_gate_context and (
         low_trace_confidence or not _vpl_is_plausible(vpl)
@@ -816,6 +854,16 @@ def _digitize_panel(
             ),
         )
     return result
+
+
+def _result_crop_gray(page: pymupdf.Page, result: GateChargeResult) -> np.ndarray:
+    """The result's crop, re-rendered exactly as _digitize_panel rendered it."""
+    scale = result.dpi / 72.0
+    pix = page.get_pixmap(
+        matrix=pymupdf.Matrix(scale, scale), clip=pymupdf.Rect(result.crop_box_pt), alpha=False
+    )
+    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    return rgb[:, :, :3].mean(axis=2).astype(np.uint8)
 
 
 def _strong_local_non_gate_reason(tight_context: str) -> str | None:

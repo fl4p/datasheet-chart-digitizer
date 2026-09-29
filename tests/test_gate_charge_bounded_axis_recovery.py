@@ -24,7 +24,6 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "nce/NCEP080N10.pdf": 5.11,
             "toshiba/TK72E12N1.pdf": 5.62,
             "huayi/HY1710P.pdf": 4.47,
-            "huayi/HY1720P.pdf": 5.74,
             "siliup/SP015N15HTQ.pdf": 4.71,
             "siliup/SP012N06GHTQ.pdf": 5.55,
             "siliup/SP010N02AGHTO.pdf": 4.82,
@@ -43,8 +42,22 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "good_ark/GSFT7R515.pdf": 5.48,
             "toshiba/XPQ1R00AQB.pdf": 5.58,
         }
-        if not all((root / relative).exists() for relative in cases):
+        # Withheld since the served VGS line is checked against its rules
+        # (2026-09-29): the bounded OCR ticks of HY1720P read a "0" 11 px
+        # below the 0 V frame and a stray "2", so no registration binds them to
+        # the dotted 1.5 V grid. That OCR line served Vpl 5.886 V where the
+        # frame rules (15 V at 137 px, 0 V at 612 px) put the plateau at
+        # 433 px = 5.65 V.
+        withheld = {"huayi/HY1720P.pdf": "y_axis_grid_check_unverified"}
+        if not all((root / relative).exists() for relative in (*cases, *withheld)):
             self.skipTest("requested Vpl regression PDFs are not configured")
+        for relative, diagnostic in withheld.items():
+            with self.subTest(pdf=relative):
+                results = gate_charge.digitize_gate_charge(root / relative, finder_dpi=120)
+                self.assertEqual(
+                    [r for r in results if r.status == "ok" and r.vpl is not None], []
+                )
+                self.assertTrue(any(diagnostic in r.diagnostics for r in results))
 
         for relative, expected_vpl in cases.items():
             with self.subTest(pdf=relative):

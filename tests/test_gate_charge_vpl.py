@@ -828,9 +828,11 @@ class GateChargeVplTests(unittest.TestCase):
     def test_real_panjit_huayi_frames_bind_to_own_grid_not_neighbor_divider(self) -> None:
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
         cases = {
-            "panjit/PSMB050N10NS2_R2_00601.pdf": ((166, 170, 764, 604), 4.96),
+            # 050N10NS2: 4.96 V on the VGS label-centre fit, 4.994 V on the
+            # rules (grid-seated 2026-09-29, all six ticks verified).
+            "panjit/PSMB050N10NS2_R2_00601.pdf": ((166, 170, 764, 604), 4.994),
             "panjit/PSMB055N08NS1_R2_00601.pdf": ((164, 168, 763, 591), 4.86),
-            "panjit/PSMP050N10NS2_T0_00601.pdf": ((166, 170, 764, 604), 4.96),
+            "panjit/PSMP050N10NS2_T0_00601.pdf": ((166, 170, 764, 604), 4.994),
             "panjit/PSMP055N08NS1_T0_00601.pdf": ((164, 168, 763, 591), 4.86),
             "huayi/HY1001D.pdf": ((141, 162, 737, 605), 4.61),
         }
@@ -938,10 +940,6 @@ class GateChargeVplTests(unittest.TestCase):
                     and result.plot_box_px[3] - result.plot_box_px[1] >= 350
                 ),
             ),
-            "ti/TPS1100.pdf": (
-                3.1,
-                lambda result: result.crop_box_pt[0] + result.plot_box_px[0] / (result.dpi / 72) < 220,
-            ),
             "infineon/IPB019N08N3GATMA1.pdf": (4.6, lambda result: result.crop_box_pt[1] < 100),
             "infineon/IRFS4310TRRPBF.pdf": (6.5, lambda result: result.crop_box_pt[0] < 340),
             "huayi/HYG016N04LS1B.pdf": (
@@ -949,8 +947,18 @@ class GateChargeVplTests(unittest.TestCase):
                 lambda result: result.crop_box_pt[0] + result.plot_box_px[0] / (result.dpi / 72) > 330,
             ),
         }
-        if not all((root / rel).exists() for rel in cases):
+        # Withheld since the served VGS line is checked against its rules
+        # (2026-09-29): TPS1100's top frame rule sits 5.5 px above where its
+        # evenly spaced grid (115 px per 2 V) puts -10 V, so no single mapping
+        # seats all six labels. Its Vpl stays in the result, not "ok".
+        withheld = {"ti/TPS1100.pdf": "y_axis_grid_check_unverified"}
+        if not all((root / rel).exists() for rel in (*cases, *withheld)):
             self.skipTest("axis-binding regression PDFs are not configured")
+        for rel, diagnostic in withheld.items():
+            with self.subTest(pdf=rel):
+                self.assertIsNone(gate.find_vpl_result(root / rel))
+                results = gate.digitize_gate_charge(root / rel)
+                self.assertTrue(any(diagnostic in r.diagnostics for r in results))
 
         for rel, (reference, bbox_gate) in cases.items():
             with self.subTest(pdf=rel):

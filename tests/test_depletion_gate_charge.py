@@ -31,7 +31,9 @@ class DepletionGateChargeTests(unittest.TestCase):
         result = next(item for item in results if item.panel.diagram == 15)
 
         self.assertEqual(result.status, "ok")
-        self.assertAlmostEqual(result.vpl, 0.200652, delta=0.001)
+        # 0.200652 V on the label-centre VGS fit; the grid-seated fit (labels
+        # -0.72..+0.07 px from their rules, all 7 verified) serves 0.204702 V.
+        self.assertAlmostEqual(result.vpl, 0.204702, delta=0.001)
         self.assertNotIn("vpl_outside_expected_range", result.diagnostics)
         self.assertLess(min(value for value, _pixel in result.y_ticks_px), 0.0)
         self.assertGreater(max(value for value, _pixel in result.y_ticks_px), 0.0)
