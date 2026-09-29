@@ -1230,8 +1230,23 @@ class RoundFourTests(unittest.TestCase):
 
     # -- F4-4: exactly the printed curves ------------------------------------------
 
+    def test_f4_4_rq3e110aj_pair_is_two_lines_side_by_side(self):
+        # The 11.0 A / 5.5 A pair is printed as two touching lines: side by
+        # side in the steep part, stacked in the flatter part (a column run of
+        # 10 px at x=600 where one line is 5 px). Each curve takes its own
+        # half: at 4.5 V the upper line reads higher, and neither curve is the
+        # band's middle.
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        col = cap["gray"][560:640, 600] < 150
+        self.assertGreaterEqual(int(col.sum()), 9)
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        upper, lower = sorted(row["curves"], key=lambda c: -_readout(c, 4.5)["rds_mohm"])
+        diff = _readout(upper, 4.5)["rds_mohm"] - _readout(lower, 4.5)["rds_mohm"]
+        self.assertGreater(diff, 0.08)            # ~5 px apart at 0.0384 mOhm/px
+        self.assertLess(diff, 0.35)
+
     def test_f4_4_two_printed_curves_are_two_complete_curves(self):
-        for name, merge_from in (("RQ6E080AJ_Rohm", 1.95), ("RQ3E180AJ_Rohm", 1.75), ("RQ3E110AJ_Rohm", 2.05)):
+        for name, merge_from in (("RQ6E080AJ_Rohm", 1.95), ("RQ3E180AJ_Rohm", 1.75)):
             row = _panel(name, 7, "12")
             self.assertEqual(len(row["curves"]), 2, name)
             for curve in row["curves"]:

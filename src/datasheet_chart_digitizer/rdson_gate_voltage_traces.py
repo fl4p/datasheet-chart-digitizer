@@ -1581,6 +1581,10 @@ def _track_band_down(gray, x: float, y: float, plot: PlotBox, erased_cols, erase
         if run["x1"] - run["x0"] + 1 > 12:
             cy += 1                                # rule or leader contact: cross it
             continue
+        edge_on_rule = any(0 <= c < len(erased_cols) and erased_cols[c] for c in (run["x0"] - 1, run["x1"] + 1))
+        if edge_on_rule:
+            cy += 1                                # an edge hidden in an erased rule: width unknown here
+            continue
         if run["centre"] < x - 1.0:
             break                                  # the curve turned: not the steep band
         if run["x1"] - run["x0"] + 1 < BAND_MIN_WIDTH_PX:
@@ -1600,6 +1604,23 @@ def _track_band_down(gray, x: float, y: float, plot: PlotBox, erased_cols, erase
     return rows
 
 
+def _column_half(gray, point, upper: int, erased_rows) -> tuple[float, float]:
+    """This line's half of a two-line column run at ``point``; the point
+    itself where the run is one line thick, or touches a rule row."""
+    x, y = int(round(point[0])), int(round(point[1]))
+    if not (0 <= x < gray.shape[1] and 0 <= y < gray.shape[0]) or gray[y, x] >= ROW_INK_GRAY:
+        return point
+    y0 = y1 = y
+    while y0 - 1 >= 0 and gray[y0 - 1, x] < ROW_INK_GRAY:
+        y0 -= 1
+    while y1 + 1 < gray.shape[0] and gray[y1 + 1, x] < ROW_INK_GRAY:
+        y1 += 1
+    height = y1 - y0 + 1
+    if height < BAND_MIN_WIDTH_PX or height > 16 or erased_rows[max(0, y0 - 1):y1 + 2].any():
+        return point
+    return (point[0], float(y0 + LINE_HALF_WIDTH_PX if upper > 0 else y1 - LINE_HALF_WIDTH_PX))
+
+
 def _split_band(trace: Trace, forks, gray, plot: PlotBox, erased_cols, erased_rows) -> list[Trace]:
     """Two printed lines that run side by side as one band (RQ3E110AJ's
     11.0 A / 5.5 A pair) become two traces: each line's own top from the
@@ -1617,7 +1638,10 @@ def _split_band(trace: Trace, forks, gray, plot: PlotBox, erased_cols, erased_ro
             halves.append((last, y))               # x never decreases downward on a falling curve
         head = list(reversed(fork))
         extension = head + halves
-        new = replace_trace(trace, extension + rest, row_traced_points=extension)
+        # below the steep band the pair runs on stacked in each column: the
+        # left line is the LOWER half there (less RDS at the same VGS)
+        tail = [_column_half(gray, p, side, erased_rows) for p in rest]
+        new = replace_trace(trace, extension + tail, row_traced_points=extension)
         new.tail_from = new.tail_from + [{"kind": "band_split", "side": "left" if side < 0 else "right",
                                           "split_px": [float(split_x), float(split_y)],
                                           "band_rows": len(band),

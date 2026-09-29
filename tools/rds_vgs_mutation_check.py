@@ -460,6 +460,9 @@ MUTANTS = {
     "tip_measured_to_samples (F4-3)": (
         [_source_mutant(traces, "_point_to_trace", ('if trace.method == "raster" and len(trace.points_px) > 1:', "if False:"))],
         [F4 + "test_f4_3_rq3e180aj_ids_bound_by_their_leaders"]),
+    "stacked_pair_read_as_one_line (F4-4)": (
+        [patch.object(traces, "_column_half", lambda gray, point, upper, erased_rows: point)],
+        [F4 + "test_f4_4_rq3e110aj_pair_is_two_lines_side_by_side"]),
     "no_branch_grouping (F4-4)": (
         [patch.object(traces, "group_branches", lambda traces_, plot: traces_)],
         [F4 + "test_f4_4_two_printed_curves_are_two_complete_curves"]),
