@@ -7,7 +7,12 @@ them all passing means the tests do not guard the fix. The baseline (no
 mutant) must pass everything.
 
 Usage (from the repo root):
-    PYTHONPATH=src:tests .venv/bin/python tools/rds_vgs_mutation_check.py [LOG]
+    PYTHONPATH=src:tests .venv/bin/python tools/rds_vgs_mutation_check.py [LOG] \
+        [--jobs N] [--since-commit REV] [--only SUBSTRING ...]
+
+Mutants run N at a time (default: cores - 2), each in its own process on a
+snapshot of src/ tests/ tools/ taken at start; --jobs 1 is the sequential,
+in-process run. The log lines and the summary line are the same either way.
 """
 
 from __future__ import annotations
@@ -15,9 +20,15 @@ from __future__ import annotations
 import contextlib
 import inspect
 import io
+import json
+import os
+import shutil
+import subprocess
 import sys
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
@@ -694,22 +705,147 @@ def run(names: list[str]) -> unittest.TestResult:
     return unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
 
 
-def main() -> int:
-    """Usage: rds_vgs_mutation_check.py [LOG] [--only SUBSTRING ...]
-
-    --only runs the baseline and just the mutants whose label contains one of
-    the substrings (a quick re-check after fixing survivors; the full run is
-    the record)."""
-    args = sys.argv[1:]
+def _select(args: list[str]) -> list[str]:
+    """Apply --only / --since-commit to MUTANTS (and EQUIVALENT_ON_REAL_DATA); return the rest of argv."""
     only = args[args.index("--only") + 1:] if "--only" in args else []
     args = args[:args.index("--only")] if "--only" in args else args
     if only:
         for label in [k for k in MUTANTS if not any(o in k for o in only)]:
             del MUTANTS[label]
         EQUIVALENT_ON_REAL_DATA.clear()
+    if "--since-commit" in args:
+        at = args.index("--since-commit")
+        rev, args = args[at + 1], args[:at] + args[at + 2:]
+        old = subprocess.run(["git", "show", f"{rev}:tools/rds_vgs_mutation_check.py"], cwd=Path(__file__).resolve().parents[1],
+                             capture_output=True, text=True, check=True).stdout
+        for table in (MUTANTS, EQUIVALENT_ON_REAL_DATA):
+            for label in [k for k in table if k in old]:
+                del table[label]
+    return args
+
+
+def _jobs(args: list[str]) -> tuple[int, list[str]]:
+    if "--jobs" not in args:
+        return max(1, (os.cpu_count() or 3) - 2), args
+    at = args.index("--jobs")
+    return max(1, int(args[at + 1])), args[:at] + args[at + 2:]
+
+
+def _killed(result: unittest.TestResult) -> list[str]:
+    killed = [t.id().rsplit(".", 2)[-2] + "." + t.id().rsplit(".", 1)[-1] for t, _ in result.failures + result.errors]
+    return [k.replace("GoldenTests.test_golden_", "GOLDEN:") for k in killed]
+
+
+# ---- parallel mode ---------------------------------------------------------------
+# Mutants patch code IN MEMORY, so they are isolated by running each in its own
+# worker process. All workers import one frozen snapshot of src/, tests/ and
+# tools/ taken at start (under out/, never /tmp), so an edit to the worktree
+# during a long run cannot reach later mutants. Unpatched digitizations and OCR
+# results are shared through the test cache (tests/rds_digitize_cache.py):
+# it refuses any digitization while a mutant is active, so a mutant never reads
+# or writes an unmutated entry.
+
+_RESULT = "@@RESULT "
+
+
+def _worker() -> int:
+    """--worker: read {"kind", "label"|"names"} on stdin, run it, print one result line."""
+    job = json.loads(sys.stdin.read())
+    if job["kind"] == "baseline":
+        base = run(job["names"])
+        out = {"ran": base.testsRun,
+               "failures": [[t.id(), tb] for t, tb in base.failures],
+               "errors": [[t.id(), tb] for t, tb in base.errors],
+               "skipped": [[t.id(), why] for t, why in base.skipped]}
+    else:
+        table = MUTANTS if job["kind"] == "mutant" else EQUIVALENT_ON_REAL_DATA
+        patches, names = table[job["label"]]
+        with contextlib.ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            result = run(names)
+        out = {"ran": result.testsRun, "killed": _killed(result)}
+    print(_RESULT + json.dumps(out), flush=True)
+    return 0
+
+
+def _snapshot(repo: Path) -> Path:
+    root = repo / "out" / "mutation-snapshots" / f"{time.strftime('%Y%m%d-%H%M%S')}-{os.getpid()}"
+    for part in ("src", "tests", "tools"):
+        shutil.copytree(repo / part, root / part, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    return root
+
+
+def _spawn(snap: Path, repo: Path, job: dict) -> dict:
+    env = dict(os.environ, PYTHONPATH=f"{snap / 'src'}{os.pathsep}{snap / 'tests'}",
+               OMP_THREAD_LIMIT=os.environ.get("OMP_THREAD_LIMIT", "1"),
+               DSDIG_TEST_CACHE_DIR=os.environ.get("DSDIG_TEST_CACHE_DIR", str(repo / "out" / "test-cache")))
+    proc = subprocess.run([sys.executable, str(snap / "tools" / Path(__file__).name), "--worker"],
+                          input=json.dumps(job), capture_output=True, text=True, env=env, cwd=repo)
+    lines = [ln for ln in proc.stdout.splitlines() if ln.startswith(_RESULT)]
+    if proc.returncode != 0 or len(lines) != 1:
+        return {"error": f"worker exit {proc.returncode}: {(proc.stderr or proc.stdout).strip()[-800:]}"}
+    return json.loads(lines[0][len(_RESULT):])
+
+
+def _main_parallel(log, jobs: int, all_names: list[str], start: float) -> int:
+    repo = Path(__file__).resolve().parents[1]
+    snap = _snapshot(repo)
+    print(f"# parallel: {jobs} workers, snapshot {snap.relative_to(repo)}", file=sys.stderr, flush=True)
+    base = _spawn(snap, repo, {"kind": "baseline", "names": all_names})
+    if "error" in base:
+        print(f"BASELINE (no mutant): ERROR {base['error']}", file=log, flush=True)
+        return 1
+    print(f"BASELINE (no mutant): ran {base['ran']}, failures {len(base['failures'])}, errors {len(base['errors'])}",
+          file=log, flush=True)
+    for test_id, trace in base["failures"] + base["errors"]:
+        print(f"  BASELINE FAIL {test_id}\n{trace}", file=log)
+    for test_id, why in base["skipped"]:
+        print(f"  BASELINE SKIP (counts as failure) {test_id}: {why}", file=log)
+    work = [("mutant", label) for label in MUTANTS] + [("equivalent", label) for label in EQUIVALENT_ON_REAL_DATA]
+    survived = unexpected = errors = 0
+    with ThreadPoolExecutor(jobs) as pool:
+        futures = [pool.submit(_spawn, snap, repo, {"kind": kind, "label": label}) for kind, label in work]
+        for (kind, label), future in zip(work, futures):     # logged in table order, as they complete
+            result = future.result()
+            if "error" in result:
+                errors += 1
+                print(f"ERROR    {label}: not evaluated ({result['error']})", file=log, flush=True)
+            elif kind == "mutant":
+                verdict = "KILLED" if result["killed"] else "SURVIVED"
+                survived += not result["killed"]
+                print(f"{verdict:8} {label}: ran {result['ran']}; failing: {result['killed']}", file=log, flush=True)
+            else:
+                killed = bool(result["killed"])
+                unexpected += killed
+                print(f"{'KILLED?!' if killed else 'EQUIV':8} {label} (equivalent on all 15 real panels): ran {result['ran']}",
+                      file=log, flush=True)
+    note = f"; NOT EVALUATED (worker errors) {errors}" if errors else ""
+    print(f"mutants {len(MUTANTS)}, survived {survived}; equivalent-on-real-data {len(EQUIVALENT_ON_REAL_DATA)} "
+          f"(unexpectedly killed {unexpected}); seconds {time.time() - start:.0f}{note}", file=log, flush=True)
+    shutil.rmtree(snap, ignore_errors=True)
+    return 1 if survived or unexpected or errors or base["failures"] or base["errors"] or base["skipped"] else 0
+
+
+def main() -> int:
+    """Usage: rds_vgs_mutation_check.py [LOG] [--jobs N] [--since-commit REV] [--only SUBSTRING ...]
+
+    --only runs the baseline and just the mutants whose label contains one of
+    the substrings (a quick re-check after fixing survivors; the full run is
+    the record). --since-commit REV runs just the mutants whose label is not
+    in this file at REV (the ones added since). --jobs N runs N mutants at a
+    time, each in its own process (default: cores - 2); --jobs 1 is the
+    original sequential, in-process run."""
+    args = sys.argv[1:]
+    if args == ["--worker"]:
+        return _worker()
+    args = _select(args)
+    jobs, args = _jobs(args)
     log = open(args[0], "w") if args else sys.stdout
     all_names = sorted({n for _patches, names in MUTANTS.values() for n in names})
     start = time.time()
+    if jobs > 1:
+        return _main_parallel(log, jobs, all_names, start)
     base = run(all_names)
     print(f"BASELINE (no mutant): ran {base.testsRun}, failures {len(base.failures)}, errors {len(base.errors)}",
           file=log, flush=True)
