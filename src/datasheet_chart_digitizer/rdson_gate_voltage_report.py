@@ -333,8 +333,8 @@ def _segments(curve: dict):
     return pts, [(a, b) for a, b in zip(breaks, breaks[1:]) if b > a]
 
 
-NESTED_BASE_WIDTH_PX = 3      # the last (top) curve's line width
-NESTED_STEP_PX = 4            # each earlier curve is this much wider underneath (2 px border per side)
+NESTED_BASE_WIDTH_PX = 2      # the last (top) curve's line width
+NESTED_STEP_PX = 2            # each earlier curve is this much wider underneath (1 px border per side, drawn without anti-aliasing so it stays crisp)
 
 
 def line_widths(curves: list[dict]) -> dict[int, int]:
@@ -368,7 +368,7 @@ def _draw_curves(body, curves: list[dict]) -> None:
             for k in range(a, b - 1):
                 p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
                 p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
-                cv2.line(body, p0, p1, color, width, cv2.LINE_AA)
+                cv2.line(body, p0, p1, color, width, cv2.LINE_8)
             if b - a == 1:
                 cv2.circle(body, (int(round(pts[a, 0])), int(round(pts[a, 1]))), max(2, width // 2), color, -1, cv2.LINE_AA)
         others = [v for i, v in all_pts.items() if i != curve["curve_index"] and len(v)]
