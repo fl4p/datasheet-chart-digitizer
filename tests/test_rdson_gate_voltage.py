@@ -158,14 +158,19 @@ class EndToEndTests(unittest.TestCase):
         self.assertEqual(rows[10.0]["verdict"], "consistent")
         self.assertAlmostEqual(rows[10.0]["chart_mohm"], 4.20, delta=0.08)
 
-    def test_filled_outline_curves_with_unbound_id_labels_go_to_review(self):
+    def test_filled_outline_curves_with_leaderless_id_labels_go_to_review(self):
+        # "ID = 35A" / "ID = 1A" have no leaders; since F5-1 the IDs are bound
+        # by the ID order rule (35 A to the higher curve) and say so; the
+        # coincident tails keep the panel in review
         row = _panel(self.results["FDP8870_onsemi"], 5, "9")
         self.assertEqual(row["trace_method"], "vector")
         self.assertEqual({c["trace_method"] for c in row["curves"]}, {"vector_filled_outline"})
         self.assertEqual(len(row["curves"]), 2)
         self.assertEqual(row["status"], "review_required")
-        self.assertTrue(any("id_a_unknown" in r for r in row["reasons"]), row["reasons"])
-        self.assertEqual(row["validation"]["verdict"], "not_evaluable")
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]}, {"id_order_rule"})
+        self.assertEqual(sorted(c["id_a"] for c in row["curves"]), [1.0, 35.0])
+        self.assertTrue(any("coincident_with" in r for r in row["reasons"]), row["reasons"])
+        self.assertEqual(row["validation"]["verdict"], "verified")
         self.assertTrue(all(c["temperature_c"] == 25.0 for c in row["curves"]))
         self.assertTrue(all(c["parameter_binding"]["temperature_c"] == "page_note_unless_otherwise_noted" for c in row["curves"]))
 
@@ -374,11 +379,12 @@ class RasterTests(unittest.TestCase):
         self.assertEqual([t["value"] for t in row["calibration"]["x_axis"]["ticks"]][-1], 10.0)
         # Two printed curves (11.0 A, 5.5 A) run as one band and then one line
         # (review F4-4): two curves, coincident over the shared line. Both
-        # ID leaders end where the lines touch: the IDs stay unknown and the
-        # panel goes to review, never ok.
+        # ID leaders end where the lines touch, so the IDs are bound by the
+        # ID order rule (F5-1), and the panel goes to review, never ok.
         self.assertEqual(len(row["curves"]), 2)
+        self.assertEqual(sorted(c["id_a"] for c in row["curves"]), [5.5, 11.0])
         for curve in row["curves"]:
-            self.assertIsNone(curve["id_a"])
+            self.assertEqual(curve["parameter_binding"]["id_a"], "id_order_rule")
             self.assertAlmostEqual(_readout(curve, 4.5)["rds_mohm"], 8.62, delta=0.25)
             self.assertTrue(curve["coincident_with"])
         self.assertEqual(row["status"], "review_required")

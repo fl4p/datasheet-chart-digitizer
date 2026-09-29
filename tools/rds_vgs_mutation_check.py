@@ -24,6 +24,7 @@ import numpy as np
 
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes
+from datasheet_chart_digitizer import rdson_gate_voltage_labels as labels
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces
 from datasheet_chart_digitizer import rdson_spec_table as spec
@@ -107,7 +108,7 @@ class _source_mutant:
             source = source.replace(old, new)
         scope = dict(vars(module))
         exec(compile(source, f"<mutant {name}>", "exec"), scope)
-        holders = [m for m in (rgv, report, traces, axes, spec) if getattr(m, name, None) is original]
+        holders = [m for m in (rgv, report, traces, axes, spec, labels) if getattr(m, name, None) is original]
         self._patches = [patch.object(m, name, scope[name]) for m in holders]
         self._stack = None
 
@@ -155,6 +156,7 @@ R3 = "RoundThreeTests."
 L = "RoundThreeLateTests."
 F4 = "RoundFourTests."
 B = "BoundaryTests."
+F5 = "RoundFiveTests."
 
 
 MUTANTS = {
@@ -514,9 +516,98 @@ MUTANTS = {
         [L + "test_r3_14_palette_is_bright_against_black_ink"]),
     "no_halo (R3-14)": (
         [_source_mutant(report, "_draw_curves",
-                        ('cv2.line(body, p0, p1, (255, 255, 255), widths[curve["curve_index"]] + 4, cv2.LINE_AA)', "pass"),
-                        ("cv2.circle(body, centre, width // 2 + 3, (255, 255, 255), -1, cv2.LINE_AA)", "pass"))],
+                        ('_stroke(body, curve, (255, 255, 255), widths[curve["curve_index"]] + 2)', "pass"))],
         [L + "test_r3_14_traces_have_white_halos_over_black_ink"]),
+    # ---- round 5 (Fab's review of the v5 overlays) ---------------------------------
+    "no_id_order_rule (F5-1)": (
+        [patch.object(traces, "bind_by_order_rule", lambda *a, **k: [])],
+        [F5 + "test_f5_1_ids_bound_by_the_order_rule", F5 + "test_f5_1_table_rows_become_evaluable"]),
+    "order_rule_reversed (F5-1)": (
+        [_source_mutant(traces, "bind_by_order_rule", ("ordered = sorted(traces, key=lambda t: above[id(t)])",
+                                                       "ordered = sorted(traces, key=lambda t: -above[id(t)])"))],
+        [F5 + "test_f5_1_ids_bound_by_the_order_rule", F5 + "test_f5_1_the_binding_follows_the_ink_not_the_index"]),
+    "order_rule_ignores_label_count (F5-1)": (
+        [_source_mutant(traces, "bind_by_order_rule", ("if len(printed) != len(traces) or len(traces) < 2:",
+                                                       "if len(traces) < 2 or len(printed) < 2:"))],
+        [F5 + "test_f5_1_mismatched_label_count_stays_unknown"]),
+    "order_rule_overrides_bound_curves (F5-1)": (
+        [_source_mutant(traces, "bind_by_order_rule", (
+            'if any(t.params.get(key) is not None or t.binding.get(key) != "unbound" for t in traces):', "if False:"))],
+        [F5 + "test_f5_1_a_curve_bound_by_other_evidence_is_not_overridden"]),
+    "order_rule_ignores_other_parameter (F5-1)": (
+        [patch.object(traces, "_shares_other_parameter", lambda *a: None)],
+        [F5 + "test_f5_1_varying_temperature_blocks_the_id_rule"]),
+    "ORDER_MARGIN_PX_2.5 (F5-1)": ([patch.object(traces, "ORDER_MARGIN_PX", 2.5)], [F5 + "test_f5_1_separation_margin_is_three_pixels"]),
+    "ORDER_MARGIN_PX_3.5 (F5-1)": ([patch.object(traces, "ORDER_MARGIN_PX", 3.5)], [F5 + "test_f5_1_separation_margin_is_three_pixels"]),
+    "ORDER_MIN_RUN_4 (F5-1)": ([patch.object(traces, "ORDER_MIN_RUN", 4)], [F5 + "test_f5_1_separation_needs_five_columns"]),
+    "ORDER_MIN_RUN_6 (F5-1)": ([patch.object(traces, "ORDER_MIN_RUN", 6)], [F5 + "test_f5_1_separation_needs_five_columns"]),
+    "ORDER_MIN_RUN_1 (F5-1: head flips count)": (
+        [patch.object(traces, "ORDER_MIN_RUN", 1)],
+        [F5 + "test_f5_1_separation_needs_five_columns", F5 + "test_f5_1_crossings"]),
+    "separation_ignores_margin (F5-1: never-separating curves)": (
+        [_source_mutant(traces, "separated_runs", ("sign = 1 if d >= ORDER_MARGIN_PX else -1 if d <= -ORDER_MARGIN_PX else 0",
+                                                   "sign = 1 if d >= 0 else -1"))],
+        [F5 + "test_f5_1_never_separating_curves_stay_unknown", F5 + "test_f5_1_separation_margin_is_three_pixels"]),
+    "id_crossing_allowed (F5-1)": (
+        [_source_mutant(traces, "pair_order", ('if key == "id_a" and changes:', "if False:"))],
+        [F5 + "test_f5_1_crossings"]),
+    "temperature_decided_by_first_run (F5-3)": (
+        [_source_mutant(traces, "pair_order", ("return signs[-1], evidence", "return signs[0], evidence"))],
+        [F5 + "test_f5_1_crossings"]),
+    "temperature_crossings_unlimited (F5-3)": (
+        [_source_mutant(traces, "pair_order", ("if changes > 1:", "if False:"))],
+        [F5 + "test_f5_1_crossings"]),
+    "no_id_order_check (F5-1 swapped labels)": (
+        [patch.object(traces, "_id_order_check", lambda *a: [])],
+        [F5 + "test_f5_1_swapped_leader_ids_are_caught"]),
+    "id_order_check_backwards (F5-1 swapped labels)": (
+        [_source_mutant(traces, "_id_order_check", ("if higher_id is not higher_rds:", "if higher_id is higher_rds:"))],
+        [F5 + "test_f5_1_swapped_leader_ids_are_caught", F5 + "test_f5_1_ids_bound_by_the_order_rule"]),
+    "legend_hides_order_rule (F5-1)": (
+        [patch.object(report, "_ORDER_RULE_NOTE", {})],
+        [F5 + "test_f5_1_legend_names_the_order_rule", F5 + "test_f5_3_brcs_free_labels_bind_by_temperature_order"]),
+    "no_legend_box_reader (F5-3)": (
+        [patch.object(rgv, "read_legend_boxes", lambda *a, **k: [])],
+        [F5 + "test_f5_3_rq3e180aj_box_temperature_is_read", F5 + "test_f5_3_rohm_boxes_give_the_kind"]),
+    "box_reading_does_not_replace_words (F5-3)": (
+        [_source_mutant(rgv, "_add_condition_labels", (
+            "out = [l for l in out if not (x0 <= 0.5 * (l.x0 + l.x1) <= x1 and y0 <= 0.5 * (l.y0 + l.y1) <= y1)]", "pass"))],
+        [F5 + "test_f5_3_rohm_boxes_give_the_kind"]),
+    "no_subscript_reader (F5-3)": (
+        [patch.object(labels, "_read_subscript", lambda *a: (None, ""))],
+        [F5 + "test_f5_3_rohm_boxes_give_the_kind"]),
+    "subscript_not_lowered_accepted (F5-3)": (
+        [_source_mutant(labels, "_read_subscript", ("lowered = (sy + sh) - (ty + th) >= 0.10 * th", "lowered = True"),
+                        ("kind = SUBSCRIPT_KINDS.get(text.lower()) if len(text) == 1 else None", "kind = \"Ta\""))],
+        [F5 + "test_f5_3_subscript_reader_refuses_a_plain_line"]),
+    "grid_cell_taken_as_box (F5-3)": (
+        [_source_mutant(labels, "legend_boxes", ("if not ((off(X0, rules_x) or off(X1, rules_x)) and (off(Y0, rules_y) or off(Y1, rules_y))):",
+                                                  "if False:"))],
+        [F5 + "test_f5_3_boxes_are_framed_boxes_not_grid_cells"]),
+    "no_rule_erased_ocr (F5-3)": (
+        [patch.object(rgv, "ocr_plot_labels_rules_erased", lambda *a, **k: [])],
+        [F5 + "test_f5_3_brcs_free_labels_bind_by_temperature_order"]),
+    "rule_free_reading_overrides (F5-3)": (
+        [_source_mutant(rgv, "_add_condition_labels", ("if not clash:", "if True:"))],
+        [F5 + "test_f5_3_brcs_free_labels_bind_by_temperature_order"]),
+    "no_temperature_order_rule (F5-3)": (
+        [_source_mutant(traces, "bind_by_order_rule", ('if key not in ORDER_RULE_BINDING:', 'if key != "id_a":'))],
+        [F5 + "test_f5_3_brcs_free_labels_bind_by_temperature_order"]),
+    "condition_mismatch_dropped (F5-3)": (
+        [patch.object(report, "condition_mismatch_notes", lambda *a: [])],
+        [F5 + "test_f5_3_brcs_free_labels_bind_by_temperature_order"]),
+    "tube_core_not_restored (F5-2)": (
+        [_source_mutant(report, "_draw_curves", ("body[core > 0] = source[core > 0]", "pass"))],
+        [F5 + "test_f5_2_source_ink_visible_along_every_trace"]),
+    "TRACE_CORE_1px (F5-2)": (
+        [patch.object(report, "TRACE_CORE_PX", 1)],
+        [F5 + "test_f5_2_source_ink_visible_along_every_trace"]),
+    "tube_rails_white (F5-2 opposite: legibility)": (
+        [_source_mutant(report, "_draw_curves", ("_stroke(body, curve, color, width)", "_stroke(body, curve, (255, 255, 255), width)"))],
+        [F5 + "test_f5_2_traces_stay_colourful_beside_the_print", L + "test_r3_14_traces_have_white_halos_over_black_ink"]),
+    "tube_core_whole_width (F5-2 opposite: legibility)": (
+        [_source_mutant(report, "_draw_curves", ("_stroke(core, curve, 255, TRACE_CORE_PX)", "_stroke(core, curve, 255, widths[curve['curve_index']])"))],
+        [F5 + "test_f5_2_traces_stay_colourful_beside_the_print"]),
 }
 
 

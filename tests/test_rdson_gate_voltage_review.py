@@ -40,6 +40,23 @@ def _results(name: str) -> list[dict]:
     return _CACHE[name]
 
 
+def _panel_without(name: str, page: int, diagram: str, reader: str) -> dict:
+    """The panel with one F5-3 label reader switched off -- the v5 reading
+    state, so a guard written for it is still exercised. Cached in _CACHE
+    (the mutation harness clears it for every mutant)."""
+    key = f"{name}|without {reader}"
+    if key not in _CACHE:
+        OUT_ROOT.mkdir(exist_ok=True)
+        off = {"legend_boxes": (rgv, "read_legend_boxes", lambda *a, **k: []),
+               "rule_erased_ocr": (rgv, "ocr_plot_labels_rules_erased", lambda *a, **k: []),
+               "order_rule": (traces_mod, "bind_by_order_rule", lambda *a, **k: [])}[reader]
+        with patch.object(*off), tempfile.TemporaryDirectory(prefix="rdsvgs-review-", dir=OUT_ROOT) as tmp:
+            _CACHE[key], _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
+    rows = [r for r in _CACHE[key] if r["page"] == page and r["diagram"] == diagram]
+    assert len(rows) == 1
+    return rows[0]
+
+
 def _panel(name: str, page: int, diagram: str) -> dict:
     rows = [r for r in _results(name) if r["page"] == page and r["diagram"] == diagram]
     assert len(rows) == 1, [(r["page"], r["diagram"]) for r in _results(name)]
@@ -418,13 +435,19 @@ class RoundTwoTests(unittest.TestCase):
     """Review round 2 (R2-1, R2-4..R2-8), each on the real case it was found on."""
 
     def test_r2_1_single_curve_keeps_the_printed_kind(self):
-        # RQ3E110AJ prints "Ta=25C"; OCR reads "T.=25C" -> the kind is kept as
-        # "T (subscript unread)", not dropped to null.
+        # RQ3E110AJ prints "Ta=25C". Since F5-3 its box is read as a unit and
+        # the subscript on its own: Ta. Without the box reader the plot OCR
+        # reads "T.=25C" -> the kind is kept as "T (subscript unread)", not
+        # dropped to null.
         row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        self.assertEqual({c["temperature_kind"] for c in row["curves"]}, {"Ta"})
+        row = _panel_without("RQ3E110AJ_Rohm", 7, "12", "legend_boxes")
         self.assertEqual({c["temperature_kind"] for c in row["curves"]}, {"T (subscript unread)"})
 
     def test_r2_1_missing_temperature_is_a_reason(self):
-        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        # RQ3E180AJ's box is read since F5-3; with the box reader off the
+        # temperature is unread again, and that must still be a reason
+        row = _panel_without("RQ3E180AJ_Rohm", 7, "12", "legend_boxes")
         for curve in row["curves"]:
             self.assertIsNone(curve.get("temperature_c"))
             self.assertTrue(
@@ -1027,7 +1050,10 @@ class RoundThreeLateTests(unittest.TestCase):
     # -- R3-11: a curve above the table max, bindings unknown -------------------
 
     def test_r3_11_brcs020n03ra_curve_above_table_max_is_recorded_not_judged(self):
-        row = _panel("BRCS020N03RA_LCSC_C22449012", 4, "5")
+        # Since F5-3 BRCS's temperatures are bound (c0 = 125 C) and the
+        # observation is recorded as a condition mismatch (RoundFiveTests).
+        # With the unread "125° C" of v5, the guard must still record it.
+        row = _panel_without("BRCS020N03RA_LCSC_C22449012", 4, "5", "rule_erased_ocr")
         notes = row["validation"]["diagnostics"]
         hit = [n for n in notes if n["vgs_v"] == 4.5 and n["kind"] == "curve_exceeds_table_max_at_table_vgs"]
         self.assertEqual(len(hit), 1, notes)
@@ -1087,9 +1113,13 @@ class RoundThreeLateTests(unittest.TestCase):
                 self.assertEqual(on_ink, [], (name, label))
 
     def test_r3_12_unknown_labels_are_spelled_out(self):
-        legend = " ".join(t for t, _c in report._legend_lines(_panel("RQ3E180AJ_Rohm", 7, "12"), 4000))
+        # F5-1/F5-3 bind both panels now; the v5 reading state (box reader or
+        # order rule off) must still spell the unknowns out
+        row = _panel_without("RQ3E180AJ_Rohm", 7, "12", "legend_boxes")
+        legend = " ".join(t for t, _c in report._legend_lines(row, 4000))
         self.assertIn("T unknown", legend)
-        legend = " ".join(t for t, _c in report._legend_lines(_panel("RQ6E080AJ_Rohm", 7, "12"), 4000))
+        row = _panel_without("RQ6E080AJ_Rohm", 7, "12", "order_rule")
+        legend = " ".join(t for t, _c in report._legend_lines(row, 4000))
         self.assertIn("ID unknown", legend)
 
     # -- R3-13: FDP8870 coincident tails ------------------------------------------
@@ -1152,12 +1182,17 @@ class RoundThreeLateTests(unittest.TestCase):
         body = np.zeros((1000, 1200, 3), dtype=np.uint8)   # all "black ink"
         report._draw_curves(body, row["curves"])
         white = (body >= 230).all(axis=2)
+        widths = report.line_widths(row["curves"])
         for curve in row["curves"]:
             x, y = (int(round(v)) for v in curve["points_px"][len(curve["points_px"]) // 2])
-            window = white[y - 6:y + 7, x - 6:x + 7]
+            # F5-2: the white rim is 1 px outside the tube (its core shows
+            # the print, here black), so it is within half the tube + 2 px
+            reach = widths[curve["curve_index"]] // 2 + 2
+            window = white[y - reach:y + reach + 1, x - reach:x + reach + 1]
             self.assertTrue(window.any(), curve["curve_index"])
             color = np.asarray(report.curve_color(curve), dtype=int)
-            near = np.abs(body[y - 2:y + 3, x - 2:x + 3].astype(int) - color).max(axis=2) <= 40
+            # the colour is on the rails beside the see-through core (F5-2)
+            near = np.abs(body[y - reach:y + reach + 1, x - reach:x + reach + 1].astype(int) - color).max(axis=2) <= 40
             self.assertTrue(near.any(), curve["curve_index"])
 
 
@@ -1236,10 +1271,13 @@ class RoundFourTests(unittest.TestCase):
     def test_f4_3_a_leader_ending_in_touching_lines_names_neither(self):
         # RQ3E110AJ: both ID leaders end in the 11.0 A / 5.5 A band where the
         # two lines touch: IDs stay unknown, and the note says why
+        # (F5-1: the IDs are then bound by the order rule, never by these leaders)
         row = _panel("RQ3E110AJ_Rohm", 7, "12")
-        self.assertEqual({c["id_a"] for c in row["curves"]}, {None})
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]}, {"id_order_rule"})
         self.assertTrue(any("leader_tip_between_touching_curves" in n for n in row["label_binding_notes"]),
                         row["label_binding_notes"])
+        row = _panel_without("RQ3E110AJ_Rohm", 7, "12", "order_rule")
+        self.assertEqual({c["id_a"] for c in row["curves"]}, {None})
 
     def test_f4_3_rq3e180aj_ids_bound_by_their_leaders(self):
         row = _panel("RQ3E180AJ_Rohm", 7, "12")
@@ -1309,6 +1347,347 @@ class RoundFourTests(unittest.TestCase):
             ordered = [widths[c["curve_index"]] for c in sorted(row["curves"], key=lambda c: c["curve_index"])]
             self.assertEqual(ordered, sorted(ordered, reverse=True), name)
             self.assertEqual(len(set(ordered)), len(ordered), name)
+
+
+def _fresh(trace, **params):
+    """A copy of a REAL captured trace with its bindings cleared (or set)."""
+    from dataclasses import replace
+    binding = dict(params.pop("_binding", {}))
+    return replace(trace, params=dict(params), binding=binding)
+
+
+def _shifted(trace, dy: float, x_lo: float, x_hi: float):
+    """The same real trace with its points in [x_lo, x_hi] moved dy px down."""
+    from dataclasses import replace
+    return replace(trace, params={}, binding={},
+                   points_px=[(x, y + dy if x_lo <= x <= x_hi else y) for x, y in trace.points_px])
+
+
+def _captured_crop(name: str, page: int, diagram: str) -> Path:
+    """The panel's crop, rendered exactly as digitize_panel renders it."""
+    import pymupdf
+    row = _panel(name, page, diagram)
+    OUT_ROOT.mkdir(exist_ok=True)
+    target = OUT_ROOT / f"rdsvgs-crop-{name}-p{page}-d{diagram}.png"
+    with pymupdf.open(DS / f"{name}.pdf") as document:
+        pix = document[page - 1].get_pixmap(dpi=row["crop_dpi"], clip=pymupdf.Rect(row["crop_box_pt"]), alpha=False)
+        pix.save(target)
+    return target
+
+
+def _label(value, key="id_a"):
+    return traces_mod.Label(f"{key}={value}", 0, 0, 1, 1, {key: value})
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundFiveTests(unittest.TestCase):
+    """Fab's v5 overlay review (F5-1..F5-3), each on its real case."""
+
+    # -- F5-1: I_D bound by the physical order of the curves ---------------------
+
+    def test_f5_1_ids_bound_by_the_order_rule(self):
+        # at equal VGS the higher-ID curve has the higher RDS(on)
+        for name, page, diagram, vgs, ids in (("RQ3E110AJ_Rohm", 7, "12", 2.5, (11.0, 5.5)),
+                                              ("FDP8870_onsemi", 5, "9", 3.3, (35.0, 1.0))):
+            row = _panel(name, page, diagram)
+            upper, lower = sorted(row["curves"], key=lambda c: -_readout(c, vgs)["rds_mohm"])
+            self.assertEqual((upper["id_a"], lower["id_a"]), ids, name)
+            for curve in row["curves"]:
+                self.assertEqual(curve["parameter_binding"]["id_a"], "id_order_rule", name)
+            self.assertTrue(any(n.startswith("id_a_bound_by_order_rule") for n in row["label_binding_notes"]), name)
+            self.assertFalse(any("id_a_unknown" in r for r in row["reasons"]), name)
+        # RQ6E080AJ: the curves share one band from 1.95 V; above it the 8 A
+        # head lies right of the 4 A head (higher RDS at the same VGS)
+        row = _panel("RQ6E080AJ_Rohm", 7, "12")
+        right, left = sorted(row["curves"], key=lambda c: -c["vgs_range_v"][0])
+        self.assertEqual((right["id_a"], left["id_a"]), (8.0, 4.0))
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]}, {"id_order_rule"})
+
+    def test_f5_1_table_rows_become_evaluable(self):
+        expected = {  # part: {(vgs, id): verdict}
+            "RQ3E110AJ_Rohm": {(4.5, 11.0): "consistent", (2.5, 5.5): "consistent"},
+            "RQ6E080AJ_Rohm": {(4.5, 8.0): "consistent", (2.5, 4.0): "consistent"},
+        }
+        for name, rows in expected.items():
+            row = _panel(name, 7, "12")
+            by_index = {c["curve_index"]: c["id_a"] for c in row["curves"]}
+            for anchor in row["validation"]["anchors"]:
+                key = (anchor["row"]["vgs_v"], anchor["row"]["id_a"])
+                self.assertEqual(anchor["verdict"], rows[key], (name, key, anchor.get("reason")))
+                self.assertEqual(by_index[anchor["curve_index"]], key[1], (name, key))
+            self.assertEqual(row["validation"]["verdict"], "verified", name)
+        row = _panel("FDP8870_onsemi", 5, "9")
+        verdicts = {(a["row"]["vgs_v"], a["row"]["temperature_c"]): a for a in row["validation"]["anchors"]}
+        for key in ((4.5, 25.0), (10.0, 25.0)):
+            self.assertEqual(verdicts[key]["verdict"], "consistent", key)
+            self.assertEqual(verdicts[key]["chart_id_a"], 35.0, key)
+        # no 175 C curve is printed: that row stays not evaluable
+        self.assertEqual(verdicts[(10.0, 175.0)]["verdict"], "not_evaluable")
+
+    def test_f5_1_legend_names_the_order_rule(self):
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        text = " ".join(t for t, _c in report._legend_lines(row))
+        self.assertIn("bound by the ID order rule", text)
+
+    def test_f5_1_swapped_leader_ids_are_caught(self):
+        # known-bad: RQ3E180AJ's REAL traces with the leader-bound IDs swapped
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        left, right = sorted(cap["traces"], key=lambda t: t.points_px[0][0])
+        values, varying = {"id_a": {9.0, 18.0}}, ["id_a"]
+        good = [_fresh(left, id_a=9.0, _binding={"id_a": "leader_line"}),
+                _fresh(right, id_a=18.0, _binding={"id_a": "leader_line"})]
+        self.assertEqual(traces_mod._id_order_check(good, values, varying), [])
+        self.assertEqual([t.params["id_a"] for t in good], [9.0, 18.0])
+        swapped = [_fresh(left, id_a=18.0, _binding={"id_a": "leader_line"}),
+                   _fresh(right, id_a=9.0, _binding={"id_a": "leader_line"})]
+        notes = traces_mod._id_order_check(swapped, values, varying)
+        self.assertTrue(notes and notes[0].startswith("id_binding_contradicts_rdson_order"), notes)
+        self.assertEqual([t.params["id_a"] for t in swapped], [None, None])
+        self.assertEqual({t.binding["id_a"] for t in swapped}, {"contradicted_by_id_order"})
+
+    def test_f5_1_the_binding_follows_the_ink_not_the_index(self):
+        # RQ3E110AJ's real pair, then the same pair in the other order:
+        # 11 A must follow the higher curve
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        a, b = cap["traces"]
+        labels = [_label(11.0), _label(5.5)]
+        for first, second in ((a, b), (b, a)):
+            pair = [_fresh(first, id_a=None, _binding={"id_a": "unbound"}),
+                    _fresh(second, id_a=None, _binding={"id_a": "unbound"})]
+            notes = traces_mod.bind_by_order_rule("id_a", pair, labels, {"id_a": {11.0, 5.5}}, ["id_a"])
+            self.assertTrue(notes[0].startswith("id_a_bound_by_order_rule"), notes)
+            higher = min(pair, key=lambda t: np.median([y for x, y in t.points_px if 398 <= x <= 444]))
+            self.assertEqual(higher.params["id_a"], 11.0)
+            self.assertEqual({t.binding["id_a"] for t in pair}, {"id_order_rule"})
+
+    def test_f5_1_never_separating_curves_stay_unknown(self):
+        # known-bad: two traces of one printed stroke (RQ3E110AJ c0 twice),
+        # and RQ6E080AJ's real pair restricted to its shared band (>= 1.97 V)
+        from dataclasses import replace
+        c0 = _captured("RQ3E110AJ_Rohm")[(7, "12")]["traces"][0]
+        rq6 = _captured("RQ6E080AJ_Rohm")[(7, "12")]
+        axis = rq6["calibration"].x_axis
+        band_x = (1.97 - axis.b) / axis.m
+        tails = [replace(t, points_px=[p for p in t.points_px if p[0] >= band_x]) for t in rq6["traces"]]
+        for pair in ([c0, c0], tails):
+            fresh = [_fresh(t, id_a=None, _binding={"id_a": "unbound"}) for t in pair]
+            notes = traces_mod.bind_by_order_rule("id_a", fresh, [_label(11.0), _label(5.5)], {"id_a": {11.0, 5.5}}, ["id_a"])
+            self.assertEqual([t.params["id_a"] for t in fresh], [None, None])
+            self.assertTrue(notes and notes[0].startswith("id_a_order_rule_not_applied (never"), notes)
+
+    def test_f5_1_mismatched_label_count_stays_unknown(self):
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        for printed in ((11.0, 5.5, 2.2), (11.0,)):
+            fresh = [_fresh(t, id_a=None, _binding={"id_a": "unbound"}) for t in cap["traces"]]
+            notes = traces_mod.bind_by_order_rule("id_a", fresh, [_label(v) for v in printed], {"id_a": set(printed)}, ["id_a"])
+            self.assertEqual(notes, [])
+            self.assertEqual([t.params["id_a"] for t in fresh], [None, None], printed)
+
+    def test_f5_1_a_curve_bound_by_other_evidence_is_not_overridden(self):
+        # RQ3E180AJ: the higher-RDS curve carries a leader-bound 9 A (wrong by
+        # physics), the other is unbound; the order rule must not rebind either
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        left, right = sorted(cap["traces"], key=lambda t: t.points_px[0][0])
+        pair = [_fresh(left, id_a=None, _binding={"id_a": "unbound"}),
+                _fresh(right, id_a=9.0, _binding={"id_a": "leader_line"})]
+        notes = traces_mod.bind_by_order_rule("id_a", pair, [_label(9.0), _label(18.0)], {"id_a": {9.0, 18.0}}, ["id_a"])
+        self.assertEqual(notes, [])
+        self.assertEqual([t.params["id_a"] for t in pair], [None, 9.0])
+
+    def test_f5_1_varying_temperature_blocks_the_id_rule(self):
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        fresh = [_fresh(t, id_a=None, _binding={"id_a": "unbound"}) for t in cap["traces"]]
+        notes = traces_mod.bind_by_order_rule("id_a", fresh, [_label(11.0), _label(5.5)],
+                                              {"id_a": {11.0, 5.5}, "temperature_c": {25.0, 125.0}},
+                                              ["id_a", "temperature_c"])
+        self.assertEqual([t.params["id_a"] for t in fresh], [None, None])
+        self.assertTrue(notes[0].startswith("id_a_order_rule_not_applied (temperature_c varies"), notes)
+
+    def test_f5_1_separation_margin_is_three_pixels(self):
+        # the real RQ3E110AJ c0, and a copy moved down over 12 columns of its
+        # flat tail (x 700..711): 3.0 px apart decides, 2.9 px does not
+        c0 = _captured("RQ3E110AJ_Rohm")[(7, "12")]["traces"][0]
+        self.assertEqual(traces_mod.ORDER_MARGIN_PX, 3.0)
+        self.assertEqual(traces_mod.pair_order(c0, _shifted(c0, 3.0, 700, 711), "id_a")[0], 1)
+        self.assertIsNone(traces_mod.pair_order(c0, _shifted(c0, 2.9, 700, 711), "id_a")[0])
+
+    def test_f5_1_separation_needs_five_columns(self):
+        c0 = _captured("RQ3E110AJ_Rohm")[(7, "12")]["traces"][0]
+        cols = sorted({int(round(x)) for x, _y in c0.points_px if 700 <= x <= 760})
+        self.assertEqual(cols[:6], list(range(cols[0], cols[0] + 6)))
+        five = _shifted(c0, 4.0, cols[0] - 0.5, cols[4] + 0.5)
+        four = _shifted(c0, 4.0, cols[0] - 0.5, cols[3] + 0.5)
+        self.assertEqual(traces_mod.pair_order(c0, five, "id_a")[0], 1)
+        self.assertIsNone(traces_mod.pair_order(c0, four, "id_a")[0])
+
+    def test_f5_1_crossings(self):
+        # SIS176LDN (golden, vector, Tj 125/25 C): the 25 C head lies right of
+        # the 125 C head over 6 columns, then the 125 C curve is above for 356:
+        # one crossing -- physics for temperature, impossible for ID
+        cap = _captured("SIS176LDN_Vishay")[(4, "t491")]
+        hot = next(t for t in cap["traces"] if t.params.get("temperature_c") == 125.0)
+        cold = next(t for t in cap["traces"] if t.params.get("temperature_c") == 25.0)
+        runs = [r for r in traces_mod.separated_runs(hot, cold) if r[3] >= traces_mod.ORDER_MIN_RUN]
+        self.assertEqual([r[0] for r in runs], [-1, 1], runs)
+        self.assertEqual(traces_mod.pair_order(hot, cold, "temperature_c")[0], 1)
+        self.assertIsNone(traces_mod.pair_order(hot, cold, "id_a")[0])
+        # a second change of order, even for temperature, leaves it undecided
+        tail = sorted({int(round(x)) for x, _y in hot.points_px})[-40:]
+        twice = _shifted(hot, 400.0, tail[0] - 0.5, tail[-1] + 0.5)
+        self.assertIsNone(traces_mod.pair_order(twice, cold, "temperature_c")[0])
+
+    # -- F5-3: printed temperatures read --------------------------------------------
+
+    def test_f5_3_rq3e180aj_box_temperature_is_read(self):
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        self.assertEqual(len(row["legend_boxes_read"]), 1, row["legend_boxes_read"])
+        for curve in row["curves"]:
+            self.assertEqual((curve["temperature_c"], curve["temperature_kind"]), (25.0, "Ta"))
+            self.assertEqual(curve["parameter_binding"]["temperature_c"], "panel_condition_shared_by_all_curves")
+        by_id = {c["id_a"]: c["curve_index"] for c in row["curves"]}
+        for anchor in row["validation"]["anchors"]:
+            self.assertEqual(anchor["row"]["id_a"], 18.0)
+            self.assertEqual(anchor["curve_index"], by_id[18.0])
+            self.assertEqual(anchor["verdict"], "consistent", anchor)
+            self.assertEqual(anchor["assumptions"], [])          # chart Ta = table Ta
+        self.assertEqual(row["validation"]["verdict"], "verified")
+        self.assertFalse(any("temperature_c_unknown" in r for r in row["reasons"]), row["reasons"])
+
+    def test_f5_3_rohm_boxes_give_the_kind(self):
+        # the same box on RQ3E110AJ and RQ6E080AJ: block OCR reads "T.=25°C";
+        # the subscript read alone gives the kind (falls out of the box reader)
+        for name in ("RQ3E110AJ_Rohm", "RQ6E080AJ_Rohm"):
+            row = _panel(name, 7, "12")
+            self.assertEqual({(c["temperature_c"], c["temperature_kind"]) for c in row["curves"]}, {(25.0, "Ta")}, name)
+            self.assertTrue(any("subscript read alone: 'a'" in line
+                                for box in row["legend_boxes_read"] for line in box["lines"]), name)
+
+    def test_f5_3_brcs_free_labels_bind_by_temperature_order(self):
+        row = _panel("BRCS020N03RA_LCSC_C22449012", 4, "5")
+        self.assertEqual(row["labels_read_with_grid_rules_erased"], ["125° C"])
+        upper, lower = sorted(row["curves"], key=lambda c: np.median([p[1] for p in c["points_px"]]))
+        self.assertEqual((upper["temperature_c"], lower["temperature_c"]), (125.0, 25.0))
+        for curve in row["curves"]:
+            self.assertEqual(curve["temperature_kind"], "unspecified")      # never guessed
+            self.assertEqual(curve["parameter_binding"]["temperature_c"], "temperature_order_rule")
+        # v5's "curve 0 exceeds table max at 4.5 V" resolves as a condition mismatch
+        self.assertEqual(row["validation"]["diagnostics"], [])
+        notes = row["validation"]["condition_mismatch_notes"]
+        self.assertEqual([(n["curve_index"], n["vgs_v"]) for n in notes], [(upper["curve_index"], 4.5)])
+        self.assertIn("curve 125 C vs row 25 C", notes[0]["text"])
+        self.assertIn("curve ID 20 A vs row ID 10 A", notes[0]["text"])
+        self.assertFalse(any("exceeds_table_max" in r for r in row["reasons"]), row["reasons"])
+        legend = " ".join(t for t, _c in report._legend_lines(row))
+        self.assertIn("resolved: curve 0 lies above the table max", legend)
+        self.assertIn("bound by the temperature order rule", legend)
+
+    def test_f5_3_temperature_rule_known_bads(self):
+        cap = _captured("BRCS020N03RA_LCSC_C22449012")[(4, "5")]
+        values, varying = {"temperature_c": {25.0, 125.0}, "id_a": {20.0}}, ["temperature_c"]
+        labels = [_label(125.0, "temperature_c"), _label(25.0, "temperature_c")]
+        # never separating: one real trace twice
+        same = [_fresh(cap["traces"][0], id_a=20.0, _binding={"temperature_c": "unbound"}) for _ in range(2)]
+        for t in same:
+            t.params["temperature_c"] = None
+        notes = traces_mod.bind_by_order_rule("temperature_c", same, labels, values, varying)
+        self.assertTrue(notes[0].startswith("temperature_c_order_rule_not_applied (never"), notes)
+        self.assertEqual([t.params["temperature_c"] for t in same], [None, None])
+        # a third printed temperature for two curves
+        pair = [_fresh(t, temperature_c=None, id_a=20.0, _binding={"temperature_c": "unbound"}) for t in cap["traces"]]
+        self.assertEqual(traces_mod.bind_by_order_rule("temperature_c", pair, labels + [_label(75.0, "temperature_c")],
+                                                       {**values, "temperature_c": {25.0, 75.0, 125.0}}, varying), [])
+        self.assertEqual([t.params["temperature_c"] for t in pair], [None, None])
+        # swapped temperatures on the real pair are unbound by the order check
+        upper, lower = sorted(cap["traces"], key=lambda t: np.median([p[1] for p in t.points_px]))
+        swapped = [_fresh(upper, temperature_c=25.0, _binding={"temperature_c": "proximity"}),
+                   _fresh(lower, temperature_c=125.0, _binding={"temperature_c": "proximity"})]
+        traces_mod._temperature_order_check(swapped, {25.0, 125.0})
+        self.assertEqual([t.params["temperature_c"] for t in swapped], [None, None])
+
+    def test_f5_3_boxes_are_framed_boxes_not_grid_cells(self):
+        from datasheet_chart_digitizer import rdson_gate_voltage_labels as labels_mod
+        for name, page, diagram, count in (("RQ3E180AJ_Rohm", 7, "12", 1), ("RQ3E110AJ_Rohm", 7, "12", 1),
+                                           ("BRCS020N03RA_LCSC_C22449012", 4, "5", 0),
+                                           ("WSR3090_LCSC_C719278", 3, "2", 0)):
+            cap = _captured(name)[(page, diagram)]
+            grid = cap["row"]["raster_grid_rules_px"]
+            boxes = labels_mod.legend_boxes(cap["gray"], cap["calibration"].plot, grid["x_erased"], grid["y_erased"])
+            self.assertEqual(len(boxes), count, (name, boxes))
+        # a grid cell is bounded by rules on both axes: never a legend box
+        cap = _captured("BRCS020N03RA_LCSC_C22449012")[(4, "5")]
+        grid = cap["row"]["raster_grid_rules_px"]
+        cells = labels_mod.legend_boxes(cap["gray"], cap["calibration"].plot, [], [])
+        self.assertEqual(labels_mod.legend_boxes(cap["gray"], cap["calibration"].plot, grid["x_erased"], grid["y_erased"]), [])
+        # known-bad: without the rules, a text-holding grid cell passes as a
+        # framed box; every such cell has its edges on the rules
+        self.assertTrue(cells)
+        for x0, y0, x1, y1 in cells:
+            for edge, rules in ((x0, grid["x_erased"]), (x1, grid["x_erased"]), (y0, grid["y_erased"]), (y1, grid["y_erased"])):
+                self.assertLessEqual(min(abs(edge - r) for r in rules), labels_mod.BOX_RULE_TOLERANCE_PX, (x0, y0, x1, y1))
+
+    def test_f5_3_subscript_reader_refuses_a_plain_line(self):
+        # the second line of RQ3E180AJ's box, "Pulsed": its "u" is small but
+        # not lowered, so it is no subscript and no kind is read
+        import cv2
+        from datasheet_chart_digitizer import rdson_gate_voltage_labels as labels_mod
+        cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
+        x0, y0, x1, y1 = cap["row"]["legend_boxes_read"][0]["box_px"]
+        window = cap["gray"][y0 + 1:y1 - 1, x0 + 1:x1 - 1]
+        up = cv2.resize(window, None, fx=4.0, fy=4.0, interpolation=cv2.INTER_CUBIC)
+        _t, binary = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        rows = np.flatnonzero((binary < 128).any(axis=1))
+        lower = rows[rows > int(np.median(rows))]
+        box = (0, int(lower.min()), binary.shape[1] - 1, int(lower.max()))
+        OUT_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=OUT_ROOT) as tmp:
+            kind, _text = labels_mod._read_subscript(binary, box, Path(tmp) / "pulsed.png")
+        self.assertIsNone(kind)
+
+    # -- F5-2: the print stays visible along every trace ---------------------------
+
+    def _body_and_crop(self, name, page, diagram):
+        """The REAL overlay body (the crop area of the written overlay) and the crop."""
+        import cv2
+        row = _panel(name, page, diagram)
+        crop = cv2.imread(str(_captured_crop(name, page, diagram)))
+        body = np.array(crop, copy=True)
+        report._draw_curves(body, row["curves"])
+        return row, body, crop
+
+    def test_f5_2_source_ink_visible_along_every_trace(self):
+        # v5 covered it all ("i dont see the original curves"): every dark
+        # source pixel within 1 px of a trace sample must still be there
+        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("RQ3E110AJ_Rohm", 7, "12"),
+                                    ("FDP8870_onsemi", 5, "9")):
+            row, body, crop = self._body_and_crop(name, page, diagram)
+            dark = crop.min(axis=2) < 150
+            for curve in row["curves"]:
+                seen = unchanged = 0
+                for x, y in curve["points_px"]:
+                    xi, yi = int(round(x)), int(round(y))
+                    patch_dark = dark[yi - 1:yi + 2, xi - 1:xi + 2]
+                    same = (body[yi - 1:yi + 2, xi - 1:xi + 2] == crop[yi - 1:yi + 2, xi - 1:xi + 2]).all(axis=2)
+                    seen += int(patch_dark.sum())
+                    unchanged += int((patch_dark & same).sum())
+                self.assertGreater(seen, 0, (name, curve["curve_index"]))
+                self.assertEqual(unchanged, seen, (name, curve["curve_index"], unchanged, seen))
+
+    def test_f5_2_traces_stay_colourful_beside_the_print(self):
+        # the opposite failure: the colours must still show along every trace
+        # (R3-14 legibility), each within its own tube's reach
+        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("RQ3E110AJ_Rohm", 7, "12"),
+                                    ("FDP8870_onsemi", 5, "9")):
+            row, body, _crop = self._body_and_crop(name, page, diagram)
+            widths = report.line_widths(row["curves"])
+            for curve in row["curves"]:
+                color = np.asarray(report.curve_color(curve), dtype=int)
+                reach = widths[curve["curve_index"]] // 2 + 1
+                hits = 0
+                for x, y in curve["points_px"]:
+                    xi, yi = int(round(x)), int(round(y))
+                    window = body[yi - reach:yi + reach + 1, xi - reach:xi + reach + 1].astype(int)
+                    hits += bool((np.abs(window - color).max(axis=2) <= 40).any())
+                self.assertGreaterEqual(hits / len(curve["points_px"]), 0.97, (name, curve["curve_index"]))
 
 
 def _px_at(row: dict, vgs: float) -> float:
