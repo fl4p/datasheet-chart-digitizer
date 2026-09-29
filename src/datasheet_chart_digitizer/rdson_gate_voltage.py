@@ -772,10 +772,12 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
     x_span = max(x_values) - min(x_values)
     refusal = None
     # numbered top to bottom by the median height of the ink the trackers
-    # found; the few points added at the right frame (round 5) are left out
+    # found; the points added at the right frame (round 5) and in unsampled
+    # stretches (F6-1) are left out
     # of the key so they never renumber a near-tied coincident pair
     def height(t: Trace) -> float:
         added = {tuple(p) for p in t.frame_traced.get("measured_px", []) + t.frame_traced.get("across_frame_stroke_px", [])}
+        added |= {tuple(p) for n in t.gap_traced for p in n.get("measured_px", []) + n.get("bridged_on_rule_px", [])}
         return float(np.median([p[1] for p in t.points_px if tuple(p) not in added] or [p[1] for p in t.points_px]))
 
     ordered = sorted(traces, key=height)
@@ -864,6 +866,7 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
         # - gap: no curve ink between the ends in the tracked band.
         removed = trace.contact_removed_x
         kinds: dict[str, list] = {"gap": [], "untraced_section": [], "annotation_contact": []}
+        untraced_why: list[str] = []
         for a, b in zip(points, points[1:]):
             contact = any(a[2] < x < b[2] for x in removed)
             if b[2] - a[2] <= GAP_PX and not contact:
@@ -877,20 +880,28 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
                 kinds["annotation_contact"].append(span)
             elif trace.method == "raster" and _ink_connects(gray, a[2:], b[2:]):
                 kinds["untraced_section"].append(span)
+                untraced_why.append(_untraced_reason(trace, a[2:], b[2:]))
             else:
                 kinds["gap"].append(span)
         curve["gaps"] = sorted(span for spans in kinds.values() for span in spans)
         curve["gap_kinds"] = kinds
+        curve["gap_tracing"] = [_gap_note_json(n, calibration, scale) for n in trace.gap_traced]
+        curve["gap_traced_points_px"] = [[round(x, 2), round(y, 2)] for n in trace.gap_traced
+                                         for x, y in n.get("measured_px", []) + n.get("bridged_on_rule_px", [])]
+        curve["untraced_section_reasons"] = untraced_why
         wording = {
             "gap": "no curve ink traced there",
-            "untraced_section": "ink is continuous there but was not sampled",
             "annotation_contact": "points pulled off the curve by a touching arrow/label were removed",
         }
-        for kind, spans in kinds.items():
+        for kind in ("gap", "annotation_contact"):
+            spans = kinds[kind]
             if spans:
                 listed = ", ".join(f"{g0:.2f}..{g1:.2f} V" for g0, g1 in spans[:6])
                 more = f" +{len(spans) - 6} more" if len(spans) > 6 else ""
                 reasons.append(f"curve_{index}_{kind}s ({listed}{more}; {wording[kind]}; no readout inside)")
+        # F6-1: an unsampled stretch left after tracing says concretely why
+        for (g0, g1), why in zip(kinds["untraced_section"], untraced_why):
+            reasons.append(f"curve_{index}_untraced_section ({g0:.2f}..{g1:.2f} V: {why}; no readout inside)")
         curve["points_removed_as_annotation_contact"] = len(removed)
         curve["annotation_contact_removed_vgs_v"] = [round(calibration.x_axis.value(x), 5) for x in removed]
         stubs = [
@@ -898,12 +909,13 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             for x, y in trace.dropped_stub_points
         ]
         curve["dropped_end_stub_points"] = stubs
+        curve["end_stub_decisions"] = [dict(d) for d in trace.stub_decisions]
         if stubs:
-            where = ", ".join(f"{v:.3g} V/{r:.3g} mOhm" for v, r, _x, _y in stubs)
-            reasons.append(
-                f"curve_{index}_end_stub_points_dropped ({where}; a 1-2 point end cut off by a gap is not "
-                "served -- it may be curve ink at a rule crossing or leader ink)"
-            )
+            # F6-1: each dropped stub says concretely what it is on the page
+            whys = {(round(d["stub_px"][0], 2), round(d["stub_px"][1], 2)): d["why"] for d in trace.stub_decisions}
+            where = "; ".join(f"{v:.3g} V/{r:.3g} mOhm at ({x:.0f}, {y:.0f}) px: "
+                              + whys.get((round(x, 2), round(y, 2)), "not examined") for v, r, x, y in stubs)
+            reasons.append(f"curve_{index}_end_stub_points_dropped ({where}; not served)")
         ink_left = trace.method != "raster" or not open_left or _ink_reaches_frame(gray, trace.points_px[0], plot, "left")
         ink_right = trace.method != "raster" or not open_right or _ink_reaches_frame(gray, trace.points_px[-1], plot, "right")
         curve["trace_complete"]["left_ink_reaches_frame"] = ink_left
@@ -989,6 +1001,26 @@ def _mark_coincident(curves: list[dict], calibration: Calibration) -> list[str]:
                     f"({v0:.2f}..{v1:.2f} V, median separation {sep:.2f} px, max {worst:.2f} px: drawn on top of "
                     "each other there, so both serve the same values; not separable in that range)")
     return reasons
+
+
+def _untraced_reason(trace: Trace, a, b) -> str:
+    """The concrete reason F6-1's tracer left the stretch a..b (crop px)."""
+    for note in trace.gap_traced:
+        if "refused" in note and abs(note["from_px"][0] - a[0]) <= 0.5 and abs(note["to_px"][0] - b[0]) <= 0.5:
+            return note["refused"]
+    return "not followed: this trace did not pass through the F6-1 stretch tracer (raster_traces)"
+
+
+def _gap_note_json(note: dict, calibration: Calibration, scale: float) -> dict:
+    out = {"from_px": [round(v, 2) for v in note["from_px"]], "to_px": [round(v, 2) for v in note["to_px"]],
+           "mode": note["mode"],
+           "vgs_v": [round(calibration.x_axis.value(note["from_px"][0]), 4), round(calibration.x_axis.value(note["to_px"][0]), 4)]}
+    if "refused" in note:
+        out["refused"] = note["refused"]
+    else:
+        out["measured_px"] = [[round(x, 2), round(y, 2)] for x, y in note["measured_px"]]
+        out["bridged_on_rule_px"] = [[round(x, 2), round(y, 2)] for x, y in note["bridged_on_rule_px"]]
+    return out
 
 
 def _ink_reaches_frame(gray, end, plot: PlotBox, side: str) -> bool:

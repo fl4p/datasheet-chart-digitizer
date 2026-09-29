@@ -69,6 +69,8 @@ class Trace:
     row_traced_points: list = field(default_factory=list)   # F4-1: steep head traced row by row
     tail_from: list = field(default_factory=list)            # F4-4: points taken over from a shared tail
     frame_traced: dict = field(default_factory=dict)         # R5: right end traced to the frame
+    gap_traced: list = field(default_factory=list)           # F6-1: unsampled stretches traced on the ink
+    stub_decisions: list = field(default_factory=list)       # F6-1: each dropped end stub, served or why not
 
 
 @dataclass(frozen=True)
@@ -482,7 +484,8 @@ def raster_traces(
     # never extended up a branch that already has its own trace
     out = group_branches(out, plot)
     out = extend_steep_heads(out, gray, plot, erased_cols, erased_rows)
-    return extend_tails_to_frame(out, gray, plot)
+    out = extend_tails_to_frame(out, gray, plot)
+    return fill_unsampled_stretches(out, gray, plot, erased_cols, erased_rows)
 
 
 def _admit_tracks(tracks: list[dict], erased_cols: np.ndarray, width: int, height: int, plot: PlotBox) -> list[dict]:
@@ -1825,6 +1828,267 @@ def extend_tails_to_frame(traces: list[Trace], gray, plot: PlotBox) -> list[Trac
 
 BAND_MIN_WIDTH_PX = 8       # a steep run this wide is two lines side by side
 LINE_HALF_WIDTH_PX = 2.5
+
+
+# ---------------------------------------------------------------------------
+# F6-1: stretches the trackers did not sample, traced on the curve's own ink
+#
+# Between two consecutive samples more than GAP_PX apart (the gate module's
+# 2.5 px), the column and row trackers left stretches where the ink runs on
+# (RQ3E110AJ's steep band below the ID leader tips, grid-rule crossings on
+# WSR3090, merge points on RQ6E080AJ / RQ3E180AJ / BRCS020N03RA). v6 served
+# them as "ink is continuous but was not sampled". Here the ink is followed
+# from one sample to the next, both of which are on the curve:
+#   * steep (|dy| > |dx|): row by row, like F4-1. Rule rows are crossed on the
+#     prediction, never sampled. In a band of two lines side by side (a run
+#     >= BAND_MIN_WIDTH_PX) the curve takes its own half -- the half its ink
+#     is on at the end(s) of the stretch that lie in the band; if its two ends
+#     disagree, or neither end tells, the stretch is refused and says so.
+#   * flat: column by column. A column on a grid rule (the rule within
+#     +-ROW_WINDOW_PX of the prediction, or an erased rule column) cannot be
+#     measured: it is interpolated between the measured columns beside it, as
+#     erased rules are elsewhere; the points say so (bridged).
+# Each step must find ink within ROW_WINDOW_PX + 1 of the path predicted
+# toward the far sample, and the followed path must arrive within
+# GAP_ARRIVAL_PX of it; otherwise nothing is added and the concrete cause is
+# recorded. Points are only ever ADDED: no existing sample moves.
+
+GAP_MIN_PX = 2.5              # the same threshold the gate module lists gaps by (rdson_gate_voltage.GAP_PX)
+GAP_ARRIVAL_PX = 3.0          # the followed ink must end this close to the far sample
+GAP_MAX_RUN_PX = 16           # a longer run is a rule, a leader or a label touching the stroke
+GAP_CHORD_MAX_PX = 6.0        # a stretch this short may be joined straight if every chord pixel is ink
+GAP_MAX_MISS = 3              # rows/columns without the stroke before a stretch is refused (as ROW_MAX_MISS)
+STUB_ON_STROKE_PX = 1.5       # a dropped end stub this close to the curve's own stroke continues it
+_NO_RULES = np.zeros(0, dtype=bool)
+
+
+def _gap_pairs(trace: Trace):
+    pts = sorted(trace.points_px, key=lambda p: (p[0], p[1]))
+    removed = list(trace.contact_removed_x)
+    for a, b in zip(pts, pts[1:]):
+        if b[0] - a[0] <= GAP_MIN_PX:
+            continue
+        if any(a[0] < x < b[0] for x in removed):
+            continue          # an annotation contact (arrow tip): a different, stated kind
+        yield a, b
+
+
+def _on_rule_cols(run, erased_cols) -> bool:
+    return all(0 <= x < len(erased_cols) and erased_cols[x] for x in range(run["x0"], run["x1"] + 1))
+
+
+def _band_side(gray, point, erased_cols) -> int | None:
+    """-1 / +1 when ``point`` is on the left / right half of a two-line band
+    in its row (measured on the raw ink, rules included), 0 when the run is
+    one line wide or the point sits at the band's middle (a coincident, shared
+    sample), None when its row has no run there."""
+    x, y = point
+    runs = [r for r in _row_runs(gray, int(round(y)), int(x) - 14, int(x) + 14, _NO_RULES)
+            if r["x0"] - 1 <= x <= r["x1"] + 1]
+    if not runs:
+        return None
+    run = runs[0]
+    if run["x1"] - run["x0"] + 1 < BAND_MIN_WIDTH_PX or abs(x - run["centre"]) <= 1.0:
+        return 0
+    return -1 if x < run["centre"] else 1
+
+
+def _interpolate_skipped(skipped, anchors, axis: int):
+    """Points for skipped rule rows (axis 1) or rule columns (axis 0),
+    interpolated between the measured anchors on either side."""
+    out = []
+    for v in skipped:
+        before = [p for p in anchors if p[axis] < v]
+        after = [p for p in anchors if p[axis] > v]
+        if not before or not after:
+            continue
+        lo, hi = max(before, key=lambda p: p[axis]), min(after, key=lambda p: p[axis])
+        t = (v - lo[axis]) / (hi[axis] - lo[axis])
+        other = lo[1 - axis] + t * (hi[1 - axis] - lo[1 - axis])
+        out.append((float(v), float(other)) if axis == 0 else (float(other), float(v)))
+    return out
+
+
+def _follow_rows(gray, a, b, plot: PlotBox, erased_cols, erased_rows):
+    """Steep stretch: one point per row on the curve's own ink (or half of a two-line band)."""
+    sides = {s for s in (_band_side(gray, a, erased_cols), _band_side(gray, b, erased_cols)) if s}
+    measured, skipped, (lx, ly), miss = [], [], a, 0
+    for cy in range(int(round(a[1])) + 1, int(round(b[1]))):
+        if 0 <= cy < len(erased_rows) and erased_rows[cy]:
+            skipped.append(cy)
+            continue
+        pred = lx + (b[0] - lx) * (cy - ly) / max(1e-6, b[1] - ly)
+        runs = [r for r in _row_runs(gray, cy, max(plot.x0 + 1, int(pred) - 14), min(plot.x1 - 1, int(pred) + 14), _NO_RULES)
+                if r["x0"] - ROW_WINDOW_PX <= pred <= r["x1"] + ROW_WINDOW_PX and r["x1"] - r["x0"] + 1 <= GAP_MAX_RUN_PX]
+        runs = [r for r in runs if not _on_rule_cols(r, erased_cols)]
+        if not runs:
+            miss += 1
+            if miss > GAP_MAX_MISS:
+                return None, None, f"no ink of one stroke within {ROW_WINDOW_PX:g} px of the path in rows {cy - miss + 1}..{cy}"
+            continue
+        run = min(runs, key=lambda r: abs(r["centre"] - pred))
+        wide = run["x1"] - run["x0"] + 1 >= BAND_MIN_WIDTH_PX
+        if len(run["cores"]) == 2:
+            centre = min(run["cores"], key=lambda c: abs(c - pred))
+        elif wide:
+            if len(sides) != 1:
+                why = "its two ends lie on different halves" if len(sides) > 1 else "neither end shows which half is its own"
+                return None, None, (f"two touching lines print as one {run['x1'] - run['x0'] + 1} px band at row {cy}, "
+                                    f"and {why}: the ink cannot be assigned to this curve")
+            centre = run["x0"] + LINE_HALF_WIDTH_PX if next(iter(sides)) < 0 else run["x1"] - LINE_HALF_WIDTH_PX
+        else:
+            centre = run["centre"]
+        if abs(centre - pred) > ROW_WINDOW_PX + 1:
+            miss += 1
+            if miss > GAP_MAX_MISS:
+                return None, None, f"the ink leaves the path toward the next sample at row {cy}"
+            continue
+        nx = max(centre, lx)                      # a decreasing curve: x does not shrink downward
+        measured.append((float(nx), float(cy)))
+        lx, ly, miss = nx, float(cy), 0
+    return measured, _interpolate_skipped(skipped, [a] + measured + [b], 1), None
+
+
+def _follow_columns(gray, a, b, plot: PlotBox, erased_cols, erased_rows):
+    """Flat stretch: one point per column on the curve's ink; columns on a rule are bridged."""
+    measured, skipped, (lx, ly), miss = [], [], a, 0
+    rule_rows = np.flatnonzero(erased_rows) if len(erased_rows) else np.zeros(0)
+    for cx in range(int(round(a[0])) + 1, int(round(b[0]))):
+        pred = ly + (b[1] - ly) * (cx - lx) / max(1e-6, b[0] - lx)
+        on_rule = (0 <= cx < len(erased_cols) and erased_cols[cx]) or bool(
+            len(rule_rows) and np.min(np.abs(rule_rows - pred)) <= ROW_WINDOW_PX + 1)
+        if on_rule:
+            skipped.append(cx)
+            continue
+        column = gray[plot.y0 + 3:plot.y1 - 2, cx] < ROW_INK_GRAY
+        best, start = None, None
+        for i, dark in enumerate(list(column) + [False]):
+            if dark and start is None:
+                start = i
+            elif not dark and start is not None:
+                centre, length = plot.y0 + 3 + 0.5 * (start + i - 1), i - start
+                if length <= GAP_MAX_RUN_PX and abs(centre - pred) <= ROW_WINDOW_PX + 1:
+                    if best is None or abs(centre - pred) < abs(best - pred):
+                        best = centre
+                start = None
+        if best is None:
+            miss += 1
+            if miss > GAP_MAX_MISS:
+                return None, None, f"no ink of one stroke within {ROW_WINDOW_PX + 1:g} px of the path in columns {cx - miss + 1}..{cx}"
+            continue
+        measured.append((float(cx), float(best)))
+        lx, ly, miss = float(cx), float(best), 0
+    return measured, _interpolate_skipped(skipped, [a] + measured + [b], 0), None
+
+
+def _chord_on_ink(gray, a, b):
+    """Points at every column along the straight chord a..b, if every chord pixel is ink."""
+    length = float(np.hypot(b[0] - a[0], b[1] - a[1]))
+    if length > GAP_CHORD_MAX_PX:
+        return None
+    for t in np.linspace(0.0, 1.0, int(4 * length) + 2):
+        x, y = a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])
+        if gray[int(round(y)), int(round(x))] >= ROW_INK_GRAY:
+            return None
+    return [(float(x), float(a[1] + (b[1] - a[1]) * (x - a[0]) / (b[0] - a[0])))
+            for x in range(int(np.floor(a[0])) + 1, int(np.ceil(b[0])))]
+
+
+def fill_unsampled_stretches(traces: list[Trace], gray, plot: PlotBox, erased_cols, erased_rows) -> list[Trace]:
+    """Trace every unsampled stretch of every raster curve on its own ink (F6-1).
+
+    All or nothing per stretch: the followed points (measured, plus rule rows
+    or columns bridged between them) must leave no step wider than GAP_MIN_PX
+    and must arrive at the far sample; otherwise nothing is added and the
+    concrete cause is recorded. A stretch no longer than GAP_CHORD_MAX_PX
+    whose straight chord is ink at every pixel is joined along the chord.
+    """
+    from dataclasses import replace
+    out = []
+    for trace in traces:
+        if trace.method != "raster" or len(trace.points_px) < 2:
+            out.append(trace)
+            continue
+        added, notes = [], []
+        for a, b in list(_gap_pairs(trace)):
+            steep = abs(b[1] - a[1]) > abs(b[0] - a[0])
+            follow = _follow_rows if steep else _follow_columns
+            measured, bridged, why = follow(gray, a, b, plot, erased_cols, erased_rows)
+            mode = "rows" if steep else "columns"
+            if why is None:
+                off_ink = [p for p in bridged if not _on_ink(gray, p)]
+                if off_ink:
+                    why = (f"a rule crossing bridged from ({a[0]:.1f}, {a[1]:.1f}) to ({b[0]:.1f}, {b[1]:.1f}) would "
+                           f"put {len(off_ink)} point(s) off the ink")
+            if why is None:
+                tail = _chord_on_ink(gray, max(measured + bridged + [a], key=lambda p: (p[0], p[1])), b)
+                if tail:
+                    measured = measured + tail          # the last step into the far sample, on ink
+                path = sorted([a] + measured + bridged + [b], key=lambda p: (p[0], p[1]))
+                step = max(q[0] - p[0] for p, q in zip(path, path[1:]))
+                last = max(measured + bridged + [a], key=lambda p: p[1] if steep else p[0])
+                off = abs(last[0] - b[0]) if steep else abs(last[1] - b[1])
+                if step > GAP_MIN_PX or off > GAP_ARRIVAL_PX:
+                    why = (f"the ink followed from ({a[0]:.1f}, {a[1]:.1f}) does not reach the next sample "
+                           f"({b[0]:.1f}, {b[1]:.1f}): it ends {off:.1f} px off it, largest step {step:.1f} px")
+            if why is not None:
+                chord = _chord_on_ink(gray, a, b)
+                if chord is not None:
+                    measured, bridged, mode, why = chord, [], "chord_on_ink", None
+            note = {"from_px": [float(a[0]), float(a[1])], "to_px": [float(b[0]), float(b[1])], "mode": mode}
+            if why is not None:
+                note["refused"] = why
+            else:
+                note["measured_px"], note["bridged_on_rule_px"] = measured, bridged
+                added.extend(measured + bridged)
+            notes.append(note)
+        stubs, kept_stubs, decisions = list(trace.dropped_stub_points), [], []
+        path = list(trace.points_px) + added
+        for stub in stubs:
+            decision = _stub_decision(gray, stub, path, erased_cols, erased_rows)
+            decisions.append(decision)
+            if decision["served"]:
+                added.append((float(stub[0]), float(stub[1])))
+            else:
+                kept_stubs.append(stub)
+        if not notes and not decisions:
+            out.append(trace)
+            continue
+        out.append(replace(trace, points_px=list(trace.points_px) + added, gap_traced=notes,
+                           dropped_stub_points=kept_stubs, stub_decisions=decisions))
+    return out
+
+
+def _on_ink(gray, point) -> bool:
+    x, y = int(round(point[0])), int(round(point[1]))
+    return bool((gray[max(0, y - 1):y + 2, max(0, x - 1):x + 2] < ROW_INK_GRAY).any())
+
+
+def _stub_decision(gray, stub, path, erased_cols, erased_rows) -> dict:
+    """Serve a dropped end stub that continues the curve's own stroke; else say concretely what it is."""
+    x, y = float(stub[0]), float(stub[1])
+    distance = _polyline_distance((x, y), sorted(path, key=lambda p: (p[1], p[0]))) if len(path) > 1 else float("inf")
+    row = _row_runs(gray, int(round(y)), max(0, int(x) - 30), min(gray.shape[1] - 1, int(x) + 30), _NO_RULES)
+    run = next((r for r in row if r["x0"] <= x <= r["x1"]), None)
+    decision = {"stub_px": [x, y], "distance_to_own_stroke_px": round(distance, 2), "served": False}
+    if distance <= STUB_ON_STROKE_PX and _on_ink(gray, (x, y)):
+        decision["served"] = True
+        decision["why"] = f"on this curve's own stroke ({distance:.1f} px from it)"
+        return decision
+    what = []
+    # a rule's anti-aliased edge rows lie outside its erased core: +-2 px
+    rows = [r for r in range(int(round(y)) - 2, int(round(y)) + 3) if 0 <= r < len(erased_rows) and erased_rows[r]]
+    cols = [c for c in range(int(round(x)) - 2, int(round(x)) + 3) if 0 <= c < len(erased_cols) and erased_cols[c]]
+    if rows:
+        what.append(f"it lies on the horizontal grid rule at rows {rows[0]}..{rows[-1]} where the curve crosses it")
+    if cols:
+        what.append(f"it lies on the vertical grid rule at columns {cols[0]}..{cols[-1]} where the curve crosses it")
+    if run is not None and run["x1"] - run["x0"] + 1 > GAP_MAX_RUN_PX:
+        what.append(f"its row is a {run['x1'] - run['x0'] + 1} px run (a leader or rule joining the stroke)")
+    if not _on_ink(gray, (x, y)):
+        what.append("it is not on ink")
+    decision["why"] = ("; ".join(what) or "it is off the stroke") + f"; {distance:.1f} px from this curve's own stroke"
+    return decision
 
 
 def _track_band_down(gray, x: float, y: float, plot: PlotBox, erased_cols, erased_rows) -> list[tuple[float, int, int]]:
