@@ -236,3 +236,122 @@ class IdentityOnlyLabelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProgressiveMinorChainTests(unittest.TestCase):
+    """NTMFS3D0N08XT1G capacitance, 2026-09-29: with the 1000 pF decade rule
+    missing, the five decade labels registered onto the 6000/700/80/9/1 minor
+    lines -- a near-affine chain (86-88 px steps against 92 px decades) whose
+    label offsets ran -21..-1 px. Such a registration leaves most of the
+    observed minor grid unexplained and must be refused."""
+
+    DECADES = [10000.0, 1000.0, 100.0, 10.0, 1.0]
+    TOP, PITCH = 22.0, 92.4
+
+    def _y(self, value):
+        import math
+
+        return self.TOP + self.PITCH * (4.0 - math.log10(value))
+
+    def _image(self, skip=()):
+        image = np.full((440, 600), 255, dtype=np.uint8)
+        _vline(image, 68, 2, 22, 392)
+        _vline(image, 554, 2, 22, 392)
+        for decade in self.DECADES:
+            if decade not in skip:
+                _hline(image, self._y(decade), 1, 68, 554)
+            if decade < 10000.0:
+                for j in range(2, 10):
+                    _hline(image, self._y(decade * j), 1, 68, 554)
+        return image
+
+    def _labels(self):
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        ticks = [AxisTick(f"{v:g}", v, self._y(v) - 0.5) for v in self.DECADES]
+        return fit_axis_ticks(ticks, "C", model="log10")
+
+    def test_complete_grid_anchors_on_the_decades(self):
+        anchored = anchor_axis_on_grid(
+            self._image(), self._labels(), orientation="y", cross_span=(68, 554), name="C"
+        )
+        for anchor in anchored.anchors:
+            self.assertAlmostEqual(anchor.line_px, self._y(anchor.value), delta=0.6)
+
+    def test_unread_decade_label_still_anchors(self):
+        """TK100E08N1: OCR lost one decade label. The minors of the unlabelled
+        decade are predicted too, so the gap does not read as an unexplained
+        grid and the complete registration is kept."""
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        values = [10000.0, 100.0, 10.0, 1.0]  # "1000" not read
+        ticks = [AxisTick(f"{v:g}", v, self._y(v) - 0.5) for v in values]
+        anchored = anchor_axis_on_grid(
+            self._image(), fit_axis_ticks(ticks, "C", model="log10"),
+            orientation="y", cross_span=(68, 554), name="C",
+        )
+        for anchor in anchored.anchors:
+            self.assertAlmostEqual(anchor.line_px, self._y(anchor.value), delta=0.6)
+
+    def test_missing_decade_rule_does_not_register_onto_a_minor_chain(self):
+        with self.assertRaises(RuntimeError):
+            anchor_axis_on_grid(
+                self._image(skip=(1000.0,)), self._labels(), orientation="y",
+                cross_span=(68, 554), name="C",
+            )
+
+
+class IdentityOnlyShortRegistrationTests(unittest.TestCase):
+    """STP150N10F7AG capacitance, 2026-09-29: curves hugging the 0 V frame hid
+    it, so the "0" label bound to the 5 V gridline and "100" to the frame.
+    Identity-only mode then admitted 20..80 V as unlined labels although the
+    registration put them 0.19 label pitch from their glyphs. Refused now."""
+
+    def test_frame_lost_registration_is_refused(self):
+        left, right, pitch_v = 50.0, 363.0, 5.0
+        px_per_v = (right - left) / 100.0
+        image = np.full((420, 440), 255, dtype=np.uint8)
+        _hline(image, 20, 2, 50, 363)
+        _hline(image, 397, 2, 50, 363)
+        for k in range(1, 21):  # every 5 V incl. the right frame; NO 0 V rule
+            _vline(image, left + k * pitch_v * px_per_v, 1, 20, 397)
+        labels = [AxisTick(f"{v:g}", float(v), left + v * px_per_v) for v in range(0, 101, 20)]
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        axis = fit_axis_ticks(labels, "V", model="linear")
+        for policy in ("refuse", "identity_only"):
+            with self.subTest(policy=policy), self.assertRaises(RuntimeError):
+                anchor_axis_on_grid(
+                    image, axis, orientation="x", cross_span=(20, 397), name="V",
+                    unlined_labels=policy,
+                )
+
+
+class DecorativeGridTests(unittest.TestCase):
+    """STP150N10F7AG capacitance: 22 equal divisions over a 0..120 V frame,
+    labels every 20 V. The rules are not tick positions (100 V falls between
+    two of them), so no registration may seat the labels on them."""
+
+    def test_incommensurate_grid_is_not_a_tick_grid(self):
+        left, right = 52.0, 427.5
+        px_per_v = 3.13
+        image = np.full((420, 460), 255, dtype=np.uint8)
+        _hline(image, 21, 2, 52, 428)
+        _hline(image, 397, 2, 52, 428)
+        for k in range(0, 23):
+            _vline(image, left + k * (right - left) / 22.0, 1, 21, 397)
+        labels = [AxisTick(f"{v:g}", float(v), left + 0.5 + v * px_per_v) for v in range(0, 101, 20)]
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        axis = fit_axis_ticks(labels, "V", model="linear")
+        for policy in ("refuse", "identity_only"):
+            with self.subTest(policy=policy), self.assertRaises(RuntimeError):
+                anchor_axis_on_grid(
+                    image, axis, orientation="x", cross_span=(21, 397), name="V",
+                    unlined_labels=policy,
+                )
+        check = check_served_on_grid(
+            image, axis, labels, orientation="x", cross_span=(21, 397), name="V",
+            unlined_labels="identity_only",
+        )
+        self.assertEqual(check.status, "unverified")

@@ -50,6 +50,18 @@ _LABEL_TO_LINE_PITCH_FRACTION = 0.30
 # A registered hypothesis must place every labelled tick on a line within this.
 _MATCH_TOLERANCE_FRACTION = 0.015
 _MATCH_TOLERANCE_MIN_PX = 1.5
+# An identity-only (unlined interior) label must sit this close, as a fraction
+# of the label pitch, to where the registration puts its value. Tighter than
+# the line search: with nothing under it, its glyph is the only evidence that
+# the registration's scale is right. It must also have NO observed line within
+# this distance of its glyph (STP150N10F7AG: a 0->69 / 100->359 px
+# registration, 7 % short of the label span, put the 20..80 V labels 0.19
+# pitch off their predicted pixels).
+_IDENTITY_ONLY_PITCH_FRACTION = 0.12
+# On a log axis whose minor grid is drawn, a registration may leave at most
+# this fraction of the observed lines inside the labelled span unexplained by
+# its predicted decades + 2..9 minors.
+_LOG_MINOR_UNEXPLAINED_MAX = 0.30
 # A tick mark must be ink over this fraction of its band beside the frame.
 _TICK_MARK_MIN_FILL = 0.80
 
@@ -259,7 +271,7 @@ def identify_tick_lines(
     optional = [identity_only and 0 < i < len(ticks) - 1 for i in range(len(ticks))]
     hypotheses = _register(
         centers, coords, label_px, candidates, match_tol, model,
-        optional=optional, label_search=search,
+        optional=optional, label_search=_IDENTITY_ONLY_PITCH_FRACTION * pitch,
     )
     if not hypotheses:
         raise RuntimeError(
@@ -442,7 +454,18 @@ def _register(
             for k, p in enumerate(predicted):
                 i = int(np.argmin(np.abs(centers - p)))
                 if abs(centers[i] - p) > match_tol:
-                    if optional is not None and optional[k] and abs(label_px[k] - p) <= label_search:
+                    # identity-only: the glyph sits where its value belongs AND
+                    # no observed line is near the glyph -- a label with a rule
+                    # right beside it that the registration does not use is
+                    # evidence against the registration, not an unlined label
+                    # (STP150N10F7AG: a decorative 22-division grid under
+                    # 20 V labels)
+                    if (
+                        optional is not None
+                        and optional[k]
+                        and abs(label_px[k] - p) <= label_search
+                        and float(np.min(np.abs(centers - label_px[k]))) > label_search
+                    ):
                         matched.append(-1)
                         continue
                     break
@@ -456,23 +479,38 @@ def _register(
                 expected = list(predicted)
                 hits = 0
                 if model == "log10":
-                    for lo, hi in zip(coords, coords[1:]):
-                        if not math.isclose(abs(hi - lo), 1.0, abs_tol=1e-9):
-                            continue
-                        base = min(lo, hi)
+                    # the 2..9 minors of EVERY decade inside the labelled
+                    # span, including one whose label was not read (an OCR
+                    # gap such as TK100E08N1's missing "1"), so a gap does not
+                    # leave its minor rules looking unexplained
+                    c_lo, c_hi = float(np.min(coords)), float(np.max(coords))
+                    for base in range(math.floor(c_lo + 1e-9), math.ceil(c_hi - 1e-9)):
                         for j in range(2, 10):
-                            p = a + (base + math.log10(j) - coords[0]) * scale
+                            c = base + math.log10(j)
+                            if not c_lo - 1e-9 <= c <= c_hi + 1e-9:
+                                continue
+                            p = a + (c - coords[0]) * scale
                             expected.append(p)
                             if np.min(np.abs(centers - p)) <= match_tol:
                                 hits += 1
+                        if base > c_lo + 1e-9 and not np.any(np.isclose(coords, base)):
+                            expected.append(a + (base - coords[0]) * scale)
                 lo_px, hi_px = sorted((a, b))
                 expected_arr = np.asarray(expected)
+                inside = [c for c in centers if lo_px + match_tol < c < hi_px - match_tol]
                 unexplained = sum(
-                    1
-                    for c in centers
-                    if lo_px + match_tol < c < hi_px - match_tol
-                    and np.min(np.abs(expected_arr - c)) > match_tol
+                    1 for c in inside if np.min(np.abs(expected_arr - c)) > match_tol
                 )
+                if (
+                    model == "log10"
+                    and len(inside) > 2 * len(coords)
+                    and unexplained > _LOG_MINOR_UNEXPLAINED_MAX * len(inside)
+                ):
+                    # A minor grid is drawn, and this registration leaves most
+                    # of it unexplained: it has seated the decades on a
+                    # near-affine chain of minors (NTMFS3D0N08XT1G with its
+                    # 1000 pF rule lost: 6000/700/80/9/1), not on the decades.
+                    continue
                 on_line = [k for k, i in enumerate(key) if i >= 0]
                 offset = float(np.mean(np.abs(label_px[on_line] - centers[[key[k] for k in on_line]])))
                 out.append((hits - unexplained, offset, key))
