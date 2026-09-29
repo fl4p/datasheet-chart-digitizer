@@ -148,6 +148,7 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
             )
         anchor["verdict"] = verdict
     diagnostics = _max_diagnostics(curves, rows, anchors, calibration, per_px)
+    mismatches = condition_mismatch_notes(curves, rows, calibration, per_px)
     evaluable = [a for a in anchors if a["verdict"] in {"consistent", "inconsistent"}]
     exact = [a for a in evaluable if a.get("condition_match") == "exact"]
     if not rows:
@@ -176,6 +177,7 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
         },
         "anchors": anchors,
         "diagnostics": diagnostics,
+        "condition_mismatch_notes": mismatches,
     }
 
 
@@ -226,6 +228,50 @@ def _max_diagnostics(curves, rows, anchors, calibration, per_px) -> list[dict]:
                 "text": (f"curve {curve['curve_index']} exceeds table max at the table's VGS "
                          f"({value:.3g} > {row.max_mohm:g} mOhm at {row.vgs_v:g} V); "
                          + "; ".join(unknown or ["bindings match the row"])),
+            })
+    return out
+
+
+def condition_mismatch_notes(curves, rows, calibration, per_px) -> list[dict]:
+    """Curves above a table maximum at the table's VGS whose BOUND temperature differs from the row's (F5-3).
+
+    _max_diagnostics leaves these out: a hot curve over a 25 C maximum is
+    expected physics, not a contradiction. They are still recorded, so that
+    an observation a reviewer can see on the overlay (a "x" below a curve)
+    is resolved in writing instead of vanishing. BRCS020N03RA: v5 raised
+    "curve 0 exceeds table max at 4.5 V" with the temperatures unbound;
+    curve 0 is the 125 C curve and the row is 10 A at 25 C.
+    """
+    out = []
+    for row in rows:
+        if row.max_mohm is None:
+            continue
+        for curve in curves:
+            temperature = curve.get("temperature_c")
+            if (not curve.get("usable", True) or not curve.get("points") or temperature is None
+                    or abs(temperature - row.temperature_c) <= TJ_MATCH_C):
+                continue
+            reading = readouts(curve["points"], calibration.y_axis.model == "log10", curve.get("gaps"),
+                               abs(calibration.x_axis.m), targets=(row.vgs_v,))[0]
+            if reading["status"] != "read":
+                continue
+            value = reading["rds_mohm"]
+            if value <= row.max_mohm * (1 + MAX_OVERSHOOT_TOLERANCE) + per_px(value):
+                continue
+            differs = [f"curve {temperature:g} C vs row {row.temperature_c:g} C"]
+            if curve.get("id_a") is not None and row.id_a is not None and abs(curve["id_a"] / row.id_a - 1.0) > EXACT_ID_TOLERANCE:
+                differs.append(f"curve ID {curve['id_a']:g} A vs row ID {row.id_a:g} A")
+            out.append({
+                "kind": "curve_above_table_max_at_other_conditions",
+                "curve_index": curve["curve_index"],
+                "vgs_v": row.vgs_v,
+                "chart_mohm": value,
+                "table_max_mohm": row.max_mohm,
+                "table_temperature_c": row.temperature_c,
+                "curve_temperature_binding": curve.get("parameter_binding", {}).get("temperature_c"),
+                "text": (f"curve {curve['curve_index']} lies above the table max at the table's VGS "
+                         f"({value:.3g} > {row.max_mohm:g} mOhm at {row.vgs_v:g} V), but the conditions differ ("
+                         + "; ".join(differs) + "): a condition mismatch, not a datasheet contradiction"),
             })
     return out
 
@@ -333,55 +379,72 @@ def _segments(curve: dict):
     return pts, [(a, b) for a, b in zip(breaks, breaks[1:]) if b > a]
 
 
-NESTED_BASE_WIDTH_PX = 2      # the last (top) curve's line width
-NESTED_STEP_PX = 2            # each earlier curve is this much wider underneath (1 px border per side, drawn without anti-aliasing so it stays crisp)
+TRACE_CORE_PX = 5             # F5-2: the centre of every trace shows the source crop, unchanged
+TRACE_RAIL_PX = 2             # colour on each side of the core, per nesting level
+NESTED_BASE_WIDTH_PX = TRACE_CORE_PX + 2 * TRACE_RAIL_PX   # the last (top) curve's outer width
+NESTED_STEP_PX = 2 * TRACE_RAIL_PX   # each earlier curve is this much wider underneath (one rail per side, crisp edges)
 
 
 def line_widths(curves: list[dict]) -> dict[int, int]:
-    """Nested widths (review F4-5): c0 widest, each later curve narrower and
-    drawn on top, so every colour shows as a border wherever curves overlap."""
+    """Nested outer widths (review F4-5): c0 widest, each later curve
+    narrower and drawn on top, so every colour shows as a rail wherever
+    curves overlap. Every width includes the see-through core (F5-2)."""
     order = sorted(c["curve_index"] for c in curves)
     return {index: NESTED_BASE_WIDTH_PX + NESTED_STEP_PX * (len(order) - 1 - rank) for rank, index in enumerate(order)}
 
 
+def _stroke(canvas, curve: dict, color, width: int) -> None:
+    """The curve's served segments (breaks at gaps), ``width`` px wide."""
+    pts, segments = _segments(curve)
+    for a, b in segments:
+        for k in range(a, b - 1):
+            p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
+            p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
+            cv2.line(canvas, p0, p1, color, width, cv2.LINE_8)
+        if b - a == 1:
+            cv2.circle(canvas, (int(round(pts[a, 0])), int(round(pts[a, 1]))), max(1, width // 2), color, -1, cv2.LINE_8)
+
+
 def _draw_curves(body, curves: list[dict]) -> None:
-    """One rule on every overlay (review F4-5): solid lines on a white halo,
-    nested widths (c0 widest, later curves narrower on top), no style change
-    along a curve. Coincidence is stated in the data and the legend only.
-    Sample dots are filled in the curve colour with a white rim (R3-14) where
-    no other curve is near; next to another curve a dot stays inside its own
-    line so it hides nothing underneath."""
+    """One rule on every overlay (review F4-5, F5-2): every trace is a
+    coloured tube whose centre shows the source crop unchanged.
+
+    - F5-2 ("i dont see the original curves", WSR3090 v5): the v5 solid
+      lines on a white halo covered the thin black print. Now each trace is
+      two coloured rails around a TRACE_CORE_PX see-through core: the
+      printed stroke shows inside the tube where the trace is on it, and
+      beside or under a rail where the trace is off it.
+    - F4-5: nested widths -- c0 widest, later curves narrower on top -- so
+      on a coincident stretch every colour still shows as its own rail and
+      no curve seems to end under another. No style change along a curve;
+      coincidence is stated in the data and the legend only.
+    - R3-14: the rails are palette colours bright against black ink, with a
+      1 px white rim on the outside; sample rings (hollow, in the curve
+      colour, cut open at the core) mark samples where no other curve is
+      within 8 px.
+    Rendering only: no traced point, readout or status depends on it.
+    """
+    source = body.copy()
     order = sorted(curves, key=lambda c: c["curve_index"])
     widths = line_widths(order)
     all_pts = {c["curve_index"]: np.asarray(c.get("points_px") or np.zeros((0, 2)), dtype=float) for c in order}
     for curve in order:
-        pts, segments = _segments(curve)
-        for a, b in segments:
-            for k in range(a, b - 1):
-                p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
-                p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
-                cv2.line(body, p0, p1, (255, 255, 255), widths[curve["curve_index"]] + 4, cv2.LINE_AA)
+        _stroke(body, curve, (255, 255, 255), widths[curve["curve_index"]] + 2)
     for curve in order:
-        pts, segments = _segments(curve)
+        pts, _unused = _segments(curve)
         color, width = curve_color(curve), widths[curve["curve_index"]]
-        for a, b in segments:
-            for k in range(a, b - 1):
-                p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
-                p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
-                cv2.line(body, p0, p1, color, width, cv2.LINE_8)
-            if b - a == 1:
-                cv2.circle(body, (int(round(pts[a, 0])), int(round(pts[a, 1]))), max(2, width // 2), color, -1, cv2.LINE_AA)
+        _stroke(body, curve, color, width)
         others = [v for i, v in all_pts.items() if i != curve["curve_index"] and len(v)]
         step = max(1, len(pts) // 60)
         for k in range(0, len(pts), step):
             x, y = pts[k]
-            centre = (int(round(x)), int(round(y)))
-            crowded = any((np.hypot(o[:, 0] - x, o[:, 1] - y) < 8).any() for o in others)
-            if crowded:
-                cv2.circle(body, centre, max(1, width // 2), color, -1, cv2.LINE_AA)
-            else:
-                cv2.circle(body, centre, width // 2 + 3, (255, 255, 255), -1, cv2.LINE_AA)
-                cv2.circle(body, centre, width // 2 + 1, color, -1, cv2.LINE_AA)
+            if any((np.hypot(o[:, 0] - x, o[:, 1] - y) < 8).any() for o in others):
+                continue
+            cv2.circle(body, (int(round(x)), int(round(y))), width // 2 + 3, color, 1, cv2.LINE_AA)
+    core = np.zeros(body.shape[:2], dtype=np.uint8)
+    for curve in order:
+        _stroke(core, curve, 255, TRACE_CORE_PX)
+    body[core > 0] = source[core > 0]
 
 
 def _place_curve_labels(body, curves: list[dict], plot) -> list[dict]:
@@ -497,10 +560,11 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
         if match and int(match.group(1)) in curves:
             # the curve's swatch: its line on a white halo, as drawn on the chart
             index = int(match.group(1))
-            swatch, width = curve_color(curves[index]), min(widths[index], line_h - 6)
-            cv2.line(bottom, (6, y - 4), (36, y - 4), (0, 0, 0), width + 4)
-            cv2.line(bottom, (6, y - 4), (36, y - 4), (255, 255, 255), width + 2)
-            cv2.line(bottom, (6, y - 4), (36, y - 4), swatch, width)
+            # (F5-2: a tube with the print -- a thin black stroke -- in its core)
+            swatch, width = curve_color(curves[index]), min(widths[index], line_h - 4)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), swatch, width, cv2.LINE_8)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), (255, 255, 255), TRACE_CORE_PX, cv2.LINE_8)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), (0, 0, 0), 1, cv2.LINE_8)
         cv2.putText(bottom, text, (44, y), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     canvas = np.vstack([top, body, bottom])
     row["overlay_body_offset_px"] = [0, int(top.shape[0])]   # the crop sits here, unscaled
@@ -525,6 +589,11 @@ def _px(axis: NumericAxis, value: float) -> float:
     return (coordinate - axis.b) / axis.m
 
 
+# F5-1 / F5-3: a parameter bound by the physical order of the curves says so
+_ORDER_RULE_NOTE = {
+    "id_order_rule": " (bound by the ID order rule: higher ID, higher RDS)",
+    "temperature_order_rule": " (bound by the temperature order rule: hotter, higher RDS)",
+}
 _STATE_SHORT = {"not_on_chart": "n/c", "not_in_extracted_trace": "not traced", "curve_not_usable": "unusable"}
 _HEADER_WRAP = 118
 
@@ -578,8 +647,10 @@ def _legend_lines(row: dict, width_px: int | None = None):
             else f"{r['vgs_v']:g}V:{_STATE_SHORT.get(r['status'], r['status'])}"
             for r in curve.get("readouts", [])
         )
-        ident = (f"c{curve['curve_index']} {temperature_text(curve)} "
-                 f"{'ID=%gA' % curve['id_a'] if curve.get('id_a') is not None else 'ID unknown'}")
+        binding = curve.get("parameter_binding", {})
+        ident = (f"c{curve['curve_index']} {temperature_text(curve)}{_ORDER_RULE_NOTE.get(binding.get('temperature_c'), '')} "
+                 f"{'ID=%gA' % curve['id_a'] if curve.get('id_a') is not None else 'ID unknown'}"
+                 f"{_ORDER_RULE_NOTE.get(binding.get('id_a'), '')}")
         together = "".join(
             f"; coincident with c{c['curve_index']} {c['from_vgs_v']:.2f}..{c['to_vgs_v']:.2f} V (drawn nested)"
             for c in curve.get("coincident_with", []))
@@ -596,8 +667,11 @@ def _legend_lines(row: dict, width_px: int | None = None):
         lines += _wrapped(text, _ANCHOR_COLOR, width_px)
     for note in row.get("validation", {}).get("diagnostics", []):
         lines += _wrapped(f"diagnostic: {note['text']}", (0, 0, 160), width_px)
-    lines += _wrapped("markers: + table typ, x table max (black), diamond = readout at 2.5/3.3/4.5 V (dashed grey lines)",
-                      (90, 90, 90), width_px)
+    for note in row.get("validation", {}).get("condition_mismatch_notes", []):
+        lines += _wrapped(f"resolved: {note['text']}", (90, 90, 90), width_px)
+    lines += _wrapped("trace = coloured tube whose centre shows the print unchanged (the printed stroke should run inside it); "
+                      "rings = samples; markers: + table typ, x table max (black), diamond = readout at 2.5/3.3/4.5 V "
+                      "(dashed grey lines)", (90, 90, 90), width_px)
     lines += _wrapped("readout states: n/c = not on chart (off the source curve's span); not traced = outside/inside a gap "
                       "of the extracted trace (source may continue)", (90, 90, 90), width_px)
     return lines
