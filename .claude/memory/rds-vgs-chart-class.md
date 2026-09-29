@@ -64,6 +64,13 @@ ends are traced to the frame (the tracker keeps 3 px clear; frame stroke bridged
 to ink seen past it). Open: WSR3090 kind/c0 end/state wording (CHANGELOG "Refusals
 left in v6"); 5 repo-wide test failures in other classes predate round 5.
 
+Round 6 (Fab's v6 review, F6-1, 2026-09-29): fbd00fd..6ad8007; v7 in `batch15_v7/`,
+`CHANGELOG-v6-v7.md`. Every unsampled raster stretch is followed on the curve's own ink
+(rows in steep bands -- own half, measured on RAW ink since a vertical rule can hide a
+band edge; columns with rule columns bridged only on ink); points only added; end stubs
+served or named. Re-blessing/freezing goldens on a coordinator's say-so was blocked by
+the permission check: only Fab's own words authorize it -- REBLESSED/PENDING untouched.
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
