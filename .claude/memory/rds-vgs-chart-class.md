@@ -52,6 +52,18 @@ nested solid widths. BRCS020N03RA added as golden; WSR3090, RQ6E080AJ and
 BRCS020N03RA sit in `PENDING.json` awaiting Fab's re-bless -- never clear it
 yourself.
 
+Round 5 (Fab's v5 review, F5-1..F5-3, 2026-09-29): aaa58fc..6c23a9a; v6 in
+`batch15_v6/`, `CHANGELOG-v5-v6.md`. Fab rejected honest "unknown" where the
+page answers it: IDs/temperatures are now bound by physical RDS order
+(`id_order_rule` / `temperature_order_rule`, guarded: label count = curve count,
+none bound otherwise, other parameter shared, >= 3 px over >= 5 columns, no ID
+crossing). Rohm "Ta=25°C" boxes are read as units (subscript read alone);
+labels crossed by a grid rule via a rule-erased OCR pass. Traces are tubes whose
+5 px core shows the print (F5-2: "i dont see the original curves"). Raster right
+ends are traced to the frame (the tracker keeps 3 px clear; frame stroke bridged only
+to ink seen past it). Open: WSR3090 kind/c0 end/state wording (CHANGELOG "Refusals
+left in v6"); 5 repo-wide test failures in other classes predate round 5.
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
