@@ -47,6 +47,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .capacitance_vector import _is_dark_stroke, _sample_cubic
+from .gridline_anchor import suppress_curve_ink  # noqa: F401  (moved; re-exported)
 from .transfer_retrace import _clip_polyline
 
 CURVE_NAMES = ("Ciss", "Coss", "Crss")
@@ -141,30 +142,6 @@ def own_frame(
         x1=side(True, x1, +1),
         y1=side(False, y1, +1),
     )
-
-
-def suppress_curve_ink(
-    gray: np.ndarray, frame: Frame, *, dark: int = 90, rule_coverage: float = 0.8, pad: int = 3
-) -> np.ndarray:
-    """A copy of ``gray`` with curve ink removed inside the frame, rules kept.
-
-    A flat curve lying along a gridline for a large part of the plot joins
-    that gridline's detected run and drags its centre by a pixel or more
-    (AON6276: the Ciss plateau on the 5000 pF rule moved it 2.5 px).  Curves
-    are darker than grey gridlines; dark rows or columns that span the frame
-    (black frame rails, black gridlines) are kept, every other dark pixel in
-    the frame is painted white before the gridlines are measured.
-    """
-    out = gray.copy()
-    x0, x1 = int(math.floor(frame.x0)) - pad, int(math.ceil(frame.x1)) + pad
-    y0, y1 = int(math.floor(frame.y0)) - pad, int(math.ceil(frame.y1)) + pad
-    sub = out[y0:y1 + 1, x0:x1 + 1]
-    is_dark = sub < dark
-    keep = np.zeros_like(is_dark)
-    keep[is_dark.mean(axis=1) >= rule_coverage, :] = True
-    keep[:, is_dark.mean(axis=0) >= rule_coverage] = True
-    sub[is_dark & ~keep] = 255
-    return out
 
 
 # ------------------------------------------------------------ raster curves

@@ -355,3 +355,97 @@ class DecorativeGridTests(unittest.TestCase):
             unlined_labels="identity_only",
         )
         self.assertEqual(check.status, "unverified")
+
+
+class ScaleDisagreementTests(unittest.TestCase):
+    """TPN19008QM gate charge, 2026-09-29: on the curve-ink-suppressed raster
+    the right-axis 0/4/8 V labels (pitch 104 px) bound to lines at 362/282/205
+    px -- every tick "on a line", but on a registration 25 % shorter than the
+    labels themselves. Vpl moved +0.46 V. Refused now."""
+
+    def test_compressed_registration_is_refused(self):
+        image = np.full((460, 800), 255, dtype=np.uint8)
+        for y in (205, 282, 362):
+            _hline(image, y, 2, 286, 752)
+        labels = [AxisTick("8", 8.0, 178.0), AxisTick("4", 4.0, 282.0), AxisTick("0", 0.0, 386.0)]
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        axis = fit_axis_ticks(labels, "VGS", model="linear")
+        with self.assertRaises(RuntimeError):
+            anchor_axis_on_grid(image, axis, orientation="y", cross_span=(286, 752), name="VGS")
+        check = check_served_on_grid(
+            image, axis, labels, orientation="y", cross_span=(286, 752), name="VGS"
+        )
+        self.assertEqual(check.status, "unverified")
+
+    def test_true_lines_still_anchor(self):
+        image = np.full((460, 800), 255, dtype=np.uint8)
+        for y in (178, 282, 386):
+            _hline(image, y, 2, 286, 752)
+        labels = [AxisTick("8", 8.0, 179.5), AxisTick("4", 4.0, 283.0), AxisTick("0", 0.0, 387.5)]
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        anchored = anchor_axis_on_grid(
+            image, fit_axis_ticks(labels, "VGS", model="linear"), orientation="y",
+            cross_span=(286, 752), name="VGS",
+        )
+        self.assertEqual([round(a.line_px) for a in anchored.anchors], [178, 282, 386])
+
+
+class LinearUnexplainedLinesTests(unittest.TestCase):
+    """IRF644S capacitance: a 2-label axis over a dense minor grid. Counting
+    unexplained rules against a LINEAR registration preferred binding "10" to
+    a minor rule 10 px short of its own rule (fewer rules inside a shorter
+    span). The label offset must rank linear hypotheses instead."""
+
+    def test_short_minor_is_not_preferred(self):
+        image = np.full((420, 400), 255, dtype=np.uint8)
+        for x in (63, 110, 150, 185, 215, 240, 262, 279, 290):
+            _vline(image, x, 1, 20, 380)
+        labels = [AxisTick("1", 1.0, 62.5), AxisTick("10", 10.0, 289.8)]
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        axis = fit_axis_ticks(labels, "V", model="linear")
+        try:
+            anchored = anchor_axis_on_grid(image, axis, orientation="x", cross_span=(20, 380), name="V")
+        except RuntimeError:
+            return  # refusing the near-tie is acceptable
+        line = {a.value: a.line_px for a in anchored.anchors}
+        self.assertAlmostEqual(line[10.0], 290.0, delta=0.6)
+
+
+class SuppressionLostRuleTests(unittest.TestCase):
+    """IRF644S: the black 10^1 rule is broken by white label boxes, so
+    curve-ink suppression erases it and leaves a minor 10 px short as the only
+    candidate. The raw raster shows both lines (an ambiguous tie); the
+    suppressed raster's unique binding must not be served."""
+
+    def _image(self):
+        image = np.full((420, 400), 255, dtype=np.uint8)
+        _vline(image, 63, 3, 20, 380)             # black frame, full height
+        for x in (131, 172, 198, 222, 241, 256, 268, 279):
+            image[20:381, x] = 120                # grey minors survive suppression
+        _vline(image, 290, 2, 20, 380)            # black decade rule ...
+        image[60:180, 285:296] = 255              # ... broken by two label boxes
+        image[240:300, 285:296] = 255
+        return image
+
+    def test_contradictory_rasters_refuse(self):
+        from datasheet_chart_digitizer.gridline_anchor import (
+            anchor_axis_on_grid_attempts,
+            check_served_on_grid_attempts,
+        )
+        from datasheet_chart_digitizer.numeric_axis import fit_axis_ticks
+
+        labels = [AxisTick("1", 1.0, 62.3), AxisTick("10", 10.0, 289.8)]
+        axis = fit_axis_ticks(labels, "V", model="linear")
+        frame = type("F", (), {"x0": 63.0, "y0": 20.0, "x1": 395.0, "y1": 380.0})()
+        with self.assertRaises(RuntimeError):
+            anchor_axis_on_grid_attempts(
+                self._image(), axis, frame=frame, orientation="x", cross_span=(20, 380), name="V"
+            )
+        check = check_served_on_grid_attempts(
+            self._image(), axis, labels, frame=frame, orientation="x",
+            cross_span=(20, 380), name="V",
+        )
+        self.assertEqual(check.status, "unverified")

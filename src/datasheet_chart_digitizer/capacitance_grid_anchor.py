@@ -24,14 +24,16 @@ from dataclasses import replace
 import cv2
 import numpy as np
 
-from .capacitance_retrace import Frame, suppress_curve_ink
+from .capacitance_retrace import Frame
 from .capacitance_types import AxisCalibration, PlotBox
-from .gridline_anchor import AnchoredAxis, GridCheck, anchor_axis_on_grid, check_served_on_grid
+from .gridline_anchor import (
+    AnchoredAxis,
+    GridCheck,
+    anchor_axis_on_grid_attempts,
+    check_served_on_grid_attempts,
+)
 from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 
-# Rules that render lighter than the default ink threshold (hairline grey
-# grids) are retried at this threshold before the axis is given up.
-_LIGHT_RULE_INK_THRESHOLD = 225
 # gridline_anchor reports pixel-INDEX centres (pixel i centred at i); the
 # capacitance calibration, its label pixels (CropTransform.to_px), its vector
 # traces and its own raster seaters ("row indices name the TOP edge of a pixel
@@ -47,28 +49,6 @@ def _to_index(axis: NumericAxis) -> NumericAxis:
 
 def _index_ticks(ticks: list[AxisTick]) -> list[AxisTick]:
     return [AxisTick(t.text, t.value, t.pixel - _INDEX_TO_CONTINUOUS, t.normalized_text) for t in ticks]
-
-
-def _attempts(gray: np.ndarray, plot: PlotBox):
-    """Line-evidence variants, most trustworthy first.
-
-    Curve ink is suppressed first: a steep curve hugging the 0 V frame, or a
-    plateau lying on a rule, widens or drags that line's detected run
-    (capacitance_retrace.suppress_curve_ink). The raw raster follows for grids
-    whose rules are broken by labels (suppression keeps only near-full rules).
-    Every labelled tick must sit on a line first; a secondary pass admits
-    INTERIOR labels between gridlines as identity-only (AO prints 50 pF labels
-    on a 100 pF grid) while the end labels must still sit on lines.
-    """
-    frame = Frame(float(plot.x0), float(plot.y0), float(plot.x1), float(plot.y1))
-    images = (("curve_ink_suppressed", suppress_curve_ink(gray, frame)), ("raw", gray))
-    for policy in ("refuse", "identity_only"):
-        for threshold in (None, _LIGHT_RULE_INK_THRESHOLD):
-            for image_name, image in images:
-                kwargs: dict[str, object] = {"unlined_labels": policy}
-                if threshold is not None:
-                    kwargs["ink_threshold"] = threshold
-                yield f"{image_name}/{policy}/ink<{threshold or 200}", image, kwargs
 
 
 def _gray(image: np.ndarray) -> np.ndarray:
@@ -107,19 +87,16 @@ def _served(calibration: AxisCalibration, axis: str) -> NumericAxis | None:
     return NumericAxis("log10" if log else "linear", float(scale), float(offset), (), 0.0, ())
 
 
+def _frame(plot: PlotBox) -> Frame:
+    return Frame(float(plot.x0), float(plot.y0), float(plot.x1), float(plot.y1))
+
+
 def _anchor(gray, plot, ticks, model, orientation, cross_span, name) -> tuple[AnchoredAxis, str]:
     label_axis = fit_axis_ticks(ticks, name, model=model)  # type: ignore[arg-type]
-    first: RuntimeError | None = None
-    for attempt, image, kwargs in _attempts(gray, plot):
-        try:
-            return anchor_axis_on_grid(
-                image, label_axis, orientation=orientation, cross_span=cross_span,
-                name=name, **kwargs,
-            ), attempt
-        except RuntimeError as exc:
-            first = first or exc
-    assert first is not None
-    raise first
+    return anchor_axis_on_grid_attempts(
+        gray, label_axis, frame=_frame(plot), orientation=orientation,
+        cross_span=cross_span, name=name,
+    )
 
 
 def _value_residual(anchored: AnchoredAxis) -> float:
@@ -214,19 +191,10 @@ def check_axis_on_grid(
     served = _to_index(served)
     ticks = _index_ticks(ticks)
     span = _index_span(span)
-    # The first line-evidence variant that can BIND the labels to lines gives
-    # the verdict (verified or failed); only if none can is it unverified.
-    first: GridCheck | None = None
-    for attempt, image, kwargs in _attempts(gray, plot):
-        check = check_served_on_grid(
-            image, served, ticks, orientation=axis, cross_span=span,
-            name=f"capacitance {axis}", **kwargs,
-        )
-        if check.status != "unverified":
-            return GridCheck(check.status, f"{check.reason} [{attempt}]", check.tolerance_px, check.ticks)
-        first = first or check
-    assert first is not None
-    return first
+    return check_served_on_grid_attempts(
+        gray, served, ticks, frame=_frame(plot), orientation=axis, cross_span=span,
+        name=f"capacitance {axis}",
+    )
 
 
 def grid_check_problems(calibration: AxisCalibration | None) -> tuple[list[str], list[str]]:

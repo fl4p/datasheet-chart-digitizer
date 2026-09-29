@@ -40,6 +40,9 @@ from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 Orientation = Literal["x", "y"]
 UnlinedPolicy = Literal["refuse", "identity_only"]
 
+# Rules that render lighter than the default ink threshold (hairline grey
+# grids) are retried at this threshold by line_evidence_attempts.
+_LIGHT_RULE_INK_THRESHOLD = 225
 # Pixels darker than this count as ink. Gridlines are often mid-grey, so the
 # threshold is well above black but below the anti-aliased paper background.
 _INK_THRESHOLD = 200
@@ -58,12 +61,20 @@ _MATCH_TOLERANCE_MIN_PX = 1.5
 # registration, 7 % short of the label span, put the 20..80 V labels 0.19
 # pitch off their predicted pixels).
 _IDENTITY_ONLY_PITCH_FRACTION = 0.12
+# A registration's end-to-end span may differ from its labels' span by at
+# most this fraction (NTMFS015N15MC, the largest legitimate case in the
+# human-verified capacitance set: end glyphs pushed inward, 1.7 %).
+_MAX_SCALE_DISAGREEMENT = 0.08
 # On a log axis whose minor grid is drawn, a registration may leave at most
 # this fraction of the observed lines inside the labelled span unexplained by
 # its predicted decades + 2..9 minors.
 _LOG_MINOR_UNEXPLAINED_MAX = 0.30
 # A tick mark must be ink over this fraction of its band beside the frame.
 _TICK_MARK_MIN_FILL = 0.80
+
+
+class AmbiguousRegistration(RuntimeError):
+    """Two registrations explain the labels equally well on this raster."""
 
 
 @dataclass(frozen=True)
@@ -283,7 +294,7 @@ def identify_tick_lines(
     ambiguity = max(2.0, 0.1 * pitch)
     for other in hypotheses[1:]:
         if other[2] != best[2] and other[0] == best[0] and other[1] - best[1] < ambiguity:
-            raise RuntimeError(
+            raise AmbiguousRegistration(
                 f"{name}: two grid registrations explain the labels equally well "
                 f"(mean label offset {best[1]:.1f}px vs {other[1]:.1f}px); refusing "
                 "to pick a gridline by proximity alone"
@@ -324,6 +335,7 @@ class GridCheck:
     reason: str
     tolerance_px: float | None
     ticks: tuple[dict[str, object], ...]
+    ambiguous: bool = False  # unverified because two registrations tie
 
     @property
     def max_abs_error_px(self) -> float | None:
@@ -377,6 +389,8 @@ def check_served_on_grid(
             ink_threshold=ink_threshold,
             unlined_labels=unlined_labels,
         )
+    except AmbiguousRegistration as exc:
+        return GridCheck("unverified", str(exc), None, (), ambiguous=True)
     except (RuntimeError, ValueError) as exc:
         return GridCheck("unverified", str(exc), None, ())
     rows = []
@@ -449,6 +463,14 @@ def _register(
             if b == a or np.sign(b - a) != np.sign(label_px[-1] - label_px[0]):
                 continue
             scale = (b - a) / span
+            label_span = label_px[-1] - label_px[0]
+            if abs((b - a) / label_span - 1.0) > _MAX_SCALE_DISAGREEMENT:
+                # Labels are typeset at their values plus a glyph offset; that
+                # offset cannot grow along the axis. A registration whose span
+                # differs from the labels' by more than this has bound them to
+                # other lines (TPN19008QM VGS: 0/4/8 V labels on lines 25 %
+                # short of the label span, offsets -26.8..+24.8 px).
+                continue
             predicted = a + (coords - coords[0]) * scale
             matched: list[int] = []
             for k, p in enumerate(predicted):
@@ -513,7 +535,14 @@ def _register(
                     continue
                 on_line = [k for k, i in enumerate(key) if i >= 0]
                 offset = float(np.mean(np.abs(label_px[on_line] - centers[[key[k] for k in on_line]])))
-                out.append((hits - unexplained, offset, key))
+                # Unexplained lines only count against a LOG registration,
+                # whose minors it predicts. On a linear axis unlabelled rules
+                # between labels are ordinary, and counting them rewarded a
+                # shorter span (IRF644S: "10" bound to a minor 10 px short of
+                # its rule); there the label offset alone ranks hypotheses and
+                # the ambiguity gate refuses near-ties.
+                score = hits - unexplained if model == "log10" else 0
+                out.append((score, offset, key))
     return out
 
 
@@ -608,3 +637,177 @@ def _runs(mask: np.ndarray) -> list[tuple[float, int]]:
             runs.append(((start + index - 1) / 2.0, index - start))
             start = None
     return runs
+
+
+def suppress_curve_ink(
+    gray: np.ndarray, frame, *, dark: int = 90, rule_coverage: float = 0.8, pad: int = 3
+) -> np.ndarray:
+    """A copy of ``gray`` with curve ink removed inside the frame, rules kept.
+
+    *frame* is anything with ``x0/y0/x1/y1`` pixel attributes (the plot frame).
+
+    A flat curve lying along a gridline for a large part of the plot joins
+    that gridline's detected run and drags its centre by a pixel or more
+    (AON6276: the Ciss plateau on the 5000 pF rule moved it 2.5 px).  Curves
+    are darker than grey gridlines; dark rows or columns that span the frame
+    (black frame rails, black gridlines) are kept, every other dark pixel in
+    the frame is painted white before the gridlines are measured.
+    """
+    out = gray.copy()
+    x0, x1 = int(math.floor(frame.x0)) - pad, int(math.ceil(frame.x1)) + pad
+    y0, y1 = int(math.floor(frame.y0)) - pad, int(math.ceil(frame.y1)) + pad
+    sub = out[y0:y1 + 1, x0:x1 + 1]
+    is_dark = sub < dark
+    keep = np.zeros_like(is_dark)
+    keep[is_dark.mean(axis=1) >= rule_coverage, :] = True
+    keep[:, is_dark.mean(axis=0) >= rule_coverage] = True
+    sub[is_dark & ~keep] = 255
+    return out
+
+def line_evidence_attempts(gray: np.ndarray, frame):
+    """Line-evidence levels for anchoring, most trustworthy first.
+
+    Yields lists of ``(name, image, kwargs)`` variants for
+    ``anchor_axis_on_grid`` / ``check_served_on_grid``; the variants of one
+    level are two rasters of the same chart. Curve ink suppressed: a steep
+    curve hugging a frame, or a plateau lying on a rule, widens or drags that
+    line's detected run. Raw: suppression keeps only near-full dark rules, so
+    a black rule broken by label boxes is erased with the curves (IRF644S's
+    10^1 rule). Neither is trusted alone when both bind (see
+    ``anchor_axis_on_grid_attempts``). The first levels require every
+    labelled tick to sit on a line; the later ones admit INTERIOR labels
+    between gridlines as identity-only while the end labels must still sit on
+    lines.
+    """
+    images = (("curve_ink_suppressed", suppress_curve_ink(gray, frame)), ("raw", gray))
+    for policy in ("refuse", "identity_only"):
+        for threshold in (_INK_THRESHOLD, _LIGHT_RULE_INK_THRESHOLD):
+            yield [
+                (
+                    f"{image_name}/{policy}/ink<{threshold}",
+                    image,
+                    {"unlined_labels": policy, "ink_threshold": threshold},
+                )
+                for image_name, image in images
+            ]
+
+
+def _joined(errors: list[tuple[str, str]]) -> str:
+    """Distinct refusal reasons, each with the first attempt that gave it."""
+    seen: dict[str, str] = {}
+    for attempt, message in errors:
+        seen.setdefault(message, attempt)
+    return "; ".join(f"[{attempt}] {message}" for message, attempt in seen.items())
+
+
+def _bindings_disagree(first: dict[float, float], second: dict[float, float], tol: float) -> bool:
+    shared = set(first) & set(second)
+    return any(abs(first[v] - second[v]) > tol for v in shared) or not shared
+
+
+def anchor_axis_on_grid_attempts(
+    gray: np.ndarray,
+    label_axis: NumericAxis,
+    *,
+    frame,
+    orientation: Orientation,
+    cross_span: tuple[float, float],
+    name: str,
+) -> tuple[AnchoredAxis, str]:
+    """``anchor_axis_on_grid`` over ``line_evidence_attempts``.
+
+    The first level at which a raster variant binds the labels decides. If
+    both variants of that level bind but put a labelled value on different
+    lines, the raster evidence is contradictory and the axis is refused;
+    raises with every distinct refusal reason when nothing binds.
+    """
+    errors: list[tuple[str, str]] = []
+    for level in line_evidence_attempts(gray, frame):
+        bound: list[tuple[AnchoredAxis, str]] = []
+        ambiguous: list[str] = []
+        for attempt, image, kwargs in level:
+            try:
+                bound.append((anchor_axis_on_grid(
+                    image, label_axis, orientation=orientation, cross_span=cross_span,
+                    name=name, **kwargs,  # type: ignore[arg-type]
+                ), attempt))
+            except AmbiguousRegistration as exc:
+                ambiguous.append(f"[{attempt}] {exc}")
+                errors.append((attempt, str(exc)))
+            except RuntimeError as exc:
+                errors.append((attempt, str(exc)))
+        if not bound:
+            continue
+        if ambiguous:
+            # One raster binds uniquely only because the other shows a second,
+            # equally good registration: the unique one lost evidence (a black
+            # rule broken by label boxes is erased by curve-ink suppression).
+            raise AmbiguousRegistration(
+                f"{name}: {bound[0][1]} binds the labels, but " + "; ".join(ambiguous)
+            )
+        if len(bound) == 2:
+            (first, first_name), (second, second_name) = bound
+            lines = [{a.value: a.line_px for a in b.anchors} for b, _ in bound]
+            if _bindings_disagree(lines[0], lines[1], first.tolerance_px):
+                raise RuntimeError(
+                    f"{name}: {first_name} and {second_name} bind the labels to different "
+                    f"lines ({lines[0]} vs {lines[1]}); the raster evidence is contradictory"
+                )
+        return bound[0]
+    raise RuntimeError(_joined(errors))
+
+
+def check_served_on_grid_attempts(
+    gray: np.ndarray,
+    served: NumericAxis,
+    label_ticks: Sequence[AxisTick],
+    *,
+    frame,
+    orientation: Orientation,
+    cross_span: tuple[float, float],
+    name: str,
+) -> GridCheck:
+    """``check_served_on_grid`` over ``line_evidence_attempts``.
+
+    The first level at which a raster variant can BIND the labels gives the
+    verdict; if both variants bind but to different lines the result is
+    unverified (contradictory evidence). Only if nothing binds is it
+    unverified for lack of lines; the reason then lists every refusal.
+    """
+    errors: list[tuple[str, str]] = []
+    for level in line_evidence_attempts(gray, frame):
+        bound: list[tuple[GridCheck, str]] = []
+        ambiguous: list[str] = []
+        for attempt, image, kwargs in level:
+            check = check_served_on_grid(
+                image, served, label_ticks, orientation=orientation, cross_span=cross_span,
+                name=name, **kwargs,  # type: ignore[arg-type]
+            )
+            if check.status == "unverified":
+                errors.append((attempt, check.reason))
+                if check.ambiguous:
+                    ambiguous.append(f"[{attempt}] {check.reason}")
+            else:
+                bound.append((check, attempt))
+        if not bound:
+            continue
+        if ambiguous:
+            return GridCheck(
+                "unverified",
+                f"{name}: {bound[0][1]} binds the labels, but " + "; ".join(ambiguous),
+                None,
+                (),
+            )
+        if len(bound) == 2:
+            lines = [{float(t["value"]): float(t["line_px"]) for t in c.ticks} for c, _ in bound]
+            if _bindings_disagree(lines[0], lines[1], float(bound[0][0].tolerance_px or 0.0)):
+                return GridCheck(
+                    "unverified",
+                    f"{name}: {bound[0][1]} and {bound[1][1]} bind the labels to different "
+                    f"lines ({lines[0]} vs {lines[1]}); the raster evidence is contradictory",
+                    None,
+                    (),
+                )
+        check, attempt = bound[0]
+        return GridCheck(check.status, f"{check.reason} [{attempt}]", check.tolerance_px, check.ticks)
+    return GridCheck("unverified", _joined(errors), None, ())
