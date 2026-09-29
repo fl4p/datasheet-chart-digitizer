@@ -285,5 +285,36 @@ class LineDetectorTests(unittest.TestCase):
         self.assertEqual([round(line.center_px) for line in lines], [LEFT, RIGHT])
 
 
+
+class LightRuleInkThresholdTests(unittest.TestCase):
+    """A hairline rule anti-aliased to ~212 grey is ink only above the default.
+
+    NCEP050N12D's 10 pF frame rule renders at 212/220 on two rows at 180 dpi;
+    with the default ink threshold (200) that decade has no line, so the axis
+    refuses. Raising ``ink_threshold`` for such a chart must find it, and the
+    default must keep refusing (the parameter is opt-in).
+    """
+
+    def _light_x_panel(self):
+        image = _panel()
+        for value in X_VALUES[1:-1]:
+            start = int(round(_x_grid(value) - 0.5))
+            image[TOP:BOTTOM + 1, start:start + 2] = 255
+            image[TOP:BOTTOM + 1, int(round(_x_grid(value)))] = 212
+        return image
+
+    def test_default_threshold_refuses_the_light_rules(self):
+        with self.assertRaises(RuntimeError):
+            _anchor_x(self._light_x_panel())
+
+    def test_raised_threshold_anchors_on_them(self):
+        anchored = anchor_axis_on_grid(
+            self._light_x_panel(), _x_labels(), orientation="x", cross_span=(TOP + 4, BOTTOM - 1),
+            name="X", ink_threshold=235,
+        )
+        for value in X_VALUES[1:-1]:
+            self.assertAlmostEqual(served_pixel(anchored.axis, value), round(_x_grid(value)), delta=0.6)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

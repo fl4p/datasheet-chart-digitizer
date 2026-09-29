@@ -124,6 +124,7 @@ def anchor_axis_on_grid(
     orientation: Orientation,
     cross_span: tuple[float, float],
     name: str,
+    ink_threshold: int = _INK_THRESHOLD,
 ) -> AnchoredAxis:
     """Re-seat *label_axis*'s ticks on observed lines, re-fit, and assert.
 
@@ -131,6 +132,9 @@ def anchor_axis_on_grid(
     labels below the plot; ``"y"`` means horizontal lines at y pixels with
     labels left of the plot. *cross_span* is the plot's extent along the other
     axis, used to measure how much of the plot a candidate line covers.
+    *ink_threshold* is the grey level below which a pixel counts as ink; raise
+    it for charts whose hairline rules render lighter than the default (an
+    anti-aliased half-pixel frame rule renders at ~210).
     """
     ticks = sorted(label_axis.ticks, key=lambda tick: tick.pixel)
     if len(ticks) < 2:
@@ -147,6 +151,7 @@ def anchor_axis_on_grid(
         cross_span=cross_span,
         max_width=max(8, int(round(0.08 * pitch))),
         tick_band=max(3, int(round(0.05 * pitch))),
+        ink_threshold=ink_threshold,
     )
     centers = np.asarray([line.center_px for line in lines], dtype=float)
 
@@ -285,6 +290,7 @@ def detect_axis_lines(
     cross_span: tuple[float, float],
     max_width: int,
     tick_band: int,
+    ink_threshold: int = _INK_THRESHOLD,
 ) -> list[ObservedLine]:
     """Find gridlines (and frame-attached tick marks) crossing one axis.
 
@@ -293,7 +299,7 @@ def detect_axis_lines(
     of its dark run, so a thick frame and a hairline gridline are anchored the
     same way.
     """
-    ink = gray < _INK_THRESHOLD
+    ink = gray < ink_threshold
     if orientation == "y":
         ink = ink.T  # rows become columns: lines are always "vertical" below
     height, width = ink.shape
