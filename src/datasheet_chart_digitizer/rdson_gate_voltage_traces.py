@@ -1604,9 +1604,47 @@ def _track_band_down(gray, x: float, y: float, plot: PlotBox, erased_cols, erase
     return rows
 
 
-def _column_half(gray, point, upper: int, erased_rows) -> tuple[float, float]:
+STACK_MAX_SLOPE = 1.0        # columns split a stacked pair only where the curve is this flat
+STACK_MARGIN_PX = 4.0        # a two-line column run exceeds one line's height by this much
+STACK_MIN_RUN = 15           # ... in this many consecutive samples (no toggling on noise)
+
+
+def _local_slopes(points) -> list[float]:
+    """|dy/dx| at each point, from its neighbours four places away."""
+    pts = np.asarray(points, dtype=float)
+    out = []
+    for k in range(len(pts)):
+        a, b = pts[max(0, k - 4)], pts[min(len(pts) - 1, k + 4)]
+        out.append(abs(b[1] - a[1]) / max(1.0, abs(b[0] - a[0])))
+    return out
+
+
+def _column_halves(gray, points, upper: int, erased_rows) -> list[tuple[float, float]]:
+    """Each point's half of a stacked two-line run, applied only over
+    stretches of >= STACK_MIN_RUN consecutive two-line samples."""
+    halves = [_column_half(gray, p, upper, erased_rows, slope) for p, slope in zip(points, _local_slopes(points))]
+    split = [h != tuple(p) and h != p for h, p in zip(halves, points)]
+    out, k = list(points), 0
+    while k < len(points):
+        if not split[k]:
+            k += 1
+            continue
+        j = k
+        while j < len(points) and split[j]:
+            j += 1
+        if j - k >= STACK_MIN_RUN:
+            out[k:j] = halves[k:j]
+        k = j
+    return out
+
+
+def _column_half(gray, point, upper: int, erased_rows, slope: float = 0.0) -> tuple[float, float]:
     """This line's half of a two-line column run at ``point``; the point
-    itself where the run is one line thick, or touches a rule row."""
+    itself where the run is one line thick (a sloped line's column run is
+    taller: allowed for), where the curve is steeper than STACK_MAX_SLOPE,
+    or where the run touches a rule row."""
+    if slope > STACK_MAX_SLOPE:
+        return point
     x, y = int(round(point[0])), int(round(point[1]))
     if not (0 <= x < gray.shape[1] and 0 <= y < gray.shape[0]) or gray[y, x] >= ROW_INK_GRAY:
         return point
@@ -1616,7 +1654,8 @@ def _column_half(gray, point, upper: int, erased_rows) -> tuple[float, float]:
     while y1 + 1 < gray.shape[0] and gray[y1 + 1, x] < ROW_INK_GRAY:
         y1 += 1
     height = y1 - y0 + 1
-    if height < BAND_MIN_WIDTH_PX or height > 16 or erased_rows[max(0, y0 - 1):y1 + 2].any():
+    one_line = 2 * LINE_HALF_WIDTH_PX * math.sqrt(1.0 + slope * slope)
+    if height < one_line + STACK_MARGIN_PX or height > 16 or erased_rows[max(0, y0 - 1):y1 + 2].any():
         return point
     return (point[0], float(y0 + LINE_HALF_WIDTH_PX if upper > 0 else y1 - LINE_HALF_WIDTH_PX))
 
@@ -1640,7 +1679,7 @@ def _split_band(trace: Trace, forks, gray, plot: PlotBox, erased_cols, erased_ro
         extension = head + halves
         # below the steep band the pair runs on stacked in each column: the
         # left line is the LOWER half there (less RDS at the same VGS)
-        tail = [_column_half(gray, p, side, erased_rows) for p in rest]
+        tail = _column_halves(gray, rest, side, erased_rows)
         new = replace_trace(trace, extension + tail, row_traced_points=extension)
         new.tail_from = new.tail_from + [{"kind": "band_split", "side": "left" if side < 0 else "right",
                                           "split_px": [float(split_x), float(split_y)],
