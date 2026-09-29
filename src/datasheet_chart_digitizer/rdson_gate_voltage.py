@@ -73,6 +73,7 @@ from .rdson_gate_voltage_axes import (
     _y_unit,
     ocr_plot_labels,
 )
+from .rdson_gate_voltage_labels import ocr_plot_labels_rules_erased, read_legend_boxes
 from .rdson_gate_voltage_locate import KIND, LocatedPanel, locate_panels
 from .rdson_gate_voltage_report import (
     READOUT_NOTE,
@@ -283,6 +284,11 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         row["raster_leaders_px"] = [{"tail": [round(v, 1) for v in l.points[0]], "tip": [round(v, 1) for v in l.points[-1]]}
                                     for l in raster_lines]
         row["labels_read_at_arrow_tails"] = [l.text for l in tail_labels]
+        plot_labels = _add_condition_labels(
+            plot_labels, row,
+            read_legend_boxes(gray, calibration.plot, grid.get("x_erased", []), grid.get("y_erased", []), out_dir, panel, stem),
+            ocr_plot_labels_rules_erased(gray, calibration.plot, grid.get("x_erased", []), grid.get("y_erased", []),
+                                         out_dir, panel, stem))
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
     binding_notes.extend(_apply_page_temperature_note(traces, page))
     curves, curve_reasons, refusal = _curves(traces, calibration, scale, gray)
@@ -644,6 +650,38 @@ def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels) -> list[
             px0, py0 = transform.to_px(ax, ay)
             px1, py1 = transform.to_px(bx, by)
             out.append(Label(text, px0, py0, px1, py1, parse_label_params(text)))
+    return out
+
+
+def _add_condition_labels(plot_labels: list[Label], row: dict, boxes, rule_free: list[Label]) -> list[Label]:
+    """Merge the F5-3 readings into the plot labels (raster panels).
+
+    - A framed box that yielded a parsed line is read as a unit: every
+      other source's word centred inside it is replaced by the box reading
+      (RQ3E110AJ: "T.=25°" from the plot OCR -> "Ta=25°C" from the box).
+    - A rule-free reading is added only where no parsed label already
+      overlaps it: it fills what the other sources missed and never
+      overrides them.
+    Both are recorded on the row, for provenance.
+    """
+    out = list(plot_labels)
+    read_boxes = [(box, labels) for box, labels in boxes if labels]
+    for box, labels in read_boxes:
+        x0, y0, x1, y1 = box
+        out = [l for l in out if not (x0 <= 0.5 * (l.x0 + l.x1) <= x1 and y0 <= 0.5 * (l.y0 + l.y1) <= y1)]
+        out.extend(labels)
+    row["legend_boxes_read"] = [{"box_px": [int(v) for v in box], "lines": [l.text for l in labels]} for box, labels in boxes]
+    added = []
+    for label in rule_free:
+        clash = any(
+            other.params and min(label.x1, other.x1) > max(label.x0, other.x0)
+            and min(label.y1, other.y1) > max(label.y0, other.y0)
+            for other in out
+        )
+        if not clash:
+            out.append(label)
+            added.append(label.text)
+    row["labels_read_with_grid_rules_erased"] = added
     return out
 
 
