@@ -42,6 +42,16 @@ The mutation harness (105 mutants + 2 documented equivalents) runs the goldens
 with every mutant. Tick labels of the Rohm image charts are OCR, not text layer;
 FDP8870's tails are coincident in the source PDF (drawings 716/719).
 
+Round 4 (Fab's v4 review, F4-1..F4-5, 2026-09-29): 46a0309..dff9261; v5 in
+`batch15_v5/`, `CHANGELOG-v4-v5.md`. Raster steep heads are row-traced to the
+frame, branches take over their shared tail (never served alone), touching
+line pairs split into halves only on clear evidence, arrows/leaders followed
+straight to their tip (tip in touching lines names neither). Overlay: v3 tick
+style (Fab rejected the R3-10 bands -- do not re-add unrequested rendering),
+nested solid widths. BRCS020N03RA added as golden; WSR3090, RQ6E080AJ and
+BRCS020N03RA sit in `PENDING.json` awaiting Fab's re-bless -- never clear it
+yourself.
+
 **Why:** a later session will find the branch and the batch and must not treat
 `ok` as human-verified or batch the class further.
 **How to apply:** no further batch use before the Codex review and Fab's overlay
