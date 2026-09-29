@@ -182,6 +182,48 @@ class Bat54wEndToEndTests(unittest.TestCase):
         self.assertLess(hot, 2e-4)
         self.assertAlmostEqual(math.log10(hot / cool), 3.26, delta=0.3)
 
+    # Gridline centres measured on the 400 dpi crop by a raster column/row ink
+    # profile (2026-09-29). The frame rules are 5 px thick (389-393, 1149-1153,
+    # 308-312, 994-998); their centres are used, like every other line.
+    GRID_X = {0: 391.0, 5: 517.0, 10: 644.0, 15: 770.5, 20: 897.5, 25: 1024.5, 30: 1151.0}
+    GRID_Y = {1000: 310.0, 100: 447.5, 10: 585.0, 1: 720.5, 0.1: 858.0, 0.01: 996.0}
+
+    def test_served_calibration_lands_on_the_gridlines(self):
+        """The label-centre fit this replaced missed them by up to 6.9 px (x)
+        and 5.7 px (y) while reporting a 1.4 px y residual against its labels."""
+        from datasheet_chart_digitizer.gridline_anchor import served_pixel
+        from datasheet_chart_digitizer.numeric_axis import NumericAxis
+
+        result = self.results[0]
+        for key, grid in (("x_axis", self.GRID_X), ("y_axis", self.GRID_Y)):
+            payload = result[key]
+            axis = NumericAxis(
+                payload["model"], payload["m"], payload["b"], (), 0.0, ()
+            )
+            anchoring = result[f"{key}_anchoring"]
+            self.assertEqual(anchoring["residual_basis"], "observed_lines")
+            self.assertEqual(len(anchoring["ticks"]), len(grid))
+            for value, line in grid.items():
+                with self.subTest(axis=key, value=value):
+                    self.assertLessEqual(abs(served_pixel(axis, value) - line), 1.0)
+            self.assertLessEqual(anchoring["max_served_error_px"], 1.0)
+
+    def test_25v_label_offset_is_measured_not_served(self):
+        """Fab's catch: the "25" glyph sits ~12 px right of its gridline."""
+        ticks = {t["value"]: t for t in self.results[0]["x_axis_anchoring"]["ticks"]}
+        self.assertAlmostEqual(ticks[25.0]["label_offset_px"], 12.2, delta=1.0)
+        self.assertAlmostEqual(ticks[25.0]["line_px"], 1024.5, delta=0.6)
+
+    def test_eightyfive_c_value_pinned_after_grid_anchoring(self):
+        """Ir(85 C, 1.34 V) = 8.30 uA on the gridline-anchored calibration.
+
+        The label-centre calibration served 8.68 uA at the same point
+        (-0.0195 decade, -4.4 %); across the served curves the anchoring moved
+        Vr by -0.10..+0.27 V and log10(Ir) by -0.010..-0.036 decade.
+        """
+        value = interpolate_leakage(self.results[0], 1.34, 85.0)
+        self.assertAlmostEqual(math.log10(value), math.log10(8.30e-6), delta=0.01)
+
     def test_eightyfive_c_interpolation_is_bounded_by_its_neighbours(self):
         result = self.results[0]
         lower = max(c["points"][0][0] for c in result["curves"])

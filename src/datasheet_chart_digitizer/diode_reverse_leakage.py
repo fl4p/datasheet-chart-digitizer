@@ -64,6 +64,7 @@ from .diode_forward_voltage import (
     _panel_temperatures,
 )
 from .find_charts import ChartPanel, process_pdf
+from .gridline_anchor import AnchoredAxis, anchor_axis_on_grid, served_pixel
 from .numeric_axis import fit_numeric_axis, tick_aligned_plot
 from .overlay import draw_axis_ticks, draw_plot_frame
 
@@ -120,7 +121,7 @@ def digitize_panels_fail_closed(
 def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     """Digitize one already-owned reverse-leakage panel, or refuse."""
     crop_path = out_dir / panel.crop_png
-    calibration = _calibrate(panel, crop_path)
+    calibration, anchoring = _calibrate(panel, crop_path)
     _require_reverse_leakage_axes(calibration)
 
     temperatures = _panel_temperatures(panel)
@@ -150,8 +151,9 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     )
     diagnostics = _verify_no_crossing(assigned)
     diagnostics.append(f"current_axis_unit_read_from_panel_as_{current_unit}")
+    diagnostics.append("axis_ticks_anchored_on_observed_gridlines")
 
-    overlay = _draw_overlay(crop_path, calibration, assigned, panel)
+    overlay = _draw_overlay(crop_path, calibration, assigned, panel, current_unit)
     overlay_path = (
         out_dir / "overlays" / panel.part / f"p{panel.page:02d}_d{panel.diagram}.png"
     )
@@ -167,6 +169,8 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         "hint_source": calibration.hint_source,
         "x_axis": _axis_payload(calibration.x_axis),
         "y_axis": _axis_payload(calibration.y_axis),
+        "x_axis_anchoring": anchoring["x"].payload(),
+        "y_axis_anchoring": anchoring["y"].payload(),
         "curves": assigned,
         "overlay": str(overlay_path.relative_to(out_dir)),
     }
@@ -210,8 +214,10 @@ def _current_unit_scale(panel: ChartPanel) -> tuple[float, str]:
     return _SI_PREFIXES[prefix], f"{prefix}A"
 
 
-def _calibrate(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
-    """Calibrate from LABEL GEOMETRY rather than from the shared plot hint.
+def _calibrate(
+    panel: ChartPanel, crop_path: Path
+) -> tuple[PanelCalibration, dict[str, AnchoredAxis]]:
+    """Identify ticks from LABEL GEOMETRY, then anchor them on the GRIDLINES.
 
     ``diode_forward_voltage.calibrate_panel`` selects tick ladders from bands
     measured relative to ``_plot_hint``'s detected frame. That is right when the
@@ -241,6 +247,16 @@ def _calibrate(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
 
     Both are then required to fit an axis model whose residual is small, so a
     coincidental alignment that does not actually form a scale still fails.
+
+    That label fit only IDENTIFIES which value each gridline carries. Labels sit
+    beside their gridlines, not on them -- on BAT54W-G the "25" glyph centre is
+    12 px right of the 25 V gridline and the "100" decade label 5.6 px below
+    its rule -- so a mapping fitted to label centres misses the grid while its
+    residual, measured against the same labels, looks clean. Every served pixel
+    is therefore re-seated on the observed gridline (or frame tick mark) by
+    ``gridline_anchor.anchor_axis_on_grid``, the axis is re-fitted on those
+    line centres, and the served mapping is asserted at every consumed tick;
+    a label with no line under it, or a miss beyond tolerance, fails closed.
     """
     image = cv2.imread(str(crop_path), cv2.IMREAD_GRAYSCALE)
     if image is None:
@@ -277,14 +293,36 @@ def _calibrate(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
         name="X axis",
     )
 
+    # The label ladders IDENTIFY the tick values; the served pixels come from
+    # the gridlines under them. Each axis's lines are measured across the span
+    # the OTHER axis's labels cover, which is the plot's extent on that axis.
+    x_label_px = [tick.pixel for tick in x_axis.ticks]
+    anchored_x = anchor_axis_on_grid(
+        image,
+        x_axis,
+        orientation="x",
+        cross_span=(min(y_positions), max(y_positions)),
+        name="X axis",
+    )
+    anchored_y = anchor_axis_on_grid(
+        image,
+        y_axis,
+        orientation="y",
+        cross_span=(min(x_label_px), max(x_label_px)),
+        name="Y axis",
+    )
+    x_axis, y_axis = anchored_x.axis, anchored_y.axis
     hint = PlotBox(
-        int(min(tick.pixel for tick in x_axis.ticks)),
-        int(min(y_positions)),
-        int(max(tick.pixel for tick in x_axis.ticks)),
-        int(max(y_positions)),
+        int(round(min(tick.pixel for tick in x_axis.ticks))),
+        int(round(min(tick.pixel for tick in y_axis.ticks))),
+        int(round(max(tick.pixel for tick in x_axis.ticks))),
+        int(round(max(tick.pixel for tick in y_axis.ticks))),
     )
     plot = tick_aligned_plot(x_axis, y_axis, hint)
-    return PanelCalibration(plot, x_axis, y_axis, hint, "label_geometry")
+    calibration = PanelCalibration(
+        plot, x_axis, y_axis, hint, "label_identity_gridline_anchored"
+    )
+    return calibration, {"x": anchored_x, "y": anchored_y}
 
 
 def _fit_ladder(
@@ -492,6 +530,7 @@ def _draw_overlay(
     calibration: PanelCalibration,
     curves: list[dict[str, object]],
     panel: ChartPanel,
+    current_unit: str,
 ):
     image = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
     assert image is not None
@@ -517,7 +556,7 @@ def _draw_overlay(
     )
     cv2.putText(
         image,
-        "AXES: IR (A, log) versus VR (V)",
+        f"AXES: IR ({current_unit} as printed, log; served in A) versus VR (V)",
         (5, header_y + 27),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.38,
@@ -546,16 +585,20 @@ def _draw_overlay(
             color,
             1,
         )
+    # Crosshairs come from the SERVED mapping (value -> pixel), not from any
+    # observed position, so a calibration that misses the grid shows it here.
+    x_axis, y_axis = calibration.x_axis, calibration.y_axis
     draw_axis_ticks(
         image,
         plot,
-        x_ticks=[(t.pixel, t.value) for t in calibration.x_axis.ticks],
-        y_ticks=[(t.pixel, t.value) for t in calibration.y_axis.ticks],
+        x_ticks=[(served_pixel(x_axis, t.value), t.value) for t in x_axis.ticks],
+        y_ticks=[(served_pixel(y_axis, t.value), t.value) for t in y_axis.ticks],
         color=(255, 0, 0),
         marker_size=8,
         font_scale=0.32,
         unit_x=" V",
-        unit_y=" A",
+        # tick values are the printed numbers, so they carry the PRINTED unit
+        unit_y=f" {current_unit}",
         line_aa=True,
         halo=True,
     )
