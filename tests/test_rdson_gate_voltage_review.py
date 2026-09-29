@@ -741,6 +741,19 @@ class RoundThreeTests(unittest.TestCase):
         for curve in row["curves"]:
             self.assertTrue(curve["trace_complete"]["left_end_at_frame"], curve["trace_complete"])
         self.assertFalse(any("both ends inside the plot" in r for r in row["reasons"]))
+        # the v3 case itself, now that F4-1 traces heads to the frame: the 4 A
+        # branch as v3 served it (golden fixture c1, 17 points starting 8 px
+        # below the frame) must still be usable because its INK reaches the
+        # frame, and must say that its head was not traced
+        cap = _captured("RQ6E080AJ_Rohm")[(7, "12")]
+        fixture = Path(__file__).resolve().parent / "fixtures" / "rds_vgs_golden" / "RQ6E080AJ_Rohm" / "points_c1.csv"
+        branch = [tuple(float(v) for v in line.split(",")[2:4]) for line in fixture.read_text().splitlines()[1:]]
+        self.assertEqual(len(branch), 17)
+        curves, reasons, _ = rgv._curves([traces_mod.Trace(branch, "raster", None, 0)], cap["calibration"],
+                                         cap["scale"], cap["gray"])
+        self.assertTrue(curves[0]["trace_complete"]["left_ink_reaches_frame"])
+        self.assertIs(curves[0]["usable"], True)
+        self.assertTrue(any(r.startswith("curve_0_head_not_traced_to_frame") for r in reasons), reasons)
 
     # -- R3-7 / N3-5 ------------------------------------------------------------
 
@@ -985,30 +998,31 @@ class RoundThreeLateTests(unittest.TestCase):
     # -- R3-10 as reverted by F4-2: the v3 tick marks, every used tick --------
 
     def test_f4_2_every_used_tick_is_drawn_in_the_v3_style_on_the_plot(self):
-        calls = []
-        real = report.draw_axis_ticks
-
-        def spy(image, plot, **kwargs):
-            calls.append((image.shape, kwargs))
-            return real(image, plot, **kwargs)
-
-        for name, page, diagram in (("RQ3E110AJ_Rohm", 7, "12"), ("FDP8870_onsemi", 5, "9")):
-            calls.clear()
-            _CACHE.pop(name, None)
-            with patch.object(report, "draw_axis_ticks", spy):
-                row = _panel(name, page, diagram)
-            self.assertEqual(len(calls), 1, name)
-            shape, kwargs = calls[0]
-            self.assertEqual(sorted(v for _p, v in kwargs["x_ticks"]),
-                             sorted(t["value"] for t in row["calibration"]["x_axis"]["ticks"]), name)
-            self.assertEqual(sorted(v for _p, v in kwargs["y_ticks"]),
-                             sorted(t["value"] for t in row["calibration"]["y_axis"]["ticks"]), name)
-            self.assertEqual(kwargs["color"], (255, 0, 0))   # blue "+" markers, as in v3
+        # rendered on the real panel and read back from the PNG: a blue v3
+        # "+" at every used tick, on the crop itself (no white band around it)
+        import cv2
+        for name in ("RQ3E110AJ_Rohm", "FDP8870_onsemi"):
+            cap = next(iter(_captured(name).values()))
+            row = dict(cap["row"])
+            gray = cap["gray"]
+            image = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+            panel = type("P", (), {"part": row["part"], "page": row["page"], "diagram": row["diagram"], "title": row["title"]})
+            OUT_ROOT.mkdir(exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix="rdsvgs-ticks-", dir=OUT_ROOT) as tmp:
+                report.write_overlay(image, row, Path(tmp), panel, "t", cap["calibration"], "mOhm")
+                canvas = cv2.imread(str(Path(tmp) / row["overlay"]))
+            dx, dy = row["overlay_body_offset_px"]
+            body = canvas[dy:dy + gray.shape[0], dx:dx + gray.shape[1]].astype(int)
+            self.assertEqual(body.shape[:2], gray.shape)
+            blue = (body[:, :, 0] > 180) & (body[:, :, 1] < 90) & (body[:, :, 2] < 90)
+            plot = cap["calibration"].plot
+            for tick in cap["calibration"].x_axis.ticks:
+                x = int(round(tick.pixel))
+                self.assertTrue(blue[plot.y1 - 6:plot.y1 + 7, x - 2:x + 3].any(), (name, "x", tick.value))
+            for tick in cap["calibration"].y_axis.ticks:
+                y = int(round(tick.pixel))
+                self.assertTrue(blue[y - 2:y + 3, plot.x0 - 6:plot.x0 + 7].any(), (name, "y", tick.value))
             self.assertNotIn("overlay_tick_marks", row)
-            # drawn on the crop itself: no white axis band added around it
-            box = row["crop_box_pt"]
-            self.assertLessEqual(abs(shape[1] - (box[2] - box[0]) * row["crop_dpi"] / 72), 2, (name, shape))
-            self.assertLessEqual(abs(shape[0] - (box[3] - box[1]) * row["crop_dpi"] / 72), 2, (name, shape))
 
     # -- R3-11: a curve above the table max, bindings unknown -------------------
 
@@ -1180,6 +1194,11 @@ class RoundFourTests(unittest.TestCase):
             off = [(x, y) for x, y in traced
                    if gray[int(y), max(0, int(round(x)) - 2):int(round(x)) + 3].min() >= 150]
             self.assertLessEqual(len(off), 0.02 * len(traced), (name, off[:5]))
+            # rule rows are crossed on the prediction, never sampled: a row on
+            # a grid rule is rule ink (RQ3E110AJ's 28 mOhm rule read as curve)
+            rules = cap["row"]["raster_grid_rules_px"]["y_erased"]
+            on_rule = [(x, y) for x, y in traced if any(abs(y - r) <= 1.0 for r in rules)]
+            self.assertEqual(on_rule, [], name)
 
     def test_f4_1_an_untraced_head_is_stated_plainly(self):
         # the same real panel with the row tracker off: the ink still runs to

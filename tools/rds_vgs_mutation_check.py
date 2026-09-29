@@ -225,7 +225,11 @@ MUTANTS = {
         ["RoundTwoTests.test_r2_8_unsampled_stretch_on_continuous_ink_is_an_untraced_section"]),
     "orphan_edge_point_kept (R2-8)": (
         [patch.object(traces, "_drop_orphan_ends", lambda points, erased: (list(points), []))],
-        ["RoundTwoTests.test_r2_8_continuous_ink_is_not_called_a_gap"]),
+        # since F4-1 the R2-8 test no longer sees the lone edge point (the head
+        # is traced to the frame over it); the stub rule is pinned by R3-5
+        ["RoundTwoTests.test_r2_8_continuous_ink_is_not_called_a_gap",
+         R3 + "test_r3_5_dropped_stub_points_are_recorded_and_are_on_ink",
+         R3 + "test_r3_5_stub_length_and_remainder_boundaries"]),
     "floating_text_fragment_kept (Codex #3)": (
         [patch.object(traces, "_floating_flat_fragment", lambda *a: False)],
         ["RasterCoverageHonestyTests"]),
@@ -434,12 +438,13 @@ MUTANTS = {
     "no_row_tracking (F4-1)": (
         [patch.object(traces, "extend_steep_heads", lambda traces_, *a: traces_)],
         [F4 + "test_f4_1_steep_heads_reach_the_top_frame"]),
-    "row_tracker_stops_at_first_rule (F4-1)": (
-        [patch.object(traces, "ROW_MAX_MISS", 0), patch.object(traces, "ROW_WINDOW_PX", 0.5)],
-        [F4 + "test_f4_1_steep_heads_reach_the_top_frame"]),
+    "row_tracker_samples_rule_rows (F4-1)": (
+        [_source_mutant(traces, "_track_up", ("if 0 <= cy < len(erased_rows) and erased_rows[cy]:", "if False:"))],
+        [F4 + "test_f4_1_steep_heads_reach_the_top_frame", F4 + "test_f4_1_row_traced_points_are_on_ink"]),
     "row_tracker_follows_band_centre (F4-1/F4-4)": (
         [patch.object(traces, "_dark_cores", lambda profile, offset: [offset + 0.5 * (len(profile) - 1)])],
-        [F4 + "test_f4_4_two_printed_curves_are_two_complete_curves"]),
+        [F4 + "test_f4_4_two_printed_curves_are_two_complete_curves", F4 + "test_f4_1_steep_heads_reach_the_top_frame",
+         F4 + "test_f4_4_rq3e110aj_pair_is_two_lines_side_by_side"]),
     "untraced_head_not_stated (F4-1)": (
         [_source_mutant(rgv, "_curves", ('reasons.append(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "',
                                          'print(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "'))],
@@ -455,7 +460,7 @@ MUTANTS = {
         [patch.object(rgv, "_ocr_leader_tail", lambda *a: None)],
         [F4 + "test_f4_3_wsr3090_temperatures_follow_the_arrows"]),
     "touching_lines_not_ambiguous (F4-3)": (
-        [patch.object(traces, "LEADER_TIP_CLEAR_PX", 0)],
+        [_source_mutant(traces, "raster_leaders", ("ambiguous=len(touched) > 1", "ambiguous=False"))],
         [F4 + "test_f4_3_a_leader_ending_in_touching_lines_names_neither"]),
     "tip_measured_to_samples (F4-3)": (
         [_source_mutant(traces, "_point_to_trace", ('if trace.method == "raster" and len(trace.points_px) > 1:', "if False:"))],
@@ -548,7 +553,19 @@ def run(names: list[str]) -> unittest.TestResult:
 
 
 def main() -> int:
-    log = open(sys.argv[1], "w") if len(sys.argv) > 1 else sys.stdout
+    """Usage: rds_vgs_mutation_check.py [LOG] [--only SUBSTRING ...]
+
+    --only runs the baseline and just the mutants whose label contains one of
+    the substrings (a quick re-check after fixing survivors; the full run is
+    the record)."""
+    args = sys.argv[1:]
+    only = args[args.index("--only") + 1:] if "--only" in args else []
+    args = args[:args.index("--only")] if "--only" in args else args
+    if only:
+        for label in [k for k in MUTANTS if not any(o in k for o in only)]:
+            del MUTANTS[label]
+        EQUIVALENT_ON_REAL_DATA.clear()
+    log = open(args[0], "w") if args else sys.stdout
     all_names = sorted({n for _patches, names in MUTANTS.values() for n in names})
     start = time.time()
     base = run(all_names)

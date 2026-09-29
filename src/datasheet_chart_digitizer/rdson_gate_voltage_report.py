@@ -503,6 +503,7 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
             cv2.line(bottom, (6, y - 4), (36, y - 4), swatch, width)
         cv2.putText(bottom, text, (44, y), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     canvas = np.vstack([top, body, bottom])
+    row["overlay_body_offset_px"] = [0, int(top.shape[0])]   # the crop sits here, unscaled
     path = out_dir / "overlays" / panel.part / f"{stem}.rds_vgs_overlay.png"
     path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(path), canvas)
