@@ -32,6 +32,8 @@ from datasheet_chart_digitizer.rdson_gate_voltage_locate import locate_panels
 from datasheet_chart_digitizer.rdson_gate_voltage_report import readouts
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
 
+import rds_digitize_cache as dcache
+
 DS = Path("/Users/fab/dev/ee/solar-charger-eval/ds")
 OUT_ROOT = Path(__file__).resolve().parents[1] / "out"
 HAVE_DS = DS.is_dir()
@@ -122,7 +124,7 @@ class EndToEndTests(unittest.TestCase):
         cls.out = Path(cls._tmp.name)
         cls.results = {}
         for name in ("CSD17306Q5A_TI", "IRLB8748_IFX", "FDP8870_onsemi", "AO3400A_UMW_C347475"):
-            cls.results[name], _ = rgv.digitize_pdf(_pdf(name), cls.out)
+            cls.results[name], _ = dcache.digitize_pdf(_pdf(name), cls.out)
 
     @classmethod
     def tearDownClass(cls):
@@ -275,7 +277,7 @@ class GuardTests(unittest.TestCase):
 
     def test_swapped_temperature_labels_are_unbound_by_physics(self):
         with _scratch("rdsvgs-swap-") as tmp:
-            results, _ = rgv.digitize_pdf(_pdf("CSD17306Q5A_TI"), Path(tmp))
+            results, _ = dcache.digitize_pdf(_pdf("CSD17306Q5A_TI"), Path(tmp))
         row = _panel(results, 4, "7")
         plot = PlotBox(**row["plot_box_px"])
         traces = [
@@ -302,7 +304,7 @@ class ExtremeTemperatureTests(unittest.TestCase):
         # label that binds says 125 C (the hottest printed) but sits on the
         # LOWER curve, and the 25 C label binds to nothing.
         with _scratch("rdsvgs-extreme-") as tmp:
-            results, _ = rgv.digitize_pdf(_pdf("CSD17306Q5A_TI"), Path(tmp))
+            results, _ = dcache.digitize_pdf(_pdf("CSD17306Q5A_TI"), Path(tmp))
         row = _panel(results, 4, "7")
         plot = PlotBox(**row["plot_box_px"])
         traces = [
@@ -373,7 +375,7 @@ class ReadoutTests(unittest.TestCase):
 class RasterTests(unittest.TestCase):
     def test_rohm_embedded_image_chart_reads_both_printed_curves(self):
         with _scratch("rdsvgs-raster-") as tmp:
-            results, _ = rgv.digitize_pdf(_pdf("RQ3E110AJ_Rohm"), Path(tmp))
+            results, _ = dcache.digitize_pdf(_pdf("RQ3E110AJ_Rohm"), Path(tmp))
         row = _panel(results, 7, "12")
         self.assertEqual(row["trace_method"], "raster")
         self.assertEqual([t["value"] for t in row["calibration"]["x_axis"]["ticks"]][-1], 10.0)

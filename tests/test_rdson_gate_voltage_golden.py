@@ -13,13 +13,12 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 import numpy as np
 
-from datasheet_chart_digitizer import rdson_gate_voltage as rgv
+import rds_digitize_cache as dcache
 
 GOLDEN = Path(__file__).resolve().parent / "fixtures" / "rds_vgs_golden"
 DS = Path("/Users/fab/dev/ee/solar-charger-eval/ds")
@@ -77,9 +76,7 @@ def load_golden(part: str) -> dict:
 def _digitize(pdf: Path) -> list[dict]:
     key = str(pdf)
     if key not in _CACHE:
-        OUT_ROOT.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="rdsvgs-golden-", dir=OUT_ROOT) as tmp:
-            _CACHE[key], _ = rgv.digitize_pdf(pdf, Path(tmp))
+        _CACHE[key], _ = dcache.digitize_pdf(pdf)
     return _CACHE[key]
 
 

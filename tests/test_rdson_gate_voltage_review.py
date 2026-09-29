@@ -23,6 +23,8 @@ from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces_mod
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
 
+import rds_digitize_cache as dcache
+
 rgv_vector_traces = rgv.vector_traces
 
 DS = Path("/Users/fab/dev/ee/solar-charger-eval/ds")
@@ -34,25 +36,22 @@ _CACHE: dict[str, list[dict]] = {}
 
 def _results(name: str) -> list[dict]:
     if name not in _CACHE:
-        OUT_ROOT.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix="rdsvgs-review-", dir=OUT_ROOT) as tmp:
-            _CACHE[name], _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
+        _CACHE[name], _ = dcache.digitize_pdf(DS / f"{name}.pdf")
     return _CACHE[name]
 
 
 def _panel_without(name: str, page: int, diagram: str, reader: str) -> dict:
     """The panel with one F5-3 label reader switched off -- the v5 reading
     state, so a guard written for it is still exercised. Cached in _CACHE
-    (the mutation harness clears it for every mutant)."""
+    (the mutation harness clears it for every mutant) and on disk keyed on
+    the switched-off reader (tests/rds_digitize_cache.py)."""
     key = f"{name}|without {reader}"
     if key not in _CACHE:
-        OUT_ROOT.mkdir(exist_ok=True)
         off = {"legend_boxes": (rgv, "read_legend_boxes", lambda *a, **k: []),
                "rule_erased_ocr": (rgv, "ocr_plot_labels_rules_erased", lambda *a, **k: []),
                "order_rule": (traces_mod, "bind_by_order_rule", lambda *a, **k: []),
                "stretch_tracer": (traces_mod, "fill_unsampled_stretches", lambda traces_, *a, **k: traces_)}[reader]
-        with patch.object(*off), tempfile.TemporaryDirectory(prefix="rdsvgs-review-", dir=OUT_ROOT) as tmp:
-            _CACHE[key], _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
+        _CACHE[key], _ = dcache.digitize_pdf(DS / f"{name}.pdf", patches=[off])
     rows = [r for r in _CACHE[key] if r["page"] == page and r["diagram"] == diagram]
     assert len(rows) == 1
     return rows[0]
@@ -77,32 +76,7 @@ def _captured(name: str) -> dict:
     attributes, so a mutation harness patch on either is honoured.
     """
     if name not in _CAPTURE:
-        panels: dict = {}
-        current: dict = {}
-        real_curves, real_readouts = rgv._curves, rgv.readouts
-
-        def curves_spy(traces, calibration, scale, gray=None):
-            current.clear()
-            current.update({"traces": traces, "calibration": calibration, "scale": scale, "gray": gray,
-                            "readout_calls": []})
-            result = real_curves(traces, calibration, scale, gray)
-            panels[len(panels)] = dict(current)
-            return result
-
-        def readouts_spy(points, log_y, gaps=None, *args, **kwargs):
-            if "readout_calls" in current:
-                current["readout_calls"].append({"first_vgs": points[0][0] if len(points) else None,
-                                                 "gaps": [list(g) for g in gaps or []]})
-            return real_readouts(points, log_y, gaps, *args, **kwargs)
-
-        OUT_ROOT.mkdir(exist_ok=True)
-        with patch.object(rgv, "_curves", curves_spy), patch.object(rgv, "readouts", readouts_spy):
-            with tempfile.TemporaryDirectory(prefix="rdsvgs-capture-", dir=OUT_ROOT) as tmp:
-                rows, _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
-        keyed = {}
-        for index, row in enumerate(r for r in rows if "curves" in r):
-            keyed[(row["page"], row["diagram"])] = dict(panels[index], row=row)
-        _CAPTURE[name] = keyed
+        _CAPTURE[name] = dcache.captured(DS / f"{name}.pdf")
     return _CAPTURE[name]
 
 
