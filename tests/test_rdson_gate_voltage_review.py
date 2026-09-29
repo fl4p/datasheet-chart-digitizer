@@ -1536,6 +1536,65 @@ class RoundFiveTests(unittest.TestCase):
         twice = _shifted(hot, 400.0, tail[0] - 0.5, tail[-1] + 0.5)
         self.assertIsNone(traces_mod.pair_order(twice, cold, "temperature_c")[0])
 
+    # -- round 5 (coordinator, reviewer rule 4): right ends traced to the frame ----
+
+    def _unextended(self, trace):
+        """A real captured trace with the round-5 frame points taken off again."""
+        from dataclasses import replace
+        added = {tuple(p) for p in trace.frame_traced.get("measured_px", []) + trace.frame_traced.get("across_frame_stroke_px", [])}
+        return replace(trace, points_px=[p for p in trace.points_px if tuple(p) not in added], frame_traced={})
+
+    def test_r5_right_ends_reach_the_frame_on_ink(self):
+        # v5/v6.0: every raster curve running to the right frame stopped 3 px
+        # short (the tracker's margin); BRCS's 10 V row was not evaluable
+        for name, page, diagram, frame_v in (("BRCS020N03RA_LCSC_C22449012", 4, "5", 10.0), ("RQ3E110AJ_Rohm", 7, "12", 10.0),
+                                             ("RQ6E080AJ_Rohm", 7, "12", 10.0), ("RQ3E180AJ_Rohm", 7, "12", 5.0)):
+            cap = _captured(name)[(page, diagram)]
+            row, gray, plot = cap["row"], cap["gray"], cap["calibration"].plot
+            for curve in row["curves"]:
+                self.assertAlmostEqual(curve["vgs_range_v"][1], frame_v, delta=0.002, msg=(name, curve["curve_index"]))
+                tracing = curve["frame_tracing"]
+                self.assertIsNotNone(tracing, name)
+                inner, outer = tracing["frame_stroke_px"]
+                for x, y in tracing["measured_px"]:          # measured columns: on curve ink, before the frame
+                    self.assertLess(x, inner)
+                    self.assertLess(gray[int(round(y)) - 1:int(round(y)) + 2, int(x)].min(), traces_mod.ROW_INK_GRAY, (name, x, y))
+                if tracing["across_frame_stroke_px"]:        # bridged only inside the frame stroke, ink on its far side
+                    far_x, far_y = tracing["far_side_ink_px"]
+                    self.assertTrue(outer < far_x <= outer + traces_mod.FRAME_FAR_SIDE_PX, (name, far_x))
+                    self.assertLess(gray[int(round(far_y)), int(far_x)], traces_mod.ROW_INK_GRAY)
+                    self.assertTrue(all(inner <= x <= plot.x1 for x, _y in tracing["across_frame_stroke_px"]), name)
+                self.assertTrue(all(x <= plot.x1 for x, _y in curve["points_px"]), name)
+        row = _panel("BRCS020N03RA_LCSC_C22449012", 4, "5")
+        anchor = next(a for a in row["validation"]["anchors"] if a["row"]["vgs_v"] == 10.0)
+        cold = next(c for c in row["curves"] if c["temperature_c"] == 25.0)
+        self.assertEqual((anchor["verdict"], anchor["curve_index"]), ("consistent", cold["curve_index"]))
+        self.assertAlmostEqual(anchor["chart_mohm"], 1.85, delta=0.03)
+        self.assertEqual(row["validation"]["verdict"], "verified")
+
+    def test_r5_no_ink_beyond_the_frame_means_no_bridge(self):
+        # known-bad: BRCS with the curve ends past the frame painted white:
+        # the ink is still followed up to the frame, never across it
+        cap = _captured("BRCS020N03RA_LCSC_C22449012")[(4, "5")]
+        plot, gray = cap["calibration"].plot, cap["gray"].copy()
+        outer = traces_mod._frame_columns(gray, plot)[-1]
+        gray[:, outer + 1:outer + 1 + traces_mod.FRAME_FAR_SIDE_PX + 2] = 255
+        for trace in traces_mod.extend_tails_to_frame([self._unextended(t) for t in cap["traces"]], gray, plot):
+            self.assertEqual(trace.frame_traced["across_frame_stroke_px"], [])
+            self.assertLess(max(x for x, _y in trace.points_px), traces_mod._frame_columns(gray, plot)[0])
+
+    def test_r5_a_trace_that_stopped_on_its_own_is_not_extended(self):
+        # WSR3090 c0 stops at 9.90 V, far inside its 11 V frame; a BRCS curve
+        # cut at x 900 stopped away from the tracker's margin: neither grows
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        self.assertFalse(any(c["frame_traced_points_px"] for c in cap["row"]["curves"]))
+        from dataclasses import replace
+        brcs = _captured("BRCS020N03RA_LCSC_C22449012")[(4, "5")]
+        cut = [replace(self._unextended(t), points_px=[p for p in self._unextended(t).points_px if p[0] <= 900])
+               for t in brcs["traces"]]
+        for before, after in zip(cut, traces_mod.extend_tails_to_frame(cut, brcs["gray"], brcs["calibration"].plot)):
+            self.assertEqual(after.points_px, before.points_px)
+
     # -- F5-3: printed temperatures read --------------------------------------------
 
     def test_f5_3_rq3e180aj_box_temperature_is_read(self):
@@ -1572,10 +1631,13 @@ class RoundFiveTests(unittest.TestCase):
             self.assertEqual(curve["parameter_binding"]["temperature_c"], "temperature_order_rule")
         # v5's "curve 0 exceeds table max at 4.5 V" resolves as a condition mismatch
         self.assertEqual(row["validation"]["diagnostics"], [])
-        notes = row["validation"]["condition_mismatch_notes"]
-        self.assertEqual([(n["curve_index"], n["vgs_v"]) for n in notes], [(upper["curve_index"], 4.5)])
-        self.assertIn("curve 125 C vs row 25 C", notes[0]["text"])
-        self.assertIn("curve ID 20 A vs row ID 10 A", notes[0]["text"])
+        # (since the right ends reach the frame, the 125 C curve also lies
+        # above the 10 V / 25 C maximum: a second, equally resolved note)
+        notes = {n["vgs_v"]: n for n in row["validation"]["condition_mismatch_notes"]}
+        self.assertEqual(sorted(notes), [4.5, 10.0])
+        self.assertEqual({n["curve_index"] for n in notes.values()}, {upper["curve_index"]})
+        self.assertIn("curve 125 C vs row 25 C; curve ID 20 A vs row ID 10 A", notes[4.5]["text"])
+        self.assertIn("curve 125 C vs row 25 C)", notes[10.0]["text"])
         self.assertFalse(any("exceeds_table_max" in r for r in row["reasons"]), row["reasons"])
         legend = " ".join(t for t, _c in report._legend_lines(row))
         self.assertIn("resolved: curve 0 lies above the table max", legend)

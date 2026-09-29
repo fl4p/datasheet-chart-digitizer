@@ -605,6 +605,19 @@ MUTANTS = {
     "tube_rails_white (F5-2 opposite: legibility)": (
         [_source_mutant(report, "_draw_curves", ("_stroke(body, curve, color, width)", "_stroke(body, curve, (255, 255, 255), width)"))],
         [F5 + "test_f5_2_traces_stay_colourful_beside_the_print", L + "test_r3_14_traces_have_white_halos_over_black_ink"]),
+    "no_frame_tail_tracing (R5 right ends)": (
+        [patch.object(traces, "extend_tails_to_frame", lambda traces_, gray, plot: traces_)],
+        [F5 + "test_r5_right_ends_reach_the_frame_on_ink"]),
+    "frame_bridged_without_far_ink (R5 right ends)": (
+        [_source_mutant(traces, "extend_tails_to_frame", ("            if far is not None:",
+                                                          "            far = far or (float(outer + 1), y)\n            if far is not None:"))],
+        [F5 + "test_r5_no_ink_beyond_the_frame_means_no_bridge"]),
+    "frame_tail_from_anywhere (R5 right ends)": (
+        [_source_mutant(traces, "extend_tails_to_frame", ("if x_last < plot.x1 - FRAME_TAIL_START_PX or not", "if not"))],
+        [F5 + "test_r5_a_trace_that_stopped_on_its_own_is_not_extended"]),
+    "FRAME_FAR_SIDE_PX_0 (R5 right ends)": (
+        [patch.object(traces, "FRAME_FAR_SIDE_PX", 0)],
+        [F5 + "test_r5_right_ends_reach_the_frame_on_ink"]),
     "tube_core_whole_width (F5-2 opposite: legibility)": (
         [_source_mutant(report, "_draw_curves", ("_stroke(core, curve, 255, TRACE_CORE_PX)", "_stroke(core, curve, 255, widths[curve['curve_index']])"))],
         [F5 + "test_f5_2_traces_stay_colourful_beside_the_print"]),

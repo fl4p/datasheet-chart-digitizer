@@ -140,10 +140,13 @@ class GoldenTests(unittest.TestCase):
         grouping may change, its INK may not. Every golden point is still
         served (by some curve); every served point is a golden point or a
         point the row tracker added on a steep head (F4-1, listed per curve
-        in row_traced_points_px); every read value is a golden read value."""
+        in row_traced_points_px) or at the right frame (round 5,
+        frame_traced_points_px); every read value is a golden read value."""
         old_pts = np.asarray([p for c in golden["curves"] for p in c["points_px"]], dtype=float)
         new_pts = np.asarray([p for c in row["curves"] for p in c["points_px"]], dtype=float)
-        added = np.asarray([p for c in row["curves"] for p in c.get("row_traced_points_px", [])] or np.zeros((0, 2)), dtype=float)
+        added = np.asarray([p for c in row["curves"]
+                            for p in c.get("row_traced_points_px", []) + c.get("frame_traced_points_px", [])]
+                           or np.zeros((0, 2)), dtype=float)
         lost = _nearest(old_pts, new_pts)
         self.assertLessEqual(lost.max(), POINT_TOL_PX, f"{part}: golden point {old_pts[int(lost.argmax())]} is no longer served")
         extra = _nearest(new_pts, old_pts)
