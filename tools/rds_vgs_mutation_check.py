@@ -157,6 +157,7 @@ L = "RoundThreeLateTests."
 F4 = "RoundFourTests."
 B = "BoundaryTests."
 F5 = "RoundFiveTests."
+F6 = "RoundSixTests."
 
 
 MUTANTS = {
@@ -618,6 +619,40 @@ MUTANTS = {
     "FRAME_FAR_SIDE_PX_0 (R5 right ends)": (
         [patch.object(traces, "FRAME_FAR_SIDE_PX", 0)],
         [F5 + "test_r5_right_ends_reach_the_frame_on_ink"]),
+    # ---- round 6 (Fab's review of the v6 overlays: F6-1) ------------------------
+    "no_stretch_tracer (F6-1)": (
+        [patch.object(traces, "fill_unsampled_stretches", lambda traces_, *a, **k: traces_)],
+        [F6 + "test_f6_1_every_listed_stretch_is_traced_on_ink", F6 + "test_f6_1_rq3e110aj_each_line_keeps_its_half_of_the_band"]),
+    "band_half_ignored (F6-1)": (
+        [_source_mutant(traces, "_follow_rows", ('centre = run["x0"] + LINE_HALF_WIDTH_PX if next(iter(sides)) < 0 else run["x1"] - LINE_HALF_WIDTH_PX',
+                                                 'centre = run["centre"]'))],
+        [F6 + "test_f6_1_rq3e110aj_each_line_keeps_its_half_of_the_band"]),
+    "band_sides_disagree_accepted (F6-1)": (
+        [_source_mutant(traces, "_follow_rows", ("if len(sides) != 1:", "if not sides:"))],
+        [F6 + "test_f6_1_ink_that_cannot_be_assigned_is_refused_concretely"]),
+    "rule_bridge_off_ink_accepted (F6-1)": (
+        [_source_mutant(traces, "fill_unsampled_stretches", ("off_ink = [p for p in bridged if not _on_ink(gray, p)]", "off_ink = []"))],
+        [F6 + "test_f6_1_a_rule_crossing_is_bridged_only_on_ink"]),
+    "chord_without_ink_check (F6-1)": (
+        [_source_mutant(traces, "_chord_on_ink", ("if gray[int(round(y)), int(round(x))] >= ROW_INK_GRAY:", "if False:"))],
+        [F6 + "test_f6_1_short_chord_needs_ink_at_every_pixel"]),
+    "follower_never_gives_up (F6-1)": (
+        [patch.object(traces, "GAP_MAX_MISS", 10_000)],
+        [F6 + "test_f6_1_ink_that_cannot_be_assigned_is_refused_concretely"]),
+    "stub_always_served (F6-1)": (
+        [_source_mutant(traces, "_stub_decision", ("if distance <= STUB_ON_STROKE_PX and _on_ink(gray, (x, y)):", "if True:"))],
+        [F6 + "test_f6_1_end_stubs_are_served_or_named"]),
+    "stub_never_served (F6-1)": (
+        [patch.object(traces, "STUB_ON_STROKE_PX", -1.0)],
+        [F6 + "test_f6_1_end_stubs_are_served_or_named"]),
+    "stub_reason_not_concrete (F6-1)": (
+        [_source_mutant(traces, "_stub_decision", ("    if rows:\n", "    if False:\n"))],
+        [F6 + "test_f6_1_end_stubs_are_served_or_named"]),
+    "stretch_points_move_existing (F6-1)": (
+        [_source_mutant(traces, "fill_unsampled_stretches", (
+            "out.append(replace(trace, points_px=list(trace.points_px) + added, gap_traced=notes,",
+            "out.append(replace(trace, points_px=[(x, y + 0.6) for x, y in trace.points_px] + added, gap_traced=notes,"))],
+        [F6 + "test_f6_1_no_existing_point_moves"]),
     "tube_core_whole_width (F5-2 opposite: legibility)": (
         [_source_mutant(report, "_draw_curves", ("_stroke(core, curve, 255, TRACE_CORE_PX)", "_stroke(core, curve, 255, widths[curve['curve_index']])"))],
         [F5 + "test_f5_2_traces_stay_colourful_beside_the_print"]),

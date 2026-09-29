@@ -49,7 +49,8 @@ def _panel_without(name: str, page: int, diagram: str, reader: str) -> dict:
         OUT_ROOT.mkdir(exist_ok=True)
         off = {"legend_boxes": (rgv, "read_legend_boxes", lambda *a, **k: []),
                "rule_erased_ocr": (rgv, "ocr_plot_labels_rules_erased", lambda *a, **k: []),
-               "order_rule": (traces_mod, "bind_by_order_rule", lambda *a, **k: [])}[reader]
+               "order_rule": (traces_mod, "bind_by_order_rule", lambda *a, **k: []),
+               "stretch_tracer": (traces_mod, "fill_unsampled_stretches", lambda traces_, *a, **k: traces_)}[reader]
         with patch.object(*off), tempfile.TemporaryDirectory(prefix="rdsvgs-review-", dir=OUT_ROOT) as tmp:
             _CACHE[key], _ = rgv.digitize_pdf(DS / f"{name}.pdf", Path(tmp))
     rows = [r for r in _CACHE[key] if r["page"] == page and r["diagram"] == diagram]
@@ -222,7 +223,7 @@ class LeaderTests(unittest.TestCase):
 class GapTests(unittest.TestCase):
     """Opus A: trace gaps were bridged by straight chords and could be read across."""
 
-    GAP_REASONS = ("_gaps (", "_untraced_sections (", "_annotation_contacts (")
+    GAP_REASONS = ("_gaps (", "_untraced_section (", "_annotation_contacts (")
 
     def _check_gaps_explicit(self, row):
         for curve in row["curves"]:
@@ -518,10 +519,16 @@ class RoundTwoTests(unittest.TestCase):
 
     def test_r2_8_unsampled_stretch_on_continuous_ink_is_an_untraced_section(self):
         # WSR3090 curve 2: 7.56-7.78 V, where the 25 C curve runs along the
-        # 5 mOhm rule; the ink is continuous, so it is an untraced section.
-        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        # 5 mOhm rule; the ink is continuous, so without the F6-1 stretch
+        # tracer it is an untraced section, never a "gap" ...
+        row = _panel_without("WSR3090_LCSC_C719278", 3, "2", "stretch_tracer")
         kinds = [c["gap_kinds"] for c in row["curves"]]
         self.assertTrue(any(any(g0 < 7.6 < g1 for g0, g1 in k["untraced_section"]) for k in kinds), kinds)
+        self.assertFalse(any(any(g0 < 7.6 < g1 for g0, g1 in k["gap"]) for k in kinds), kinds)
+        # ... and since F6-1 it is traced (bridged along the rule it runs on)
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        for curve in row["curves"]:
+            self.assertFalse(any(g0 < 7.6 < g1 for spans in curve["gap_kinds"].values() for g0, g1 in spans))
 
 
 @unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
@@ -598,8 +605,8 @@ class RoundThreeTests(unittest.TestCase):
         self.assertEqual(len(cap["readout_calls"]), len(row["curves"]))
         for curve, call in zip(row["curves"], cap["readout_calls"]):
             every = sorted(g for spans in curve["gap_kinds"].values() for g in spans)
-            self.assertTrue(curve["gap_kinds"]["untraced_section"] or curve["gap_kinds"]["annotation_contact"])
             self.assertEqual(sorted(call["gaps"]), [list(g) for g in every], curve["curve_index"])
+        self.assertTrue(any(c["gap_kinds"]["annotation_contact"] for c in row["curves"]))
 
     def test_r3_1c_a_readout_inside_an_untraced_section_is_refused(self):
         # Codex round 3: the real WSR3090 curves with every sample 4.40-4.60 V
@@ -1750,6 +1757,152 @@ class RoundFiveTests(unittest.TestCase):
                     window = body[yi - reach:yi + reach + 1, xi - reach:xi + reach + 1].astype(int)
                     hits += bool((np.abs(window - color).max(axis=2) <= 40).any())
                 self.assertGreaterEqual(hits / len(curve["points_px"]), 0.97, (name, curve["curve_index"]))
+
+
+F6_PANELS = (("RQ3E110AJ_Rohm", 7, "12"), ("RQ6E080AJ_Rohm", 7, "12"), ("RQ3E180AJ_Rohm", 7, "12"),
+             ("BRCS020N03RA_LCSC_C22449012", 4, "5"), ("WSR3090_LCSC_C719278", 3, "2"))
+# the v6 untraced stretches listed in FAB-FINDINGS-v6.md: (part, curve index) -> VGS ranges
+F6_STRETCHES = {
+    ("RQ3E110AJ_Rohm", 0): [(2.0588, 2.1272)], ("RQ3E110AJ_Rohm", 1): [(1.9904, 2.0725), (2.7565, 2.8044)],
+    ("RQ6E080AJ_Rohm", 0): [(1.8785, 1.9475)], ("RQ3E180AJ_Rohm", 0): [(1.7137, 1.7473)],
+    ("BRCS020N03RA_LCSC_C22449012", 0): [(3.5238, 3.5584)], ("WSR3090_LCSC_C719278", 0): [(4.8395, 4.8778)],
+    ("WSR3090_LCSC_C719278", 1): [(6.9473, 7.0623)], ("WSR3090_LCSC_C719278", 2): [(4.1018, 4.1305), (7.5605, 7.7808)],
+}
+
+
+def _unfilled(trace):
+    """A real captured trace with the F6-1 stretch points taken off again."""
+    from dataclasses import replace
+    added = {tuple(p) for n in trace.gap_traced for p in n.get("measured_px", []) + n.get("bridged_on_rule_px", [])}
+    return replace(trace, points_px=[p for p in trace.points_px if tuple(p) not in added], gap_traced=[], stub_decisions=[])
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundSixTests(unittest.TestCase):
+    """Fab's v6 review (F6-1): unsampled stretches traced on the curve's own ink."""
+
+    def test_f6_1_every_listed_stretch_is_traced_on_ink(self):
+        for name, page, diagram in F6_PANELS:
+            cap = _captured(name)[(page, diagram)]
+            row, gray = cap["row"], cap["gray"]
+            dark_y, dark_x = np.nonzero(gray < traces_mod.ROW_INK_GRAY)
+            self.assertFalse(any("was not sampled" in r or "_untraced_section" in r for r in row["reasons"]), (name, row["reasons"]))
+            for curve in row["curves"]:
+                self.assertEqual(curve["gap_kinds"]["untraced_section"], [], (name, curve["curve_index"]))
+                self.assertEqual(curve["gap_kinds"]["gap"], [], (name, curve["curve_index"]))
+                tracing = curve["gap_tracing"]
+                self.assertFalse([n for n in tracing if "refused" in n], (name, curve["curve_index"]))
+                for lo, hi in F6_STRETCHES.get((name, curve["curve_index"]), []):
+                    self.assertTrue(any(n["vgs_v"][0] <= lo + 1e-3 and hi - 1e-3 <= n["vgs_v"][1] for n in tracing),
+                                    (name, curve["curve_index"], lo, hi, [n["vgs_v"] for n in tracing]))
+                for n in tracing:
+                    for x, y in n["measured_px"]:                    # measured: on ink
+                        self.assertLess(gray[int(round(y)) - 1:int(round(y)) + 2, int(round(x)) - 1:int(round(x)) + 2].min(),
+                                        traces_mod.ROW_INK_GRAY, (name, x, y))
+                    for x, y in n["bridged_on_rule_px"]:             # bridged across a rule: within 1.5 px of ink
+                        self.assertLessEqual(float(np.min(np.hypot(dark_x - x, dark_y - y))), 1.5, (name, x, y))
+
+    def test_f6_1_no_existing_point_moves(self):
+        for name, page, diagram in F6_PANELS:
+            before = _panel_without(name, page, diagram, "stretch_tracer")
+            after = _panel(name, page, diagram)
+            self.assertEqual(len(before["curves"]), len(after["curves"]), name)
+            for old, new in zip(before["curves"], after["curves"]):
+                old_pts = {tuple(p) for p in old["points_px"]}
+                new_pts = {tuple(p) for p in new["points_px"]}
+                self.assertLessEqual(old_pts, new_pts, (name, old["curve_index"]))
+                self.assertEqual(new_pts - old_pts, {tuple(p) for p in new["gap_traced_points_px"]}, (name, old["curve_index"]))
+                self.assertEqual([(r["vgs_v"], r["rds_mohm"], r["status"]) for r in old["readouts"]],
+                                 [(r["vgs_v"], r["rds_mohm"], r["status"]) for r in new["readouts"]], name)
+
+    def test_f6_1_rq3e110aj_each_line_keeps_its_half_of_the_band(self):
+        # Fab's crop: below the ID leader tips the two lines print as one
+        # band; the 11 A line (c0) is its right half, the 5.5 A line (c1) its left
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        by = {c["id_a"]: {int(y): x for x, y in c["gap_traced_points_px"]} for c in row["curves"]}
+        shared = sorted(set(by[11.0]) & set(by[5.5]))
+        self.assertGreater(len(shared), 50)
+        self.assertTrue(all(by[11.0][y] - by[5.5][y] >= 3.0 for y in shared), [(y, by[11.0][y], by[5.5][y]) for y in shared][:5])
+        for curve in row["curves"]:                 # the tube is continuous over the head
+            xs = sorted(p[0] for p in curve["points_px"] if 1.9 <= _vgs(row, p[0]) <= 2.2)
+            self.assertLessEqual(max(b - a for a, b in zip(xs, xs[1:])), 2.5, curve["curve_index"])
+
+    def test_f6_1_ink_that_cannot_be_assigned_is_refused_concretely(self):
+        # known-bad 1: the stretch runs from c1's own half to c0's half of the
+        # shared band: its ends disagree, so the band's ink is not assigned
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        gray, plot = cap["gray"], cap["calibration"].plot
+        c1, c0 = sorted(cap["traces"], key=lambda t: np.median([x for x, y in t.points_px if 240 <= y <= 300]))
+        n1 = next(n for n in c1.gap_traced if n["mode"] == "rows")
+        n0 = next(n for n in c0.gap_traced if n["mode"] == "rows")
+        erased_cols = np.zeros(gray.shape[1], bool)
+        erased_rows = np.zeros(gray.shape[0], bool)
+        _m, _b, why = traces_mod._follow_rows(gray, tuple(n1["from_px"]), tuple(n0["to_px"]), plot, erased_cols, erased_rows)
+        self.assertTrue(why and why.startswith("two touching lines print as one"), why)
+        # known-bad 2: the band's ink blanked over 40 rows: nothing is added,
+        # and the stretch says where the ink is missing
+        blank = gray.copy()
+        blank[250:290, 380:405] = 255
+        out = traces_mod.fill_unsampled_stretches([_unfilled(c1)], blank, plot, erased_cols, erased_rows)[0]
+        refused = [n for n in out.gap_traced if "refused" in n]
+        self.assertTrue(refused and "no ink of one stroke" in refused[0]["refused"], out.gap_traced)
+        added = set(map(tuple, out.points_px)) - set(map(tuple, _unfilled(c1).points_px))
+        # c1's other stretch (2.76-2.80 V, x ~445) still fills; nothing in the blanked band
+        self.assertFalse([p for p in added if p[0] < 420], sorted(added)[:5])
+
+    def test_f6_1_a_rule_crossing_is_bridged_only_on_ink(self):
+        # known-bad: WSR3090 25 C curve, its 7.56-7.78 V rule crossing with the
+        # ink beside the rule blanked -- a bridge there would be off the ink
+        cap = _captured("WSR3090_LCSC_C719278")[(3, "2")]
+        gray, plot = cap["gray"].copy(), cap["calibration"].plot
+        low = max(cap["traces"], key=lambda t: np.median([y for x, y in t.points_px]))
+        note = next(n for n in low.gap_traced if n["from_px"][0] > 700)
+        (xa, ya), (xb, yb) = note["from_px"], note["to_px"]
+        gray[int(min(ya, yb)) - 6:int(max(ya, yb)) + 7, int(xa) + 1:int(xb)] = 255
+        grid = cap["row"]["raster_grid_rules_px"]
+        erased_rows = np.zeros(gray.shape[0], bool)
+        for r in grid["y_erased"]:
+            erased_rows[int(r) - 1:int(r) + 2] = True
+        erased_cols = np.zeros(gray.shape[1], bool)
+        out = traces_mod.fill_unsampled_stretches([_unfilled(low)], gray, plot, erased_cols, erased_rows)[0]
+        mine = next(n for n in out.gap_traced if n["from_px"][0] > 700)
+        self.assertIn("refused", mine)
+        self.assertIn("off the ink", mine["refused"])
+
+    def test_f6_1_short_chord_needs_ink_at_every_pixel(self):
+        cap = _captured("BRCS020N03RA_LCSC_C22449012")[(4, "5")]
+        gray = cap["gray"].copy()
+        lower = max(cap["traces"], key=lambda t: np.median([y for x, y in t.points_px]))
+        pts = sorted(p for p in lower.points_px if 600 <= p[0] <= 700)
+        a, b = pts[0], next(p for p in pts if p[0] >= pts[0][0] + 4)
+        self.assertTrue(traces_mod._chord_on_ink(gray, a, b))
+        mid = (int(round(0.5 * (a[0] + b[0]))), int(round(0.5 * (a[1] + b[1]))))
+        gray[mid[1], mid[0]] = 255
+        self.assertIsNone(traces_mod._chord_on_ink(gray, a, b))
+
+    def test_f6_1_end_stubs_are_served_or_named(self):
+        for name, rows in (("RQ3E110AJ_Rohm", "rows 207..208"), ("RQ3E180AJ_Rohm", "rows 209..211")):
+            row = _panel(name, 7, "12")
+            stubs = [r for r in row["reasons"] if "end_stub_points_dropped" in r]
+            self.assertTrue(stubs, name)
+            for reason in stubs:
+                self.assertIn(f"horizontal grid rule at {rows} where the curve crosses it", reason)
+                self.assertIn("px from this curve's own stroke", reason)
+                self.assertNotIn("it may be", reason)             # the v6 guess is gone
+        # known-good: a real sample of the curve, dropped as a stub, is served
+        cap = _captured("RQ3E110AJ_Rohm")[(7, "12")]
+        trace = cap["traces"][0]
+        pts = sorted(trace.points_px)
+        stub = pts[len(pts) // 2]
+        rest = [p for p in pts if p != stub]
+        decision = traces_mod._stub_decision(cap["gray"], stub, rest, np.zeros(cap["gray"].shape[1], bool),
+                                             np.zeros(cap["gray"].shape[0], bool))
+        self.assertTrue(decision["served"], decision)
+
+
+def _vgs(row: dict, px: float) -> float:
+    axis = row["calibration"]["x_axis"]
+    return axis["m"] * px + axis["b"]
 
 
 def _px_at(row: dict, vgs: float) -> float:
