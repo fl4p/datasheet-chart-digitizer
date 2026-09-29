@@ -60,6 +60,7 @@ from .capacitance_axis import (
     trace_data_points,
 )
 from .capacitance_assignment import select_trace_assignment
+from .capacitance_grid_anchor import grid_check_problems
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
 from .capacitance_plot_box import find_capacitance_plot_box
 from .capacitance_refs import (
@@ -298,7 +299,19 @@ def process_chart(
         grid_error=axis_grid_error,
         ocr_error=axis_ocr_error,
     )
-    if axis_calibration is not None and not axis_trusted:
+    grid_failed, grid_unverified = (
+        grid_check_problems(axis_calibration) if axis_trusted else ([], [])
+    )
+    if grid_failed:
+        # The served mapping misses the line a labelled tick names: the axis
+        # is not physical output, whatever its label residual says.
+        axis_trusted = False
+        axis_warning = (
+            "served axis calibration misses the gridlines its labels name ("
+            + "; ".join(grid_failed)
+            + "); physical vds_V/cap_pF columns and Qoss validation are disabled"
+        )
+    elif axis_calibration is not None and not axis_trusted:
         axis_warning = (
             "untrusted text-order axis fallback; physical vds_V/cap_pF columns "
             "and Qoss validation are disabled"
@@ -379,6 +392,12 @@ def process_chart(
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
     )
+    if grid_unverified:
+        # Unevaluable is not a pass: the served axis could not be checked
+        # against its own gridlines, so the chart is not reported ok.
+        status_reasons.append("axis_grid_check_unverified")
+        if status == "ok":
+            status = "unverified"
     physical_output_available = axis_trusted and validation["status"] == "pass"
     # A linear axis can be calibrated perfectly and still be unable to resolve a
     # small trace: GT060N10T's Crss anchor is 16 pF = 0.84 px, so its served

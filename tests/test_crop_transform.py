@@ -201,10 +201,16 @@ class FreshFinderCropTransformEndToEnd(unittest.TestCase):
             self.assertFalse(result["anchor_diagnostics"]["assignment_changed"], part)
 
     def test_exact_transform_axis_coefficients_are_pinned(self) -> None:
+        # Re-pinned 2026-09-29 to the gridline-anchored calibration (both
+        # axes of all three verified on their rules). Fab's 2026-07-14 visual
+        # verification covered the previous label-centre coefficients
+        # (0.07627819, -8.42946005, -0.00552817, 4.38814795 /
+        #  0.11441731, -12.64419946, same y / 0.15255660, -15.82277066,
+        #  -0.00737473, 4.59065286); the new ones need that review repeated.
         expected = {
-            "BSC014N04LS": (0.07627819, -8.42946005, -0.00552817, 4.38814795),
-            "BSC016N06NS": (0.11441731, -12.64419946, -0.00552817, 4.38814795),
-            "IAUCN08S5L160T": (0.15255660, -15.82277066, -0.00737473, 4.59065286),
+            "BSC014N04LS": (0.07633588, -8.43511450, -0.00553097, 4.39020960),
+            "BSC016N06NS": (0.11449594, -12.63338157, -0.00553097, 4.39020960),
+            "IAUCN08S5L160T": (0.15267176, -15.80152672, -0.00737191, 4.59270075),
         }
         for part, (_, result) in self.results.items():
             axis = result["axis_calibration"]

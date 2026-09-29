@@ -357,6 +357,8 @@ def draw_axis_debug_overlay(
                 lineType=cv2.LINE_AA,
             )
     for y_raw in calibration.y_gridline_px:
+        if y_raw is None:  # identity-only tick: no rule under its label
+            continue
         y = int(round(y_raw))
         if plot.y0 - 3 <= y <= plot.y1 + 3:
             cv2.line(overlay, (plot.x0, y), (plot.x1, y), (160, 0, 160), 1, lineType=cv2.LINE_AA)
@@ -370,6 +372,8 @@ def draw_axis_debug_overlay(
                 line_type=cv2.LINE_AA,
             )
     for x_raw in calibration.x_gridline_px:
+        if x_raw is None:  # identity-only tick: no rule under its label
+            continue
         x = int(round(x_raw))
         if plot.x0 - 3 <= x <= plot.x1 + 3:
             cv2.line(overlay, (x, plot.y0), (x, plot.y1), (160, 160, 0), 1, lineType=cv2.LINE_AA)

@@ -133,14 +133,19 @@ class LinearCapacitanceAxisTests(unittest.TestCase):
             self.assertEqual(axis["source"], "position_text")
             self.assertFalse(axis["y_log"])
             self.assertEqual(axis["y_ticks_pf"], [500.0, 1000.0, 1500.0, 2000.0])
-            self.assertEqual(axis["y_source"], "position_text_grid_seated")
-            self.assertLess(axis["y_resid_pf"], 0.01)
-            expected_grid_px = [325.0362, 245.6153, 166.1946, 86.7743]
+            # Served from gridline_anchor's raster rule centres (continuous
+            # px), checked at every tick; the PDF's own vector rules are the
+            # geometric truth. The renderer pixel-snaps these hairlines, so the
+            # raster centres sit <=0.73 px from the vector rules.
+            self.assertEqual(axis["y_source"], "position_text_grid_anchored")
+            self.assertEqual(axis["y_grid_check"]["status"], "verified")
+            self.assertLess(axis["y_resid_pf"], 2.0)
+            vector_rule_px = [325.0362, 245.6153, 166.1946, 86.7743]
             for value, observed, expected in zip(
-                axis["y_ticks_pf"], axis["y_gridline_px"], expected_grid_px
+                axis["y_ticks_pf"], axis["y_gridline_px"], vector_rule_px
             ):
                 with self.subTest(value_pf=value):
-                    self.assertAlmostEqual(observed, expected, delta=0.1)
+                    self.assertAlmostEqual(observed, expected, delta=0.8)
                     served_pixel = (value - axis["y_offset"]) / axis["y_scale"]
                     self.assertAlmostEqual(served_pixel, expected, delta=1.0)
             self.assertLessEqual(axis["y_grid_residual_px"], 1.0)
@@ -262,10 +267,14 @@ class LinearCapacitanceAxisTests(unittest.TestCase):
             owned = [row for row in rows if row["trace"] == name]
             return float(min(owned, key=lambda row: abs(float(row["vds_V"]) - 25.0))["cap_pF"])
 
-        self.assertTrue(700.0 < at_25v(control_rows, "Ciss") < 750.0)
+        # Grid-anchored (2026-09-29): the pF decade labels' word boxes sit
+        # 1.4-2.3 px below their rules at 220 dpi, so the label-centre fit
+        # served Ciss(25 V) 721.8 / 1277.1 pF; on the rules it is 698.3 /
+        # 1246.2 pF (-3.3 % / -2.4 %, 0.014 / 0.011 decade).
+        self.assertTrue(675.0 < at_25v(control_rows, "Ciss") < 725.0)
         self.assertTrue(270.0 < at_25v(control_rows, "Coss") < 300.0)
         self.assertTrue(8.0 < at_25v(control_rows, "Crss") < 12.0)
-        self.assertTrue(1250.0 < at_25v(sync_rows, "Ciss") < 1300.0)
+        self.assertTrue(1220.0 < at_25v(sync_rows, "Ciss") < 1275.0)
         self.assertTrue(530.0 < at_25v(sync_rows, "Coss") < 570.0)
         self.assertTrue(18.0 < at_25v(sync_rows, "Crss") < 22.0)
 

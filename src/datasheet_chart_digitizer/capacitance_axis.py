@@ -18,6 +18,7 @@ from .axis_calibration import (
 )
 
 from .capacitance_traces import _interp_y
+from .capacitance_grid_anchor import anchor_capacitance_axes_on_grid
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
 from .capacitance_vector import _load_fitz
 from .crop_transform import CropTransform
@@ -117,7 +118,19 @@ def _fit_position_calibration(page_like, transform: CropTransform, plot_rect, so
         y_resid_dec = None
         y_resid_pf = float(pos_cal.y_resid)
     if y_log:
-        y_tick_label_px = ()
+        # One label pixel per consumed decade, aligned with the sorted decades
+        # below, so the grid anchor can bind each decade to its rule. Two
+        # labels claiming one decade are not collapsed: leave the axis without
+        # per-tick pixels (its grid check then reports unverified).
+        by_decade: dict[float, float] = {}
+        duplicate = False
+        for exponent, pixel in pos_cal.y_decades:
+            key = float(exponent)
+            duplicate = duplicate or key in by_decade
+            by_decade[key] = float(transform.to_px(plot_rect.x0, pixel)[1])
+        y_tick_label_px = (
+            () if duplicate else tuple(by_decade[e] for e in sorted(by_decade))
+        )
     return AxisCalibration(
         x_min_v=min(x_ticks),
         x_max_v=max(x_ticks),
@@ -160,7 +173,8 @@ def infer_position_axis_calibration(
     calibration = _seat_linear_y_ticks_on_grid(
         calibration, image, plot, page=page, transform=transform
     )
-    return _seat_regular_log_x_ticks_on_grid(calibration, image, plot)
+    calibration = _seat_regular_log_x_ticks_on_grid(calibration, image, plot)
+    return anchor_capacitance_axes_on_grid(calibration, image, plot)
 
 
 class _OcrWordsPage:
@@ -588,6 +602,7 @@ def infer_ocr_position_axis_calibration(
         calibration = _seat_regular_log_x_ticks_on_grid(
             calibration, image, plot
         )
+        calibration = anchor_capacitance_axes_on_grid(calibration, image, plot)
         return calibration, reject_bad_position_calibration(calibration, plot)
 
     calibration, base_error = fit_attempt(base_words)
@@ -1517,6 +1532,14 @@ def axis_calibration_to_json(calibration: AxisCalibration) -> dict[str, object]:
         "y_grid_candidate_count": calibration.y_grid_candidate_count,
         "y_grid_span_fraction": calibration.y_grid_span_fraction,
         "y_grid_residual_px": calibration.y_grid_residual_px,
+        "x_grid_anchor_error": calibration.x_grid_anchor_error,
+        "y_grid_anchor_error": calibration.y_grid_anchor_error,
+        "x_grid_check": calibration.x_grid_check,
+        "y_grid_check": calibration.y_grid_check,
+        "x_grid_anchor_attempt": calibration.x_grid_anchor_attempt,
+        "y_grid_anchor_attempt": calibration.y_grid_anchor_attempt,
+        "x_grid_anchoring": calibration.x_grid_anchoring,
+        "y_grid_anchoring": calibration.y_grid_anchoring,
     }
     if calibration.x_source_ticks_v:
         payload["x_source_ticks_v"] = list(calibration.x_source_ticks_v)

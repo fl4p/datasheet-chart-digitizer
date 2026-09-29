@@ -192,7 +192,9 @@ class InfineonFilledCurveEndToEnd(unittest.TestCase):
                 for row in point_rows
                 if row["trace"] == name
             )
-            self.assertAlmostEqual(98.272809, max_vds, places=6)
+            # 98.272809 V on the label-centre calibration; grid-anchored
+            # x axis (every tick verified on its rule) serves 98.393789 V.
+            self.assertAlmostEqual(98.393789, max_vds, places=6)
 
 
 if __name__ == "__main__":

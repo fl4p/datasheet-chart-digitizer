@@ -91,6 +91,16 @@ class AxisCalibration:
     x_grid_candidate_count: int | None = None
     x_grid_span_fraction: float | None = None
     x_grid_residual_px: float | None = None
+    # capacitance_grid_anchor: why a label-served axis could not be seated,
+    # and the tri-state guard verdict on each SERVED axis mapping
+    x_grid_anchor_error: str | None = None
+    y_grid_anchor_error: str | None = None
+    x_grid_check: dict | None = None
+    y_grid_check: dict | None = None
+    x_grid_anchor_attempt: str | None = None
+    y_grid_anchor_attempt: str | None = None
+    x_grid_anchoring: dict | None = None
+    y_grid_anchoring: dict | None = None
 
 
 @dataclass(frozen=True)
