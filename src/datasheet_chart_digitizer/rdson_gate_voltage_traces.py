@@ -68,6 +68,7 @@ class Trace:
     dropped_stub_points: list = field(default_factory=list)
     row_traced_points: list = field(default_factory=list)   # F4-1: steep head traced row by row
     tail_from: list = field(default_factory=list)            # F4-4: points taken over from a shared tail
+    frame_traced: dict = field(default_factory=dict)         # R5: right end traced to the frame
 
 
 @dataclass(frozen=True)
@@ -480,7 +481,8 @@ def raster_traces(
     # branches take over the tail they merge into FIRST, so a tail's head is
     # never extended up a branch that already has its own trace
     out = group_branches(out, plot)
-    return extend_steep_heads(out, gray, plot, erased_cols, erased_rows)
+    out = extend_steep_heads(out, gray, plot, erased_cols, erased_rows)
+    return extend_tails_to_frame(out, gray, plot)
 
 
 def _admit_tracks(tracks: list[dict], erased_cols: np.ndarray, width: int, height: int, plot: PlotBox) -> list[dict]:
@@ -1723,6 +1725,101 @@ def extend_steep_heads(traces: list[Trace], gray, plot: PlotBox, erased_cols, er
             out.append(trace)
             continue
         out.append(replace_trace(trace, extension + list(pts), row_traced_points=extension))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Round 5: flat right ends traced to the frame
+#
+# The column tracker keeps RASTER_EDGE_MARGIN_PX clear of the frame, so every
+# raster curve that runs to the right frame stopped 3 px short of it
+# (BRCS020N03RA: 9.965 V of a 10 V frame, so its 10 V table row was
+# not_evaluable). The ink is followed on from the tracker's last point,
+# column by column, up to the frame. The frame stroke itself is dark in every
+# row, so a curve cannot be measured inside it; where the curve's stroke shows
+# again just OUTSIDE the frame (its end pokes past the frame's outer edge),
+# the frame columns are bridged between the ink measured on both sides -- the
+# same as an erased grid rule is bridged. Without ink on the far side nothing
+# is added inside the frame stroke: no extrapolation.
+
+FRAME_TAIL_START_PX = RASTER_EDGE_MARGIN_PX + 1   # the tracker stopped at its margin, not on its own
+FRAME_COLUMN_DARK = 0.9       # a column dark in >= 90 % of the plot rows is the frame stroke
+FRAME_SEARCH_PX = 4           # the frame stroke is looked for within +-4 px of plot.x1
+FRAME_FAR_SIDE_PX = 3         # the curve's end is looked for this far past the frame's outer edge
+FRAME_TAIL_WINDOW_PX = 3.0    # a column's run must centre within this of the previous centre
+FRAME_TAIL_MAX_RUN_PX = 25    # longer runs are not one curve stroke
+
+
+def _frame_columns(gray, plot: PlotBox) -> list[int]:
+    cols = []
+    for x in range(plot.x1 - FRAME_SEARCH_PX, plot.x1 + FRAME_SEARCH_PX + 1):
+        if 0 <= x < gray.shape[1] and (gray[plot.y0 + 3:plot.y1 - 2, x] < ROW_INK_GRAY).mean() >= FRAME_COLUMN_DARK:
+            cols.append(x)
+    return cols
+
+
+def _run_near(gray, x: int, y: float, plot: PlotBox) -> float | None:
+    """Centre of the dark run in column x nearest y, if it centres within the window."""
+    if not 0 <= x < gray.shape[1]:
+        return None
+    lo, hi = plot.y0 + 3, plot.y1 - 2
+    dark = gray[lo:hi, x] < ROW_INK_GRAY
+    best = None
+    start = None
+    for i, d in enumerate(list(dark) + [False]):
+        if d and start is None:
+            start = i
+        elif not d and start is not None:
+            centre, length = lo + 0.5 * (start + i - 1), i - start
+            if length <= FRAME_TAIL_MAX_RUN_PX and abs(centre - y) <= FRAME_TAIL_WINDOW_PX:
+                if best is None or abs(centre - y) < abs(best - y):
+                    best = centre
+            start = None
+    return best
+
+
+def extend_tails_to_frame(traces: list[Trace], gray, plot: PlotBox) -> list[Trace]:
+    """Follow each raster curve's right end from the tracker's margin to the frame."""
+    from dataclasses import replace
+    frame = _frame_columns(gray, plot)
+    if not frame or frame != list(range(frame[0], frame[-1] + 1)):
+        return traces
+    inner, outer = frame[0], frame[-1]
+    out = []
+    for trace in traces:
+        if trace.method != "raster" or not trace.points_px:
+            out.append(trace)
+            continue
+        x_last, y_last = max(trace.points_px, key=lambda p: (p[0], -p[1]))
+        if x_last < plot.x1 - FRAME_TAIL_START_PX or not plot.y0 + 3 < y_last < plot.y1 - 3:
+            out.append(trace)
+            continue
+        measured, y = [], y_last
+        x = int(round(x_last)) + 1
+        while x < min(inner, plot.x1 + 1):
+            centre = _run_near(gray, x, y, plot)
+            if centre is None:
+                break
+            measured.append((float(x), centre))
+            y = centre
+            x += 1
+        bridged, far = [], None
+        if x == inner and inner <= plot.x1:
+            for xf in range(outer + 1, outer + 1 + FRAME_FAR_SIDE_PX):
+                centre = _run_near(gray, xf, y, plot)
+                if centre is not None:
+                    far = (float(xf), centre)
+                    break
+            if far is not None:
+                xa, ya = measured[-1] if measured else (x_last, y_last)
+                bridged = [(float(xb), ya + (far[1] - ya) * (xb - xa) / (far[0] - xa))
+                           for xb in range(inner, plot.x1 + 1)]
+        if not measured and not bridged:
+            out.append(trace)
+            continue
+        note = {"measured_px": measured, "across_frame_stroke_px": bridged,
+                "far_side_ink_px": far, "frame_stroke_px": [inner, outer]}
+        out.append(replace(trace, points_px=list(trace.points_px) + measured + bridged, frame_traced=note))
     return out
 
 

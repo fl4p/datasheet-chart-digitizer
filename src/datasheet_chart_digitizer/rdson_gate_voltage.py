@@ -771,7 +771,14 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
     x_values = [t.value for t in calibration.x_axis.ticks]
     x_span = max(x_values) - min(x_values)
     refusal = None
-    ordered = sorted(traces, key=lambda t: float(np.median([p[1] for p in t.points_px])))
+    # numbered top to bottom by the median height of the ink the trackers
+    # found; the few points added at the right frame (round 5) are left out
+    # of the key so they never renumber a near-tied coincident pair
+    def height(t: Trace) -> float:
+        added = {tuple(p) for p in t.frame_traced.get("measured_px", []) + t.frame_traced.get("across_frame_stroke_px", [])}
+        return float(np.median([p[1] for p in t.points_px if tuple(p) not in added] or [p[1] for p in t.points_px]))
+
+    ordered = sorted(traces, key=height)
     for index, trace in enumerate(ordered):
         # Only the top and bottom rails clip an RDS(VGS) curve (it leaves the
         # RDS range there). A curve ending on the left/right frame has simply
@@ -824,6 +831,17 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             reasons.append(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "
                            f"not traced from {here:.3g} to {top:.3g} mOhm)")
         curve["row_traced_points_px"] = [[round(x, 2), round(y, 2)] for x, y in trace.row_traced_points]
+        # round 5: right end followed to the frame (measured columns, and
+        # columns inside the frame stroke bridged to the ink beyond it)
+        frame = trace.frame_traced
+        curve["frame_traced_points_px"] = [[round(x, 2), round(y, 2)] for x, y in
+                                           frame.get("measured_px", []) + frame.get("across_frame_stroke_px", [])]
+        curve["frame_tracing"] = {
+            "measured_px": [[round(x, 2), round(y, 2)] for x, y in frame.get("measured_px", [])],
+            "across_frame_stroke_px": [[round(x, 2), round(y, 2)] for x, y in frame.get("across_frame_stroke_px", [])],
+            "far_side_ink_px": [round(v, 2) for v in frame["far_side_ink_px"]] if frame.get("far_side_ink_px") else None,
+            "frame_stroke_px": frame.get("frame_stroke_px"),
+        } if frame else None
         curve["shared_tail"] = [dict(note) for note in trace.tail_from]
         if runs_along > FRAME_RUN_FRACTION * (plot.x1 - plot.x0):
             reasons.append(f"curve_{index}_runs_along_the_frame_{runs_along:.0f}px_(clipped)")
