@@ -16,6 +16,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces_mod
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
@@ -419,7 +421,7 @@ class RoundTwoTests(unittest.TestCase):
         # RQ3E110AJ prints "Ta=25C"; OCR reads "T.=25C" -> the kind is kept as
         # "T (subscript unread)", not dropped to null.
         row = _panel("RQ3E110AJ_Rohm", 7, "12")
-        self.assertEqual([c["temperature_kind"] for c in row["curves"]], ["T (subscript unread)"])
+        self.assertEqual({c["temperature_kind"] for c in row["curves"]}, {"T (subscript unread)"})
 
     def test_r2_1_missing_temperature_is_a_reason(self):
         row = _panel("RQ3E180AJ_Rohm", 7, "12")
@@ -483,14 +485,13 @@ class RoundTwoTests(unittest.TestCase):
         # v2 reported "gap 1.94-2.05 V": one edge point at 1.94 V, then the
         # near-vertical double line the column tracker does not sample. The ink
         # is continuous (reviewer pixel dump), so no stretch there may be
-        # called a gap; the lone edge point is not served; the untraced top is
-        # reported as a partial trace.
+        # called a gap. Since F4-1 the steep heads are traced row by row up to
+        # the top frame, so neither curve is partial at its head any more.
         row = _panel("RQ3E110AJ_Rohm", 7, "12")
-        curve = row["curves"][0]
-        self.assertEqual(curve["gap_kinds"]["gap"], [])
+        for curve in row["curves"]:
+            self.assertEqual(curve["gap_kinds"]["gap"], [])
+            self.assertTrue(curve["trace_complete"]["left_end_at_frame"], curve["trace_complete"])
         self.assertFalse(any("_gaps (" in r for r in row["reasons"]), row["reasons"])
-        self.assertGreater(curve["vgs_range_v"][0], 2.0)
-        self.assertTrue(any(r.startswith("curve_0_partial_raster_trace") for r in row["reasons"]))
 
     def test_r2_8_unsampled_stretch_on_continuous_ink_is_an_untraced_section(self):
         # WSR3090 curve 2: 7.56-7.78 V, where the 25 C curve runs along the
@@ -648,7 +649,10 @@ class RoundThreeTests(unittest.TestCase):
         # own points, same height: 5 are a branch, 4 are not.
         cap = _captured("RQ6E080AJ_Rohm")[(7, "12")]
         plot = cap["calibration"].plot
-        branch = min(cap["traces"], key=lambda t: len(t.points_px)).points_px
+        # the branch as v3 served it (golden fixture; since F4-4 it is part of
+        # the 8 A curve, so it is read from the frozen v3 points)
+        fixture = Path(__file__).resolve().parent / "fixtures" / "rds_vgs_golden" / "RQ6E080AJ_Rohm" / "points_c0.csv"
+        branch = [tuple(float(v) for v in line.split(",")[2:4]) for line in fixture.read_text().splitlines()[1:]]
         self.assertEqual(len(branch), 9)
         width, height = cap["gray"].shape[1], plot.y1 - plot.y0
         five = [branch[i] for i in (0, 2, 4, 6, 8)]
@@ -711,7 +715,9 @@ class RoundThreeTests(unittest.TestCase):
         # a stub of 1-2 points is dropped if >= 3 points remain; 3 points
         # are not a stub; a remainder of 2 is not enough to drop against.
         cap = _captured("RQ3E180AJ_Rohm")[(7, "12")]
-        branch = next(t for t in cap["traces"] if t.points_px[0][0] < 445).points_px
+        trace = next(t for t in cap["traces"] if t.points_px[0][0] < 445)
+        rows = set(map(tuple, trace.row_traced_points))
+        branch = [p for p in trace.points_px if tuple(p) not in rows]   # the column samples
         erased = __import__("numpy").zeros(cap["gray"].shape[1], dtype=bool)
 
         def dropped(k, rest):
@@ -727,12 +733,13 @@ class RoundThreeTests(unittest.TestCase):
     # -- R3-6 / N3-4 ------------------------------------------------------------
 
     def test_r3_6_twin_branches_get_the_same_flag_from_their_ink(self):
+        # both RQ6E080AJ branches reach the top frame; since F4-4 each is a
+        # whole curve (its branch + the shared tail), and both are usable
         row = _panel("RQ6E080AJ_Rohm", 7, "12")
-        twins = [c for c in row["curves"] if c["points"] and c["vgs_range_v"][1] < 1.9]
-        self.assertEqual(len(twins), 2, [c["vgs_range_v"] for c in row["curves"]])
-        self.assertEqual({c["usable"] for c in twins}, {True})
-        for curve in twins:
-            self.assertTrue(curve["trace_complete"]["left_ink_reaches_frame"], curve["trace_complete"])
+        self.assertEqual(len(row["curves"]), 2, [c["vgs_range_v"] for c in row["curves"]])
+        self.assertEqual({c["usable"] for c in row["curves"]}, {True})
+        for curve in row["curves"]:
+            self.assertTrue(curve["trace_complete"]["left_end_at_frame"], curve["trace_complete"])
         self.assertFalse(any("both ends inside the plot" in r for r in row["reasons"]))
 
     # -- R3-7 / N3-5 ------------------------------------------------------------
@@ -975,14 +982,33 @@ class RoundThreeLateTests(unittest.TestCase):
         self.assertTrue(reasons and reasons[0].startswith("curve_0_readout_outside_calibrated_span"), reasons)
         self.assertEqual(rgv._span_state(v3, 4.5, 12.0)["state"], "inside")
 
-    # -- R3-10: every used tick marked, off the grid ----------------------------
+    # -- R3-10 as reverted by F4-2: the v3 tick marks, every used tick --------
 
-    def test_r3_10_every_used_tick_is_marked_outside_the_datasheet_crop(self):
+    def test_f4_2_every_used_tick_is_drawn_in_the_v3_style_on_the_plot(self):
+        calls = []
+        real = report.draw_axis_ticks
+
+        def spy(image, plot, **kwargs):
+            calls.append((image.shape, kwargs))
+            return real(image, plot, **kwargs)
+
         for name, page, diagram in (("RQ3E110AJ_Rohm", 7, "12"), ("FDP8870_onsemi", 5, "9")):
-            row = _panel(name, page, diagram)
-            marks = row["overlay_tick_marks"]
-            self.assertEqual(sorted(marks["x"]), sorted(t["value"] for t in row["calibration"]["x_axis"]["ticks"]), name)
-            self.assertEqual(sorted(marks["y"]), sorted(t["value"] for t in row["calibration"]["y_axis"]["ticks"]), name)
+            calls.clear()
+            _CACHE.pop(name, None)
+            with patch.object(report, "draw_axis_ticks", spy):
+                row = _panel(name, page, diagram)
+            self.assertEqual(len(calls), 1, name)
+            shape, kwargs = calls[0]
+            self.assertEqual(sorted(v for _p, v in kwargs["x_ticks"]),
+                             sorted(t["value"] for t in row["calibration"]["x_axis"]["ticks"]), name)
+            self.assertEqual(sorted(v for _p, v in kwargs["y_ticks"]),
+                             sorted(t["value"] for t in row["calibration"]["y_axis"]["ticks"]), name)
+            self.assertEqual(kwargs["color"], (255, 0, 0))   # blue "+" markers, as in v3
+            self.assertNotIn("overlay_tick_marks", row)
+            # drawn on the crop itself: no white axis band added around it
+            box = row["crop_box_pt"]
+            self.assertLessEqual(abs(shape[1] - (box[2] - box[0]) * row["crop_dpi"] / 72), 2, (name, shape))
+            self.assertLessEqual(abs(shape[0] - (box[3] - box[1]) * row["crop_dpi"] / 72), 2, (name, shape))
 
     # -- R3-11: a curve above the table max, bindings unknown -------------------
 
@@ -1047,9 +1073,9 @@ class RoundThreeLateTests(unittest.TestCase):
                 self.assertEqual(on_ink, [], (name, label))
 
     def test_r3_12_unknown_labels_are_spelled_out(self):
-        row = _panel("RQ3E180AJ_Rohm", 7, "12")
-        legend = " ".join(t for t, _c in report._legend_lines(row, 4000))
+        legend = " ".join(t for t, _c in report._legend_lines(_panel("RQ3E180AJ_Rohm", 7, "12"), 4000))
         self.assertIn("T unknown", legend)
+        legend = " ".join(t for t, _c in report._legend_lines(_panel("RQ6E080AJ_Rohm", 7, "12"), 4000))
         self.assertIn("ID unknown", legend)
 
     # -- R3-13: FDP8870 coincident tails ------------------------------------------
@@ -1076,7 +1102,7 @@ class RoundThreeLateTests(unittest.TestCase):
             self.assertAlmostEqual(spans[0]["to_vgs_v"], 10.0, delta=0.01)
         self.assertTrue(any(r.startswith("curve_0_coincident_with_curve_1") for r in row["reasons"]))
         # separated curves are not called coincident (WSR3090: >= 35 px apart)
-        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("RQ3E180AJ_Rohm", 7, "12")):
+        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("BRCS020N03RA_LCSC_C22449012", 4, "5")):
             for curve in _panel(name, page, diagram)["curves"]:
                 self.assertEqual(curve["coincident_with"], [], name)
 
@@ -1119,6 +1145,132 @@ class RoundThreeLateTests(unittest.TestCase):
             color = np.asarray(report.curve_color(curve), dtype=int)
             near = np.abs(body[y - 2:y + 3, x - 2:x + 3].astype(int) - color).max(axis=2) <= 40
             self.assertTrue(near.any(), curve["curve_index"])
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class RoundFourTests(unittest.TestCase):
+    """Fab's v4 overlay review (F4-1..F4-5), each on its real case."""
+
+    # -- F4-1: steep heads to the frame -----------------------------------------
+
+    def _top_mohm(self, row):
+        cal = row["calibration"]["y_axis"]
+        return (cal["m"] * row["plot_box_px"]["y0"] + cal["b"]) * row["calibration"]["y_to_mohm"]
+
+    def test_f4_1_steep_heads_reach_the_top_frame(self):
+        # v4: RQ3E110AJ started at 23.4 mOhm, RQ3E180AJ's 9 A / 18 A branches
+        # at 39.7 / 48.2 mOhm; the printed ink runs to the 30 / 50 mOhm top
+        for name, page, diagram, count in (("RQ3E110AJ_Rohm", 7, "12", 2), ("RQ3E180AJ_Rohm", 7, "12", 2),
+                                           ("RQ6E080AJ_Rohm", 7, "12", 2)):
+            row = _panel(name, page, diagram)
+            top = self._top_mohm(row)
+            self.assertEqual(len(row["curves"]), count, name)
+            for curve in row["curves"]:
+                highest = max(r for _v, r in curve["points"])
+                self.assertGreaterEqual(highest, 0.98 * top, (name, curve["curve_index"], highest, top))
+                self.assertTrue(curve["trace_complete"]["left_end_at_frame"], (name, curve["curve_index"]))
+            self.assertFalse(any("head_not_traced_to_frame" in r for r in row["reasons"]), name)
+
+    def test_f4_1_row_traced_points_are_on_ink(self):
+        for name in ("RQ3E110AJ_Rohm", "RQ3E180AJ_Rohm"):
+            cap = _captured(name)[(7, "12")]
+            gray = cap["gray"]
+            traced = [p for t in cap["traces"] for p in t.row_traced_points]
+            self.assertGreater(len(traced), 100, name)
+            off = [(x, y) for x, y in traced
+                   if gray[int(y), max(0, int(round(x)) - 2):int(round(x)) + 3].min() >= 150]
+            self.assertLessEqual(len(off), 0.02 * len(traced), (name, off[:5]))
+
+    def test_f4_1_an_untraced_head_is_stated_plainly(self):
+        # the same real panel with the row tracker off: the ink still runs to
+        # the frame, and the reason must say what was not traced
+        _CACHE.pop("RQ3E110AJ_Rohm", None)
+        try:
+            with patch.object(traces_mod, "extend_steep_heads", lambda traces, *a: traces):
+                row = _panel("RQ3E110AJ_Rohm", 7, "12")
+            stated = [r for r in row["reasons"] if "head_not_traced_to_frame" in r]
+            self.assertTrue(stated, row["reasons"])
+            self.assertIn("printed ink continues to the frame; not traced from", stated[0])
+            self.assertIn("to 30 mOhm", stated[0])
+        finally:
+            _CACHE.pop("RQ3E110AJ_Rohm", None)
+
+    # -- F4-3: arrows followed to the curve they point at ------------------------
+
+    def test_f4_3_wsr3090_temperatures_follow_the_arrows(self):
+        row = _panel("WSR3090_LCSC_C719278", 3, "2")
+        by_height = sorted(row["curves"], key=lambda c: np.median([p[1] for p in c["points_px"]]))
+        self.assertEqual([c["temperature_c"] for c in by_height], [125.0, 100.0, 25.0])
+        for curve in row["curves"]:
+            self.assertEqual(curve["parameter_binding"]["temperature_c"], "leader_line")
+        self.assertTrue(any("25" in t for t in row["labels_read_at_arrow_tails"]), row["labels_read_at_arrow_tails"])
+        # the 125 C arrow crosses the 100 C curve on its way: its tip is on the top curve
+        tips = [l["tip"] for l in row["raster_leaders_px"] if 740 <= l["tip"][0] <= 780]
+        self.assertTrue(tips)
+        top = by_height[0]
+        self.assertLess(min(np.hypot(p[0] - tips[0][0], p[1] - tips[0][1]) for p in top["points_px"]), 5.0)
+        # bound, the table rows are evaluable, and the curve-above-max notes resolve
+        self.assertNotEqual(row["validation"]["verdict"], "not_evaluable")
+        self.assertEqual(row["validation"]["diagnostics"], [])
+        self.assertFalse(any("temperature_c_unknown" in r for r in row["reasons"]), row["reasons"])
+
+    def test_f4_3_a_leader_ending_in_touching_lines_names_neither(self):
+        # RQ3E110AJ: both ID leaders end in the 11.0 A / 5.5 A band where the
+        # two lines touch: IDs stay unknown, and the note says why
+        row = _panel("RQ3E110AJ_Rohm", 7, "12")
+        self.assertEqual({c["id_a"] for c in row["curves"]}, {None})
+        self.assertTrue(any("leader_tip_between_touching_curves" in n for n in row["label_binding_notes"]),
+                        row["label_binding_notes"])
+
+    def test_f4_3_rq3e180aj_ids_bound_by_their_leaders(self):
+        row = _panel("RQ3E180AJ_Rohm", 7, "12")
+        by_x = sorted(row["curves"], key=lambda c: c["points_px"][0][0])
+        self.assertEqual([c["id_a"] for c in by_x], [9.0, 18.0])
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in by_x}, {"leader_line"})
+
+    # -- F4-4: exactly the printed curves ------------------------------------------
+
+    def test_f4_4_two_printed_curves_are_two_complete_curves(self):
+        for name, merge_from in (("RQ6E080AJ_Rohm", 1.95), ("RQ3E180AJ_Rohm", 1.75), ("RQ3E110AJ_Rohm", 2.05)):
+            row = _panel(name, 7, "12")
+            self.assertEqual(len(row["curves"]), 2, name)
+            for curve in row["curves"]:
+                self.assertGreaterEqual(curve["vgs_range_v"][1], 4.9, (name, curve["vgs_range_v"]))
+                other = 1 - curve["curve_index"]
+                spans = [c for c in curve["coincident_with"] if c["curve_index"] == other]
+                self.assertEqual(len(spans), 1, (name, curve["coincident_with"]))
+                self.assertAlmostEqual(spans[0]["from_vgs_v"], merge_from, delta=0.1)
+                self.assertEqual(_readout(curve, 4.5)["status"], "read")
+            # the merged tail is never a curve of its own: every curve has its
+            # own head at the top frame
+            self.assertEqual({c["trace_complete"]["left_end_at_frame"] for c in row["curves"]}, {True}, name)
+
+    def _visible_columns(self, row, curve, v0, v1):
+        import numpy as np
+        body = np.full((1000, 1200, 3), 255, dtype=np.uint8)
+        report._draw_curves(body, row["curves"])
+        lo, hi = int(_px_at(row, v0)), int(_px_at(row, v1))
+        color = np.asarray(report.curve_color(curve), dtype=int)
+        near = np.abs(body[:, lo:hi].astype(int) - color).max(axis=2) <= 40
+        return near.any(axis=0).mean()
+
+    def test_f4_5_fdp8870_both_curves_show_everywhere_with_one_style(self):
+        # v4: c0 looked cut 3.4-4.4 V (c1 drawn over it 0.5-2.5 px away) and
+        # dotted from 4.41 V (dashes). Nested widths: every column shows both.
+        row = _panel("FDP8870_onsemi", 5, "9")
+        for v0, v1 in ((3.4, 4.4), (4.45, 9.9)):
+            for curve in row["curves"]:
+                self.assertGreaterEqual(self._visible_columns(row, curve, v0, v1), 0.95, (curve["curve_index"], v0, v1))
+        widths = report.line_widths(row["curves"])
+        self.assertGreater(widths[0], widths[1])
+
+    def test_f4_5_nesting_holds_on_every_multi_curve_panel(self):
+        for name, page, diagram in (("WSR3090_LCSC_C719278", 3, "2"), ("RQ6E080AJ_Rohm", 7, "12")):
+            row = _panel(name, page, diagram)
+            widths = report.line_widths(row["curves"])
+            ordered = [widths[c["curve_index"]] for c in sorted(row["curves"], key=lambda c: c["curve_index"])]
+            self.assertEqual(ordered, sorted(ordered, reverse=True), name)
+            self.assertEqual(len(set(ordered)), len(ordered), name)
 
 
 def _px_at(row: dict, vgs: float) -> float:

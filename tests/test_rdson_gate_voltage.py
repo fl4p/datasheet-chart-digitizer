@@ -366,19 +366,22 @@ class ReadoutTests(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheet folder and tesseract")
 class RasterTests(unittest.TestCase):
-    def test_rohm_embedded_image_chart_reads_one_coincident_line(self):
+    def test_rohm_embedded_image_chart_reads_both_printed_curves(self):
         with _scratch("rdsvgs-raster-") as tmp:
             results, _ = rgv.digitize_pdf(_pdf("RQ3E110AJ_Rohm"), Path(tmp))
         row = _panel(results, 7, "12")
         self.assertEqual(row["trace_method"], "raster")
         self.assertEqual([t["value"] for t in row["calibration"]["x_axis"]["ticks"]][-1], 10.0)
-        self.assertEqual(len(row["curves"]), 1)
-        curve = row["curves"][0]
-        # Two ID labels (11.0 A, 5.5 A) point at one printed line: the ID
-        # stays unknown and the panel goes to review, never ok.
-        self.assertIsNone(curve["id_a"])
+        # Two printed curves (11.0 A, 5.5 A) run as one band and then one line
+        # (review F4-4): two curves, coincident over the shared line. Both
+        # ID leaders end where the lines touch: the IDs stay unknown and the
+        # panel goes to review, never ok.
+        self.assertEqual(len(row["curves"]), 2)
+        for curve in row["curves"]:
+            self.assertIsNone(curve["id_a"])
+            self.assertAlmostEqual(_readout(curve, 4.5)["rds_mohm"], 8.62, delta=0.25)
+            self.assertTrue(curve["coincident_with"])
         self.assertEqual(row["status"], "review_required")
-        self.assertAlmostEqual(_readout(curve, 4.5)["rds_mohm"], 8.62, delta=0.25)
 
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")

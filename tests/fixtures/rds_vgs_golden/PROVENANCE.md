@@ -36,6 +36,23 @@ check. The goldens pin the output that passed, so any change to it has to be exp
 | SIS176LDN_Vishay | SIS176LDN_Vishay.pdf | 4 | t491 | `700ec58e30dd04c89324f262d041185a8423be7dca730c607f537b9b3779d820` |
 | WSR3090_LCSC_C719278 | WSR3090_LCSC_C719278.pdf | 3 | 2 | `1df5861af883cefe68c908815085e0b3f97f090a211e08c44a3176e319fdd9fd` |
 
+## Round 4 (Fab's review of the v4 overlays, 2026-09-29)
+
+| part | state |
+|---|---|
+| CSD17306Q5A_TI, CSD17302Q5A_TI, IRLB8748_IFX, IRLB8743_IFX, AO3400A_UMW_C347475, CSD17304Q3_TI, CSD17307Q5A_TI, SIS176LDN_Vishay, CSD18502KCS_TI | **re-verified by Fab on v4, 2026-09-29.** Their data is unchanged (frozen from v3; v4 matched it). |
+| BRCS020N03RA_LCSC_C22449012 | **human-verified by Fab on the v4 overlays, 2026-09-29.** Frozen from `batch15_v4` (`/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch15_v4/rdson_gate_voltage.json`, manifest `batch15_v4_manifest.json`; v4 was produced at 9905d9d, and dac11de added a test only). SHA-256 `f1dcb8bb3f648e5d580d891bf83237c5e349318641ec00d680d7d35c218395ce`. The same caveat applies: a visual check, not a guarantee of every point. |
+| BRCS020N03RA_LCSC_C22449012 (after F4-1) | **pending re-bless: F4-1.** It was frozen from v4 as Fab verified it. F4-1 then traced c0's steep head up the band it shares with c1, to the top frame (77 row-traced points, 3.40–3.56 V). No v4 point moved. Until Fab re-blesses, the ink is pinned as for the other pending panels. |
+| WSR3090_LCSC_C719278 | **pending re-bless: F4-3.** Fab found the temperature labels wrong or missing on v4. The fix binds them by following the label arrows. Until Fab re-blesses, the test pins only the ink (see below). |
+| RQ6E080AJ_Rohm | **pending re-bless: F4-4.** Fab found 3 served pieces for 2 printed curves on v4. Now 2 curves, each its own branch plus the shared tail. The test pins only the ink. |
+
+`PENDING.json` lists the two pending panels. Only Fab's re-blessing removes an entry. For
+a pending panel the test checks the calibration. It also checks that every golden point
+is still served by some curve, and that every served point is either a golden point or a
+point the row tracker added on a steep head (F4-1, listed in `row_traced_points_px`). Every
+read value must also be a golden read value. Labels, curve count and grouping are not
+compared until the panel is re-blessed.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the

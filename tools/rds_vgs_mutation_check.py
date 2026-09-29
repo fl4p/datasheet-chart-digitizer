@@ -153,6 +153,7 @@ def _char_clipped(text, color, width_px=None):
 
 R3 = "RoundThreeTests."
 L = "RoundThreeLateTests."
+F4 = "RoundFourTests."
 B = "BoundaryTests."
 
 
@@ -429,10 +430,45 @@ MUTANTS = {
                 reasons.append(f"curve_''', '''            if False:
                 reasons.append(f"curve_'''))],
         [L + "test_r3_9_readouts_below_the_used_ticks_are_flagged"]),
-    "ticks_not_marked (R3-10)": (
-        [_source_mutant(report, "_axis_bands", ('''        marks["y"].append(tick.value)
-''', ""))],
-        [L + "test_r3_10_every_used_tick_is_marked_outside_the_datasheet_crop"]),
+    # ---- round 4 (Fab's review of the v4 overlays) ---------------------------------
+    "no_row_tracking (F4-1)": (
+        [patch.object(traces, "extend_steep_heads", lambda traces_, *a: traces_)],
+        [F4 + "test_f4_1_steep_heads_reach_the_top_frame"]),
+    "row_tracker_stops_at_first_rule (F4-1)": (
+        [patch.object(traces, "ROW_MAX_MISS", 0), patch.object(traces, "ROW_WINDOW_PX", 0.5)],
+        [F4 + "test_f4_1_steep_heads_reach_the_top_frame"]),
+    "row_tracker_follows_band_centre (F4-1/F4-4)": (
+        [patch.object(traces, "_dark_cores", lambda profile, offset: [offset + 0.5 * (len(profile) - 1)])],
+        [F4 + "test_f4_4_two_printed_curves_are_two_complete_curves"]),
+    "untraced_head_not_stated (F4-1)": (
+        [_source_mutant(rgv, "_curves", ('reasons.append(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "',
+                                         'print(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "'))],
+        [F4 + "test_f4_1_an_untraced_head_is_stated_plainly"]),
+    "no_raster_leaders (F4-3)": (
+        [patch.object(rgv, "raster_leaders", lambda *a, **k: ([], []))],
+        [F4 + "test_f4_3_wsr3090_temperatures_follow_the_arrows", F4 + "test_f4_3_rq3e180aj_ids_bound_by_their_leaders"]),
+    "leader_bends_with_the_curve (F4-3)": (
+        [_source_mutant(traces, "_follow_straight", ("tip, last_run", "tip, last_run"),
+                        ("p = centre + ((origin - centre) @ axis + t) * axis", "p = (tip if miss == 0 else centre) + axis"))],
+        [F4 + "test_f4_3_wsr3090_temperatures_follow_the_arrows"]),
+    "no_tail_ocr (F4-3)": (
+        [patch.object(rgv, "_ocr_leader_tail", lambda *a: None)],
+        [F4 + "test_f4_3_wsr3090_temperatures_follow_the_arrows"]),
+    "touching_lines_not_ambiguous (F4-3)": (
+        [patch.object(traces, "LEADER_TIP_CLEAR_PX", 0)],
+        [F4 + "test_f4_3_a_leader_ending_in_touching_lines_names_neither"]),
+    "tip_measured_to_samples (F4-3)": (
+        [_source_mutant(traces, "_point_to_trace", ('if trace.method == "raster" and len(trace.points_px) > 1:', "if False:"))],
+        [F4 + "test_f4_3_rq3e180aj_ids_bound_by_their_leaders"]),
+    "no_branch_grouping (F4-4)": (
+        [patch.object(traces, "group_branches", lambda traces_, plot: traces_)],
+        [F4 + "test_f4_4_two_printed_curves_are_two_complete_curves"]),
+    "tail_head_samples_lost (F4-4)": (
+        [_source_mutant(traces, "group_branches", ("if j in tails else []", "if False else []"))],
+        []),
+    "ticks_not_drawn (F4-2, R3-10 reverted to the v3 style)": (
+        [patch.object(report, "draw_axis_ticks", lambda *a, **k: None)],
+        [L + "test_f4_2_every_used_tick_is_drawn_in_the_v3_style_on_the_plot"]),
     "no_max_diagnostics (R3-11)": (
         [patch.object(report, "_max_diagnostics", lambda *a: [])],
         [L + "test_r3_11_brcs020n03ra_curve_above_table_max_is_recorded_not_judged"]),
@@ -457,15 +493,21 @@ MUTANTS = {
     "COINCIDENT_MIN_PX_huge (R3-13)": (
         [patch.object(rgv, "COINCIDENT_MIN_PX", 10000)],
         [L + "test_r3_13_fdp8870_coincidence_is_recorded_both_ways"]),
-    "coincident_drawn_solid (R3-13b)": (
-        [_source_mutant(report, "_draw_curves", ("if over and (p0[0] // 10) % 2:", "if False:"))],
-        [L + "test_r3_13_both_coincident_curves_stay_visible"]),
+    "no_nesting_equal_widths (F4-5, R3-13b)": (
+        [patch.object(report, "NESTED_STEP_PX", 0)],
+        [L + "test_r3_13_both_coincident_curves_stay_visible", F4 + "test_f4_5_fdp8870_both_curves_show_everywhere_with_one_style",
+         F4 + "test_f4_5_nesting_holds_on_every_multi_curve_panel"]),
+    "nesting_reversed (F4-5)": (
+        [_source_mutant(report, "line_widths", ("(len(order) - 1 - rank)", "rank"))],
+        [F4 + "test_f4_5_fdp8870_both_curves_show_everywhere_with_one_style",
+         F4 + "test_f4_5_nesting_holds_on_every_multi_curve_panel"]),
     "dark_palette_colour (R3-14)": (
         [patch.object(report, "_COLORS", ((130, 0, 75),) + report._COLORS[1:])],
         [L + "test_r3_14_palette_is_bright_against_black_ink"]),
     "no_halo (R3-14)": (
-        [_source_mutant(report, "_draw_curves", ("cv2.line(body, p0, p1, (255, 255, 255), 7, cv2.LINE_AA)", "pass"),
-                        ("cv2.circle(body, (int(round(x)), int(round(y))), 5, (255, 255, 255), -1, cv2.LINE_AA)", "pass"))],
+        [_source_mutant(report, "_draw_curves",
+                        ('cv2.line(body, p0, p1, (255, 255, 255), widths[curve["curve_index"]] + 4, cv2.LINE_AA)', "pass"),
+                        ("cv2.circle(body, centre, width // 2 + 3, (255, 255, 255), -1, cv2.LINE_AA)", "pass"))],
         [L + "test_r3_14_traces_have_white_halos_over_black_ink"]),
 }
 
