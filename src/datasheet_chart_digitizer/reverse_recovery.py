@@ -48,7 +48,8 @@ from .reverse_recovery_validation import (
     verify_axis_sides, verify_scale,
 )
 from .find_charts import group_words_into_lines, line_bbox
-from .numeric_axis import AxisTick, fit_axis_ticks
+from .gridline_anchor import anchor_axis_on_grid, check_served_on_grid
+from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 
 RR_CAPTION_RE = re.compile(r"(?i)^figure\s*(\d+)\s*[:.]?\s*(diode\s+reverse\s+recovery.*)$")
 TEMP_RE = re.compile(r"(?i)^(\d+)\s*[ºo°]?C$")
@@ -67,6 +68,9 @@ class Axis:
     n_ticks: int
     residual: float  # max |fit - label| in value units
     ticks: list = field(default_factory=list)  # (page-space px, parsed value) pairs
+    # gridline_anchor evidence once the axis is seated on the observed grid:
+    # label pt vs line pt per tick, and the served-mapping grid check
+    grid: dict | None = None
 
     def value(self, px: float) -> float:
         return self.m * px + self.b
@@ -260,6 +264,95 @@ def _calibrate(panel_plot, words) -> tuple[Axis | None, Axis | None, Axis | None
         elif panel_plot.y0 - 6 <= wy <= panel_plot.y1 + 6 and 0 < w[0] - panel_plot.x1 < 26:
             yr_ticks.append((wy, v))
     return _fit_linear(x_ticks), _fit_linear(yl_ticks), _fit_linear(yr_ticks)
+
+
+# Render scale for seating tick labels on the raster grid. 400 dpi puts an AO
+# 0.84 pt grid rule at ~4.7 px, well inside gridline_anchor's width limits.
+_GRID_RENDER_DPI = 400
+
+
+def _anchor_axes_on_grid(page, plot, axes: dict[str, Axis | None]) -> tuple[dict, list[str]]:
+    """Seat each label-fitted axis on the gridlines its labels name.
+
+    ``_calibrate`` fits tick-LABEL centres. AO sets the y labels ~0.5 pt below
+    their rule, so that fit served every y value ~2.7 px (400 dpi) low while
+    its value-space residual, measured against the same labels, looked clean.
+    Labels now only identify values: each axis is re-fitted on the observed
+    grid (gridline_anchor.anchor_axis_on_grid on a 400 dpi render of the
+    panel) and the SERVED pt mapping is then re-checked at every labelled
+    tick (check_served_on_grid). The right (S / Irm) axis may print half steps
+    between gridlines; those interior labels are identity-only, its end labels
+    must still sit on the frame. An axis that cannot be seated is dropped
+    (None) with the reason, never served from its labels.
+    """
+    import fitz
+
+    scale = _GRID_RENDER_DPI / 72.0
+    clip = plot + (-30, -30, 30, 30)
+    pix = page.get_pixmap(matrix=fitz.Matrix(scale, scale), clip=clip, alpha=False)
+    import numpy as np
+
+    rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
+    gray = rgb[:, :, :3].mean(axis=2).astype(np.uint8)
+
+    def to_index(pt: float, origin: float) -> float:
+        # PDF coordinate -> raster pixel-INDEX coordinate (index i covers
+        # [i, i+1) in continuous render space), the frame gridlines live in
+        return (pt - origin) * scale - 0.5
+
+    out: dict[str, Axis | None] = {}
+    reasons: list[str] = []
+    for name, axis in axes.items():
+        if axis is None:
+            out[name] = None
+            continue
+        orientation = "x" if name == "x" else "y"
+        origin = clip.x0 if orientation == "x" else clip.y0
+        cross = (
+            (to_index(plot.y0, clip.y0), to_index(plot.y1, clip.y0))
+            if orientation == "x"
+            else (to_index(plot.x0, clip.x0), to_index(plot.x1, clip.x0))
+        )
+        labels = [AxisTick(f"{v:g}", v, to_index(pt, origin)) for pt, v in axis.ticks]
+        try:
+            label_axis = fit_axis_ticks(labels, f"rr {name}", model="linear")
+            anchored = anchor_axis_on_grid(
+                gray, label_axis, orientation=orientation, cross_span=cross,
+                name=f"rr {name}",
+                unlined_labels="identity_only" if name == "y_right" else "refuse",
+            )
+        except RuntimeError as exc:
+            out[name] = None
+            reasons.append(f"{name} axis not seated on the grid: {exc}")
+            continue
+        # value = m*index + b  and  index = (pt - origin)*scale - 0.5
+        m = anchored.axis.m * scale
+        b = anchored.axis.b - anchored.axis.m * (scale * origin + 0.5)
+        seated = Axis(
+            m=m, b=b, n_ticks=len(anchored.anchors),
+            residual=max(abs(m * (origin + (a.line_px + 0.5) / scale) + b - a.value)
+                         for a in anchored.anchors),
+            ticks=sorted((origin + (a.line_px + 0.5) / scale, a.value) for a in anchored.anchors),
+        )
+        # Guard the mapping that is SERVED (pt space), mapped back to raster
+        # index space independently of the anchor's own fit.
+        served = NumericAxis("linear", seated.m / scale, seated.m * origin + seated.b + 0.5 * seated.m / scale, (), 0.0, ())
+        check = check_served_on_grid(
+            gray, served, labels, orientation=orientation, cross_span=cross,
+            name=f"rr {name}",
+            unlined_labels="identity_only" if name == "y_right" else "refuse",
+        )
+        if check.status != "verified":
+            out[name] = None
+            reasons.append(f"{name} axis grid check {check.status}: {check.reason}")
+            continue
+        seated.grid = {
+            "render_dpi": _GRID_RENDER_DPI,
+            "anchoring": anchored.payload(),
+            "grid_check": check.payload(),
+        }
+        out[name] = seated
+    return out, reasons
 
 
 def _fill_outline_centerlines(page, plot) -> list[list[tuple[float, float]]]:
@@ -532,6 +625,15 @@ def digitize_pdf(pdf: Path, out_dir: Path, mpn: str | None = None) -> list[dict]
                 results.append(dict(pdf=str(pdf), page=pno + 1, number=pan["number"],
                                     title=pan["title"], error="axis calibration failed"))
                 continue
+            seated, grid_reasons = _anchor_axes_on_grid(
+                page, plot, {"x": ax, "y_left": ayl, "y_right": ayr}
+            )
+            ax, ayl, ayr = seated["x"], seated["y_left"], seated["y_right"]
+            if ax is None or (ayl is None and ayr is None):
+                results.append(dict(pdf=str(pdf), page=pno + 1, number=pan["number"],
+                                    title=pan["title"],
+                                    error="axis calibration failed: " + "; ".join(grid_reasons)))
+                continue
             temps, quants = _label_words(words, plot)
             centerlines = _fill_outline_centerlines(page, plot)
             curves = _classify(centerlines, temps, quants)
@@ -546,6 +648,7 @@ def digitize_pdf(pdf: Path, out_dir: Path, mpn: str | None = None) -> list[dict]
                           x_quantity="IF", curves=curves,
                           conditions=_panel_conditions(words, plot))
             panel.x_quantity = _x_quantity(plot, words, pan["title"], panel.warnings)
+            panel.warnings.extend(grid_reasons)
             _assign_axis_sides(panel, words)
             _apply_calibration(panel)
             verify_axis_sides(panel, words, QUANTITY_UNIT)
@@ -674,6 +777,12 @@ def _apply_calibration(panel: Panel) -> None:
         c.values = [(panel.x_axis.value(x), axis.value(y)) for x, y in c.points_pt]
 
 
+def _axis_manifest(axis: Axis) -> dict:
+    """Calibration record: value = m * pt + b in page points, plus grid evidence."""
+    return dict(n_ticks=axis.n_ticks, residual=axis.residual, m_per_pt=axis.m,
+                b=axis.b, grid=axis.grid)
+
+
 def _j(v: float) -> float | None:
     """JSON-safe number: NaN would make the manifest strict-invalid."""
     return None if v != v else v
@@ -715,7 +824,10 @@ def _emit(panel: Panel, doc, pno: int, pdf: Path, mpn: str, out_dir: Path) -> di
     for axis, kind in ((panel.x_axis, "x"), (panel.y_left, "yl"), (panel.y_right, "yr")):
         if axis is None:
             continue
-        for pos, val in axis.ticks:
+        # crosshairs at the SERVED position of each value (value -> pt), so a
+        # calibration that misses the grid shows it here
+        for _seated_pos, val in axis.ticks:
+            pos = (val - axis.b) / axis.m
             if kind == "x":
                 px, py = to_px((pos, panel.plot.y1))
                 dr.line([px, py - 8, px, py + 8], fill=GREEN, width=3)
@@ -769,11 +881,9 @@ def _emit(panel: Panel, doc, pno: int, pdf: Path, mpn: str, out_dir: Path) -> di
                 warnings=warnings, scale=scale, scale_checks=checks,
                 conditions=panel.conditions,
                 x_quantity=panel.x_quantity,
-                x_axis=dict(n_ticks=panel.x_axis.n_ticks, residual=panel.x_axis.residual),
-                y_left=None if panel.y_left is None else dict(
-                    n_ticks=panel.y_left.n_ticks, residual=panel.y_left.residual),
-                y_right=None if panel.y_right is None else dict(
-                    n_ticks=panel.y_right.n_ticks, residual=panel.y_right.residual),
+                x_axis=_axis_manifest(panel.x_axis),
+                y_left=None if panel.y_left is None else _axis_manifest(panel.y_left),
+                y_right=None if panel.y_right is None else _axis_manifest(panel.y_right),
                 overlay=str(png), curves=curves_meta)
 
 

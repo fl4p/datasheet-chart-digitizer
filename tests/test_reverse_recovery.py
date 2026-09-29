@@ -61,6 +61,29 @@ class Aot414EndToEnd(unittest.TestCase):
         self.assertEqual(self.by_fig[18]["scale"], "FAIL")
         self.assertEqual(self.by_fig[20]["scale"], "FAIL")
 
+    def test_served_axes_sit_on_the_gridlines(self):
+        """AO prints its y labels ~0.4-0.5 pt off their rules. The label-centre
+        fit served every y value 2.0-2.9 px (400 dpi, 0.35-0.46 % of span) off
+        its gridline; the grid-anchored mapping is checked at every tick."""
+        for fig, m in self.by_fig.items():
+            for key in ("x_axis", "y_left", "y_right"):
+                axis = m[key]
+                with self.subTest(fig=fig, axis=key):
+                    self.assertIsNotNone(axis)
+                    check = axis["grid"]["grid_check"]
+                    self.assertEqual(check["status"], "verified", check["reason"])
+                    self.assertLessEqual(check["max_abs_error_px"], 1.0)
+        y_left = self.by_fig[17]["y_left"]["grid"]["anchoring"]["ticks"]
+        # the glyph offset is recorded, not served
+        self.assertTrue(all(-3.2 < t["label_offset_px"] < -1.5 for t in y_left), y_left)
+
+    def test_half_step_softness_axis_is_identity_only_between_lines(self):
+        s_axis = self.by_fig[20]["y_right"]["grid"]["anchoring"]
+        self.assertTrue(s_axis["identity_only_labels"])
+        served = {t["value"] for t in s_axis["ticks"]}
+        self.assertIn(0.0, served)
+        self.assertIn(5.0, served)
+
     def test_table_anchor_agreement(self):
         # spec table: Qrr(IF=20A, 500A/us) = 82 nC typ; chart within 25%
         checks = [k for k in self.by_fig[19]["scale_checks"]
