@@ -31,13 +31,14 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Sequence
 
 import numpy as np
 
 from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 
 Orientation = Literal["x", "y"]
+UnlinedPolicy = Literal["refuse", "identity_only"]
 
 # Pixels darker than this count as ink. Gridlines are often mid-grey, so the
 # threshold is well above black but below the anti-aliased paper background.
@@ -83,6 +84,7 @@ class AnchoredAxis:
     axis: NumericAxis
     anchors: tuple[TickAnchor, ...]
     tolerance_px: float
+    unlined: tuple[AxisTick, ...] = ()
 
     @property
     def max_served_error_px(self) -> float:
@@ -95,6 +97,10 @@ class AnchoredAxis:
             "residual_basis": "observed_lines",
             "tolerance_px": round(self.tolerance_px, 3),
             "max_served_error_px": round(self.max_served_error_px, 3),
+            "identity_only_labels": [
+                {"text": tick.text, "value": tick.value, "label_px": round(tick.pixel, 3)}
+                for tick in self.unlined
+            ],
             "ticks": [
                 {
                     "text": anchor.text,
@@ -125,29 +131,105 @@ def anchor_axis_on_grid(
     cross_span: tuple[float, float],
     name: str,
     ink_threshold: int = _INK_THRESHOLD,
+    unlined_labels: UnlinedPolicy = "refuse",
 ) -> AnchoredAxis:
     """Re-seat *label_axis*'s ticks on observed lines, re-fit, and assert.
 
     *orientation* ``"x"`` means the ticks are vertical lines at x pixels with
     labels below the plot; ``"y"`` means horizontal lines at y pixels with
-    labels left of the plot. *cross_span* is the plot's extent along the other
+    labels beside the plot. *cross_span* is the plot's extent along the other
     axis, used to measure how much of the plot a candidate line covers.
     *ink_threshold* is the grey level below which a pixel counts as ink; raise
     it for charts whose hairline rules render lighter than the default (an
     anti-aliased half-pixel frame rule renders at ~210).
+
+    *unlined_labels* ``"refuse"`` (default) refuses the axis when any label has
+    no observed line under it. ``"identity_only"`` admits an axis whose
+    INTERIOR labels print values between gridlines (a secondary axis with half
+    steps and no tick marks): those labels stay identity evidence and are not
+    served; the two end labels and at least two labels overall must still sit
+    on observed lines, so nothing is extrapolated beyond an anchored line.
     """
-    ticks = sorted(label_axis.ticks, key=lambda tick: tick.pixel)
+    match = identify_tick_lines(
+        gray,
+        label_axis.ticks,
+        model=label_axis.model,
+        orientation=orientation,
+        cross_span=cross_span,
+        name=name,
+        ink_threshold=ink_threshold,
+        unlined_labels=unlined_labels,
+    )
+    anchored_ticks = [
+        AxisTick(tick.text, tick.value, line_px, tick.normalized_text)
+        for tick, line_px in zip(match.ticks, match.line_px)
+    ]
+    axis = fit_axis_ticks(anchored_ticks, name, model=label_axis.model)  # type: ignore[arg-type]
+    anchors = tuple(
+        TickAnchor(
+            tick.text,
+            tick.value,
+            float(tick.pixel),
+            line_px,
+            source,
+            served_pixel(axis, tick.value),
+        )
+        for tick, line_px, source in zip(match.ticks, match.line_px, match.sources)
+    )
+    result = AnchoredAxis(axis, anchors, match.tolerance_px, match.unlined)
+    if result.max_served_error_px > match.tolerance_px:
+        worst = max(anchors, key=lambda anchor: abs(anchor.served_error_px))
+        raise RuntimeError(
+            f"{name}: served calibration misses the {worst.text!r} gridline by "
+            f"{worst.served_error_px:+.2f}px (tolerance {match.tolerance_px:.2f}px)"
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class TickLineMatch:
+    """Which observed line each labelled tick names (identity, not fit)."""
+
+    ticks: tuple[AxisTick, ...]  # the labelled ticks that sit on a line
+    line_px: tuple[float, ...]
+    sources: tuple[str, ...]
+    tolerance_px: float
+    unlined: tuple[AxisTick, ...]  # identity-only labels with no line under them
+
+
+def identify_tick_lines(
+    gray: np.ndarray,
+    label_ticks: Sequence[AxisTick],
+    *,
+    model: str,
+    orientation: Orientation,
+    cross_span: tuple[float, float],
+    name: str,
+    ink_threshold: int = _INK_THRESHOLD,
+    unlined_labels: UnlinedPolicy = "refuse",
+) -> TickLineMatch:
+    """Bind each labelled tick to the observed gridline or tick mark it names.
+
+    Label pixels only SEED the search; the binding is one affine registration
+    of the whole labelled sequence onto observed lines (with the log minor
+    pattern scored), so a label that sits nearer a minor line or a neighbour
+    cannot pick it. Raises RuntimeError when the binding is not evidenced: a
+    label with no line near it (unless *unlined_labels* admits it as
+    identity-only), no registration that seats every tick, two equally good
+    registrations, or line order disagreeing with label order.
+    """
+    ticks = sorted(label_ticks, key=lambda tick: tick.pixel)
     if len(ticks) < 2:
         raise RuntimeError(f"{name}: need >=2 labelled ticks to anchor on the grid")
-    label_px = np.asarray([tick.pixel for tick in ticks], dtype=float)
-    pitch = float(np.median(np.diff(label_px)))
+    all_px = np.asarray([tick.pixel for tick in ticks], dtype=float)
+    pitch = float(np.median(np.diff(all_px)))
     search = _LABEL_TO_LINE_PITCH_FRACTION * pitch
     match_tol = max(_MATCH_TOLERANCE_MIN_PX, _MATCH_TOLERANCE_FRACTION * pitch)
 
     lines = detect_axis_lines(
         gray,
         orientation=orientation,
-        along=(float(label_px[0]) - search, float(label_px[-1]) + search),
+        along=(float(all_px[0]) - search, float(all_px[-1]) + search),
         cross_span=cross_span,
         max_width=max(8, int(round(0.08 * pitch))),
         tick_band=max(3, int(round(0.05 * pitch))),
@@ -155,10 +237,12 @@ def anchor_axis_on_grid(
     )
     centers = np.asarray([line.center_px for line in lines], dtype=float)
 
+    identity_only = unlined_labels == "identity_only"
     candidates: list[list[int]] = []
-    for tick in ticks:
+    for index, tick in enumerate(ticks):
         near = [i for i, c in enumerate(centers) if abs(c - tick.pixel) <= search]
-        if not near:
+        interior = 0 < index < len(ticks) - 1
+        if not near and not (identity_only and interior):
             raise RuntimeError(
                 f"{name}: label {tick.text!r} ({tick.value:g}) at {tick.pixel:.1f}px has "
                 f"no gridline or tick mark within {search:.1f}px; refusing to calibrate "
@@ -166,11 +250,16 @@ def anchor_axis_on_grid(
             )
         candidates.append(near)
 
+    label_px = np.asarray([tick.pixel for tick in ticks], dtype=float)
     coords = np.asarray(
-        [math.log10(t.value) if label_axis.model == "log10" else t.value for t in ticks]
+        [math.log10(t.value) if model == "log10" else t.value for t in ticks]
     )
+    # identity-only: an INTERIOR label the hypothesis does not put on a line
+    # is admitted only if its glyph sits where the hypothesis puts its value
+    optional = [identity_only and 0 < i < len(ticks) - 1 for i in range(len(ticks))]
     hypotheses = _register(
-        centers, coords, label_px, candidates, match_tol, label_axis.model
+        centers, coords, label_px, candidates, match_tol, model,
+        optional=optional, label_search=search,
     )
     if not hypotheses:
         raise RuntimeError(
@@ -187,37 +276,135 @@ def anchor_axis_on_grid(
                 f"(mean label offset {best[1]:.1f}px vs {other[1]:.1f}px); refusing "
                 "to pick a gridline by proximity alone"
             )
-    matched = best[2]
-
-    anchored_ticks = [
-        AxisTick(tick.text, tick.value, float(centers[i]), tick.normalized_text)
-        for tick, i in zip(ticks, matched)
-    ]
+    kept = [tick for tick, i in zip(ticks, best[2]) if i >= 0]
+    unlined = [tick for tick, i in zip(ticks, best[2]) if i < 0]
+    matched = [i for i in best[2] if i >= 0]
+    if len(kept) < 2:
+        raise RuntimeError(f"{name}: fewer than 2 labelled ticks sit on observed lines")
     line_px = np.asarray([centers[i] for i in matched])
-    label_order = np.sign(np.diff(label_px))
-    if np.any(np.sign(np.diff(line_px)) != label_order):
+    kept_label_px = np.asarray([tick.pixel for tick in kept])
+    if np.any(np.sign(np.diff(line_px)) != np.sign(np.diff(kept_label_px))):
         raise RuntimeError(f"{name}: matched gridlines disagree with the label order")
-
-    axis = fit_axis_ticks(anchored_ticks, name, model=label_axis.model)  # type: ignore[arg-type]
-    anchors = tuple(
-        TickAnchor(
-            tick.text,
-            tick.value,
-            float(tick.pixel),
-            float(centers[i]),
-            lines[i].source,
-            served_pixel(axis, tick.value),
-        )
-        for tick, i in zip(ticks, matched)
+    return TickLineMatch(
+        tuple(kept),
+        tuple(float(c) for c in line_px),
+        tuple(lines[i].source for i in matched),
+        match_tol,
+        tuple(unlined),
     )
-    result = AnchoredAxis(axis, anchors, match_tol)
-    if result.max_served_error_px > match_tol:
-        worst = max(anchors, key=lambda anchor: abs(anchor.served_error_px))
-        raise RuntimeError(
-            f"{name}: served calibration misses the {worst.text!r} gridline by "
-            f"{worst.served_error_px:+.2f}px (tolerance {match_tol:.2f}px)"
+
+
+GridVerdict = Literal["verified", "failed", "unverified"]
+
+
+@dataclass(frozen=True)
+class GridCheck:
+    """Does a SERVED axis mapping land on the line each labelled tick names?
+
+    ``verified``: every labelled tick that sits on an observed line is served
+    within tolerance of that line. ``failed``: at least one misses. And
+    ``unverified``: the lines could not be bound (no grid, too few ticks,
+    ambiguous registration) -- never a pass; the caller must refuse, or carry
+    the verdict and downgrade its own status.
+    """
+
+    status: GridVerdict
+    reason: str
+    tolerance_px: float | None
+    ticks: tuple[dict[str, object], ...]
+
+    @property
+    def max_abs_error_px(self) -> float | None:
+        errors = [abs(float(t["served_error_px"])) for t in self.ticks]
+        return max(errors) if errors else None
+
+    def payload(self) -> dict[str, object]:
+        worst = self.max_abs_error_px
+        return {
+            "status": self.status,
+            "reason": self.reason,
+            "tolerance_px": None if self.tolerance_px is None else round(self.tolerance_px, 3),
+            "max_abs_error_px": None if worst is None else round(worst, 3),
+            "ticks": list(self.ticks),
+        }
+
+    def require(self, name: str) -> "GridCheck":
+        """Raise unless verified: the fail-closed use of the verdict."""
+        if self.status != "verified":
+            raise RuntimeError(f"{name}: served calibration grid check {self.status}: {self.reason}")
+        return self
+
+
+def check_served_on_grid(
+    gray: np.ndarray,
+    served: NumericAxis,
+    label_ticks: Sequence[AxisTick],
+    *,
+    orientation: Orientation,
+    cross_span: tuple[float, float],
+    name: str,
+    ink_threshold: int = _INK_THRESHOLD,
+    unlined_labels: UnlinedPolicy = "refuse",
+) -> GridCheck:
+    """Assert the SERVED value->pixel mapping at every labelled tick.
+
+    *served* must be the mapping the caller actually serves values through
+    (its ``model``/``m``/``b``; ticks are ignored), AFTER every later
+    transform. *label_ticks* carry each consumed tick's VALUE and the pixel of
+    its printed label; the label pixel is used only to identify which observed
+    line the value names (``identify_tick_lines``), never as the reference.
+    """
+    try:
+        match = identify_tick_lines(
+            gray,
+            label_ticks,
+            model=served.model,
+            orientation=orientation,
+            cross_span=cross_span,
+            name=name,
+            ink_threshold=ink_threshold,
+            unlined_labels=unlined_labels,
         )
-    return result
+    except (RuntimeError, ValueError) as exc:
+        return GridCheck("unverified", str(exc), None, ())
+    rows = []
+    for tick, line_px, source in zip(match.ticks, match.line_px, match.sources):
+        try:
+            px = served_pixel(served, tick.value)
+        except (ValueError, ZeroDivisionError) as exc:
+            return GridCheck("unverified", f"{name}: served mapping cannot place {tick.value:g}: {exc}", match.tolerance_px, ())
+        rows.append({
+            "text": tick.text,
+            "value": tick.value,
+            "label_px": round(float(tick.pixel), 3),
+            "line_px": round(line_px, 3),
+            "line_source": source,
+            "served_px": round(px, 3),
+            "served_error_px": round(px - line_px, 3),
+        })
+    if not all(math.isfinite(float(r["served_error_px"])) for r in rows):
+        return GridCheck("unverified", f"{name}: non-finite served pixel", match.tolerance_px, tuple(rows))
+    worst = max(rows, key=lambda r: abs(float(r["served_error_px"])))
+    unlined_note = (
+        f"; identity-only labels without a line: {[t.text for t in match.unlined]}"
+        if match.unlined else ""
+    )
+    if abs(float(worst["served_error_px"])) > match.tolerance_px:
+        return GridCheck(
+            "failed",
+            f"{name}: served calibration misses the {worst['text']!r} line by "
+            f"{float(worst['served_error_px']):+.2f}px (tolerance {match.tolerance_px:.2f}px)"
+            + unlined_note,
+            match.tolerance_px,
+            tuple(rows),
+        )
+    return GridCheck(
+        "verified",
+        f"{name}: {len(rows)} labelled ticks served within {match.tolerance_px:.2f}px of their lines"
+        + unlined_note,
+        match.tolerance_px,
+        tuple(rows),
+    )
 
 
 def _register(
@@ -227,11 +414,16 @@ def _register(
     candidates: list[list[int]],
     match_tol: float,
     model: str,
+    *,
+    optional: list[bool] | None = None,
+    label_search: float = 0.0,
 ) -> list[tuple[int, float, tuple[int, ...]]]:
     """Enumerate affine label->line registrations; return (score, offset, lines).
 
     The end ticks' candidate lines define each hypothesis. Every labelled tick
-    must then land on an observed line. The score rewards predicted minor
+    must then land on an observed line -- except an *optional* (identity-only)
+    tick, which may land between lines (index -1) provided its label glyph
+    sits within *label_search* of the predicted pixel. The score rewards predicted minor
     decade lines that exist and penalises observed lines inside the labelled
     span that the hypothesis cannot explain, so a registration shifted onto a
     family of minor lines loses to the one seated on the decades.
@@ -247,14 +439,18 @@ def _register(
             scale = (b - a) / span
             predicted = a + (coords - coords[0]) * scale
             matched: list[int] = []
-            for p in predicted:
+            for k, p in enumerate(predicted):
                 i = int(np.argmin(np.abs(centers - p)))
                 if abs(centers[i] - p) > match_tol:
+                    if optional is not None and optional[k] and abs(label_px[k] - p) <= label_search:
+                        matched.append(-1)
+                        continue
                     break
                 matched.append(i)
             else:
                 key = tuple(matched)
-                if key in seen or len(set(key)) != len(key):
+                lined = [i for i in key if i >= 0]
+                if key in seen or len(set(lined)) != len(lined):
                     continue
                 seen.add(key)
                 expected = list(predicted)
@@ -277,7 +473,8 @@ def _register(
                     if lo_px + match_tol < c < hi_px - match_tol
                     and np.min(np.abs(expected_arr - c)) > match_tol
                 )
-                offset = float(np.mean(np.abs(label_px - centers[list(key)])))
+                on_line = [k for k, i in enumerate(key) if i >= 0]
+                offset = float(np.mean(np.abs(label_px[on_line] - centers[[key[k] for k in on_line]])))
                 out.append((hits - unexplained, offset, key))
     return out
 
