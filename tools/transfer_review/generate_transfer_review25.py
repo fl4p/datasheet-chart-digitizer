@@ -806,6 +806,85 @@ def _contact_sheet(output: Path, manifest: list[dict]) -> None:
     sheet.save(output / "contact25.png")
 
 
+def trace_sample(sample: Sample, rgb: np.ndarray, path: Path) -> list[ReviewTrace]:
+    """Trace one sample's curves exactly as the human-reviewed batch did.
+
+    ``path`` is the PNG of ``rgb`` (tesseract masks legend text from it).
+    Reused by generate_transfer_retrace.py on fresh page renders.
+    """
+    plot = PlotBox(*sample.plot)
+    axis = TransferAxis(*sample.axis)
+    if sample.part == "PXN017-30QL":
+        traces = _pxn_vector_traces(plot, axis)
+    elif sample.part == "XP10N3R8IT":
+        traces = _xp_vector_traces(plot, axis)
+    elif sample.part == "STK295N10F8AG":
+        traces = _stk_vector_traces(plot, axis)
+    elif sample.colors_rgb:
+        traces = _colored_traces(rgb, sample, plot, axis)
+    else:
+        traces = extract_transfer_traces(
+            rgb,
+            plot,
+            axis,
+            sample.curves,
+            _ocr_boxes(path, plot) + list(sample.erases),
+            list(sample.seeds) or None,
+            sample.max_gap_fraction,
+            grouped_seeded=sample.grouped_seeded,
+        )
+        if sample.secondary_seeds:
+            lower = extract_transfer_traces(
+                rgb,
+                plot,
+                axis,
+                sample.curves,
+                (
+                    _ocr_boxes(path, plot) + list(sample.erases)
+                    if sample.secondary_use_ocr_masks
+                    else list(sample.erases)
+                ),
+                list(sample.secondary_seeds),
+                (
+                    min(sample.max_gap_fraction, 0.05)
+                    if sample.secondary_max_gap_fraction is None
+                    else sample.secondary_max_gap_fraction
+                ),
+                0.02,
+                grouped_seeded=(
+                    sample.grouped_seeded
+                    if sample.secondary_grouped_seeded is None
+                    else sample.secondary_grouped_seeded
+                ),
+                max_monotone_violation_fraction=1.0,
+            )
+            traces = _merge_seeded_segments(
+                traces, lower, plot, axis, int(sample.split_y)
+            )
+        for curve_index, anchors in sample.anchor_repairs:
+            traces[curve_index] = _repair_trace_span_from_anchors(
+                traces[curve_index], anchors, plot, axis
+            )
+        if sample.identity_crossing_y is not None:
+            traces = exchange_two_trace_identities_below(
+                traces, int(sample.identity_crossing_y), plot, axis
+            )
+        for curve_index, seed_x, seed_y, split_y in sample.upper_extensions:
+            extension = extract_transfer_traces(
+                rgb,
+                plot,
+                axis,
+                1,
+                _ocr_boxes(path, plot) + list(sample.erases),
+                [(seed_x, seed_y)],
+                sample.max_gap_fraction,
+            )[0]
+            traces[curve_index] = _replace_upper_segment(
+                traces[curve_index], extension, split_y, plot, axis
+            )
+    return traces
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -834,74 +913,7 @@ def main() -> None:
         collapse = None
         span_records: list[dict] = []
         try:
-            if sample.part == "PXN017-30QL":
-                traces = _pxn_vector_traces(plot, axis)
-            elif sample.part == "XP10N3R8IT":
-                traces = _xp_vector_traces(plot, axis)
-            elif sample.part == "STK295N10F8AG":
-                traces = _stk_vector_traces(plot, axis)
-            elif sample.colors_rgb:
-                traces = _colored_traces(rgb, sample, plot, axis)
-            else:
-                traces = extract_transfer_traces(
-                    rgb,
-                    plot,
-                    axis,
-                    sample.curves,
-                    _ocr_boxes(path, plot) + list(sample.erases),
-                    list(sample.seeds) or None,
-                    sample.max_gap_fraction,
-                    grouped_seeded=sample.grouped_seeded,
-                )
-                if sample.secondary_seeds:
-                    lower = extract_transfer_traces(
-                        rgb,
-                        plot,
-                        axis,
-                        sample.curves,
-                        (
-                            _ocr_boxes(path, plot) + list(sample.erases)
-                            if sample.secondary_use_ocr_masks
-                            else list(sample.erases)
-                        ),
-                        list(sample.secondary_seeds),
-                        (
-                            min(sample.max_gap_fraction, 0.05)
-                            if sample.secondary_max_gap_fraction is None
-                            else sample.secondary_max_gap_fraction
-                        ),
-                        0.02,
-                        grouped_seeded=(
-                            sample.grouped_seeded
-                            if sample.secondary_grouped_seeded is None
-                            else sample.secondary_grouped_seeded
-                        ),
-                        max_monotone_violation_fraction=1.0,
-                    )
-                    traces = _merge_seeded_segments(
-                        traces, lower, plot, axis, int(sample.split_y)
-                    )
-                for curve_index, anchors in sample.anchor_repairs:
-                    traces[curve_index] = _repair_trace_span_from_anchors(
-                        traces[curve_index], anchors, plot, axis
-                    )
-                if sample.identity_crossing_y is not None:
-                    traces = exchange_two_trace_identities_below(
-                        traces, int(sample.identity_crossing_y), plot, axis
-                    )
-                for curve_index, seed_x, seed_y, split_y in sample.upper_extensions:
-                    extension = extract_transfer_traces(
-                        rgb,
-                        plot,
-                        axis,
-                        1,
-                        _ocr_boxes(path, plot) + list(sample.erases),
-                        [(seed_x, seed_y)],
-                        sample.max_gap_fraction,
-                    )[0]
-                    traces[curve_index] = _replace_upper_segment(
-                        traces[curve_index], extension, split_y, plot, axis
-                    )
+            traces = trace_sample(sample, rgb, path)
             collapse = maximum_pairwise_collapse_fraction(traces)
             vector_identity = sample.part in VECTOR_PARTS
             if collapse > sample.allowed_collapse_fraction and not vector_identity:
