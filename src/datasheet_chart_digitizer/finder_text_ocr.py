@@ -11,8 +11,10 @@ from pathlib import Path
 import pymupdf
 
 try:
+    from . import tesseract_memo
     from .finder_types import PageText, Word
 except ImportError:  # pragma: no cover - direct script compatibility
+    import tesseract_memo
     from finder_types import PageText, Word
 
 
@@ -22,8 +24,9 @@ def tesseract_tsv(page_png: Path, timeout: float = 20.0) -> str | None:
     if executable is None:
         return None
     try:
-        completed = subprocess.run(
+        completed = tesseract_memo.run(
             [executable, str(page_png), "stdout", "--psm", "11", "tsv"],
+            page_png,
             check=True,
             text=True,
             stdout=subprocess.PIPE,

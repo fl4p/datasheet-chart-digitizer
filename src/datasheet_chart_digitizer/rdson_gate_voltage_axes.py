@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 import re
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -39,6 +38,7 @@ from .numeric_axis import NumericAxis, fit_numeric_axis
 from .rdson_gate_voltage_locate import LocatedPanel
 from .rdson_temperature import _vector_full_span_grid_lines
 from .region_ocr import _tesseract_words
+from . import tesseract_memo
 
 CROP_DPI = 300
 MAX_AXIS_RESIDUAL_PT = 0.6
@@ -157,9 +157,9 @@ def _vote_blob_digits(sub, box, stem_path: Path) -> str | None:
         target = stem_path.with_name(f"{stem_path.name}_v{v_index}.png")
         cv2.imwrite(str(target), framed)
         for psm in ("7", "8"):
-            proc = subprocess.run(
+            proc = tesseract_memo.run(
                 ["tesseract", str(target), "stdout", "--psm", psm, "-c", "tessedit_char_whitelist=0123456789.-"],
-                capture_output=True, text=True, timeout=30,
+                target, capture_output=True, text=True, timeout=30,
             )
             text = proc.stdout.strip()
             if proc.returncode == 0 and re.fullmatch(r"-?\d+(?:\.\d+)?", text):
@@ -474,8 +474,8 @@ def _ocr_rotated_gutter(image, plot: PlotBox, out_dir: Path, panel, stem: str) -
     target = out_dir / "work" / "gutter_ocr" / panel.part / f"{stem}.png"
     target.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(target), np.rot90(strip, k=-1))
-    proc = subprocess.run(
+    proc = tesseract_memo.run(
         ["tesseract", str(target), "stdout", "--psm", "6"],
-        capture_output=True, text=True, timeout=60,
+        target, capture_output=True, text=True, timeout=60,
     )
     return " ".join(proc.stdout.split()) if proc.returncode == 0 else ""

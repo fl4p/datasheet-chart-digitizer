@@ -11,6 +11,8 @@ from pathlib import Path
 import pymupdf
 from PIL import Image
 
+from . import tesseract_memo
+
 
 def _normalize_token(text: str) -> str:
     return text.strip().strip("|:;").replace(",", ".")
@@ -40,8 +42,9 @@ def _tesseract_words(
     if whitelist is not None:
         command.extend(["-c", f"tessedit_char_whitelist={whitelist}"])
     command.append("tsv")
-    proc = subprocess.run(
+    proc = tesseract_memo.run(
         command,
+        png,
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -109,8 +112,9 @@ def ocr_rotated_text_in_rect(
             pix.save(str(png))
             with Image.open(png) as image:
                 image.rotate(-90, expand=True).save(png)
-            proc = subprocess.run(
+            proc = tesseract_memo.run(
                 [executable, str(png), "stdout", "--psm", str(psm)],
+                png,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
