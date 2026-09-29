@@ -18,8 +18,13 @@ Label binding (``bind_labels``) is deliberately conservative. A parameter
 (Tj, or ID) is bound to a curve by a legend swatch of the curve's own stroke
 style, or by proximity when the label is clearly nearer to one curve than to
 any other. Anything else leaves the curve's parameter ``None`` -- "unknown" --
-and the panel goes to review. Physical order (a hotter die has the higher
-RDS(on)) is used only to CONTRADICT a binding, never to create one.
+and the panel goes to review. Physical order (a hotter die, or a higher drain
+current, has the higher RDS(on)) CONTRADICTS a binding. Since review F5-1 it
+also CREATES one, but only as a last resort under strict guards
+(``bind_by_order_rule``: as many printed values as curves, none bound by
+other evidence, the other parameter shared, and every pair of curves
+measurably and consistently apart), and the binding says so
+(``id_order_rule`` / ``temperature_order_rule``).
 """
 
 from __future__ import annotations
@@ -1163,6 +1168,9 @@ def bind_labels(
                     target.params[other_key] = other
                     target.binding[other_key] = how
         diagnostics.extend(_bind_by_elimination(key, traces, labeled))
+    for key in varying:
+        diagnostics.extend(bind_by_order_rule(key, traces, labeled, values, varying))
+    diagnostics.extend(_id_order_check(traces, values, varying))
     diagnostics.extend(_temperature_order_check(traces, values.get("temperature_c", set())))
     _attach_temperature_kinds(traces, labeled)
     return diagnostics
@@ -1202,6 +1210,167 @@ def _bind_by_elimination(key: str, traces: list[Trace], labeled: list[Label]) ->
     free[0].params[key] = remaining.pop()
     free[0].binding[key] = "elimination_last_label_last_curve"
     return [f"{key}_bound_by_elimination"]
+
+
+# F5-1 / F5-3: binding by physical order ---------------------------------------------
+#
+# Where no leader, swatch or placement names a curve, the physics of the chart
+# does: at equal VGS (and equal temperature) the curve at the higher drain
+# current has the higher RDS(on) -- VDS/ID rises with ID along every output
+# characteristic -- and, at VGS well above threshold (and equal ID), the hotter
+# die has the higher RDS(on). Two curves are ordered by the chart itself: the
+# per-column heights of their traces over the shared VGS range.
+#
+# ORDER_MARGIN_PX: a column counts as "apart" when the traces differ by >= 3 px.
+#   Measured on the batch-15 panels, two traces of ONE printed stroke differ by
+#   at most 1.75 px (RQ3E110AJ's coincident stretch, raster) and 1.0 px
+#   (FDP8870's coincident tails, vector); 3 px is above both with margin.
+# ORDER_MIN_RUN: ... in >= 5 consecutive shared columns. The steep heads of the
+#   golden panels show 1-3-column flips where one curve is still near-vertical
+#   (CSD17306Q5A 1-2, IRLB8743/8748 2, CSD18502KCS 3 columns); those are not
+#   evidence either way. RQ6E080AJ's two heads are apart over 9 columns.
+ORDER_MARGIN_PX = 3.0
+ORDER_MIN_RUN = 5
+ORDER_RULE_BINDING = {"id_a": "id_order_rule", "temperature_c": "temperature_order_rule"}
+_OTHER_KEY = {"id_a": "temperature_c", "temperature_c": "id_a"}
+
+
+def _column_heights(trace: Trace) -> dict[int, float]:
+    by_x: dict[int, list[float]] = {}
+    for x, y in trace.points_px:
+        by_x.setdefault(int(round(x)), []).append(y)
+    return {x: float(np.mean(ys)) for x, ys in by_x.items()}
+
+
+def separated_runs(a: Trace, b: Trace) -> list[tuple[int, int, int, int, float]]:
+    """Runs of shared columns where the traces are >= ORDER_MARGIN_PX apart.
+
+    Each run: (sign, first_x, last_x, n_columns, max_separation_px); sign +1
+    where ``a`` is ABOVE ``b`` (higher RDS), -1 where below. Columns more than
+    3 px apart break a run. Every run is returned, short ones included.
+    """
+    ca, cb = _column_heights(a), _column_heights(b)
+    runs: list[list] = []
+    current: list | None = None
+    for x in sorted(set(ca) & set(cb)):
+        d = cb[x] - ca[x]                   # > 0: a is higher on the chart
+        sign = 1 if d >= ORDER_MARGIN_PX else -1 if d <= -ORDER_MARGIN_PX else 0
+        if current is not None and sign == current[0] and x - current[2] <= 3:
+            current[2], current[3], current[4] = x, current[3] + 1, max(current[4], abs(d))
+            continue
+        if current is not None and current[0] != 0:
+            runs.append(current)
+        current = [sign, x, x, 1, abs(d)]
+    if current is not None and current[0] != 0:
+        runs.append(current)
+    return [tuple(r) for r in runs]
+
+
+def pair_order(a: Trace, b: Trace, key: str) -> tuple[int | None, str]:
+    """+1 if ``a`` has the higher RDS(on), -1 if ``b``, None if the chart does not say.
+
+    Only runs of >= ORDER_MIN_RUN columns count. For ID any two such runs of
+    opposite sign mean the traces cross, which ID curves at one temperature
+    do not: undecided. For temperature one crossing is physics (below the
+    zero-temperature-coefficient point the hot curve lies LOWER), so the run
+    at the highest VGS decides, provided the order changes at most once.
+    Assumes VGS increases with crop x (a linear, left-to-right VGS axis).
+    """
+    runs = [r for r in separated_runs(a, b) if r[3] >= ORDER_MIN_RUN]
+    if not runs:
+        return None, f"never >= {ORDER_MARGIN_PX:g} px apart over >= {ORDER_MIN_RUN} columns"
+    signs = [r[0] for r in runs]
+    changes = sum(1 for s, t in zip(signs, signs[1:]) if s != t)
+    evidence = ", ".join(f"{'above' if s > 0 else 'below'} x={x0}..{x1} ({n} cols, <= {m:.1f} px)" for s, x0, x1, n, m in runs)
+    if key == "id_a" and changes:
+        return None, f"the traces cross ({evidence})"
+    if changes > 1:
+        return None, f"the order changes {changes} times ({evidence})"
+    return signs[-1], evidence
+
+
+def _shares_other_parameter(key: str, traces: list[Trace], values: dict, varying: list[str]) -> str | None:
+    """None when every curve shares the other parameter (or it is not printed); else why not."""
+    other = _OTHER_KEY[key]
+    if other in varying:
+        return f"{other} varies between the printed labels"
+    if other in values and len({t.params.get(other) for t in traces}) > 1:
+        return f"the curves carry different {other}"
+    return None
+
+
+def bind_by_order_rule(key: str, traces: list[Trace], labeled: list[Label], values: dict,
+                       varying: list[str]) -> list[str]:
+    """Bind ``key`` (id_a or temperature_c) by the physical order of the curves.
+
+    Guards -- any failing one leaves every curve's value unknown:
+      * the panel prints exactly as many distinct values as there are curves;
+      * no curve is bound for ``key`` by other evidence (all "unbound"; a
+        conflicting or contradicted binding is not overridden);
+      * the other parameter is shared by all curves or not printed;
+      * every pair of curves is ordered by pair_order (a measurable,
+        consistent separation), and the order is total.
+    The highest printed value goes to the curve with the highest RDS(on).
+    """
+    if key not in ORDER_RULE_BINDING:
+        return []
+    printed = sorted({label.params[key] for label in labeled if key in label.params})
+    if len(printed) != len(traces) or len(traces) < 2:
+        return []
+    if any(t.params.get(key) is not None or t.binding.get(key) != "unbound" for t in traces):
+        return []
+    why = _shares_other_parameter(key, traces, values, varying)
+    if why:
+        return [f"{key}_order_rule_not_applied ({why})"]
+    above = {id(t): 0 for t in traces}
+    evidence = []
+    for i, a in enumerate(traces):
+        for b in traces[i + 1:]:
+            sign, detail = pair_order(a, b, key)
+            if sign is None:
+                return [f"{key}_order_rule_not_applied ({detail})"]
+            above[id(a if sign > 0 else b)] += 1
+            evidence.append((a, b, detail))
+    ranks = sorted(above.values())
+    if ranks != list(range(len(traces))):
+        return [f"{key}_order_rule_not_applied (the pairwise order is not total)"]
+    ordered = sorted(traces, key=lambda t: above[id(t)])        # lowest RDS first
+    for trace, value in zip(ordered, printed):
+        trace.params[key] = value
+        trace.binding[key] = ORDER_RULE_BINDING[key]
+    unit = "A" if key == "id_a" else "C"
+    chain = " > ".join(f"{t.params[key]:g} {unit}" for t in reversed(ordered))
+    pairs = "; ".join(f"{a.params[key]:g} {unit} vs {b.params[key]:g} {unit}: {detail}" for a, b, detail in evidence)
+    return [f"{key}_bound_by_order_rule (RDS order {chain}; higher {'ID' if key == 'id_a' else 'temperature'} "
+            f"-> higher RDS(on); separation: {pairs})"]
+
+
+def _id_order_check(traces: list[Trace], values: dict, varying: list[str]) -> list[str]:
+    """IDs bound by other evidence that the curves' order contradicts are unbound.
+
+    The ID analogue of _temperature_order_check: it only ever REMOVES a
+    binding, and only where pair_order decides (so never on curves that do
+    not separate). A swapped pair of leader-bound IDs is caught here.
+    """
+    if "id_a" not in varying or _shares_other_parameter("id_a", traces, values, varying):
+        return []
+    bound = [t for t in traces if t.params.get("id_a") is not None]
+    diagnostics = []
+    for i, a in enumerate(bound):
+        for b in bound[i + 1:]:
+            if a.params["id_a"] == b.params["id_a"]:
+                continue
+            sign, _detail = pair_order(a, b, "id_a")
+            if sign is None:
+                continue
+            higher_id = a if a.params["id_a"] > b.params["id_a"] else b
+            higher_rds = a if sign > 0 else b
+            if higher_id is not higher_rds:
+                for trace in (a, b):
+                    trace.params["id_a"] = None
+                    trace.binding["id_a"] = "contradicted_by_id_order"
+                diagnostics.append("id_binding_contradicts_rdson_order (the higher-ID curve has the lower RDS(on))")
+    return diagnostics
 
 
 def _bind_one(label: Label, traces: list[Trace], swatches: list[Swatch], plot: PlotBox,
