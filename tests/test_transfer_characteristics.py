@@ -1187,7 +1187,7 @@ class OnsemiThinTransferGridCalibrationPilot(unittest.TestCase):
         with pymupdf.open(ONSEMI_FDB035) as document:
             page = document[cls.chart["page"] - 1]
             words = tc._words_in_crop_px(page, cls.transform, cls.gray.shape)
-            cls.plot, cls.x_axis, cls.y_axis, cls.pixel_curves = tc._extract_panel_curves(
+            cls.plot, cls.x_axis, cls.y_axis, cls.pixel_curves, cls.grid_checks = tc._extract_panel_curves(
                 page, cls.transform, cls.gray, words, pymupdf, 3
             )
 

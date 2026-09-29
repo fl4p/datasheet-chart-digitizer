@@ -36,6 +36,7 @@ from .diode_forward_voltage import (
     _select_axis,
     _snap_axis_to_grid,
 )
+from . import served_axis_guard
 from .find_charts import (
     _token_norm,
     ChartPanel,
@@ -131,6 +132,8 @@ class PanelCalibration:
     x_axis: NumericAxis
     y_axis: NumericAxis
     hint: PlotBox
+    # served_axis_guard verdicts on the served x/y mappings (None: not run)
+    grid_checks: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -262,6 +265,14 @@ def _digitize_rds_family(
     return results
 
 
+def _grid_reasons(calibration: PanelCalibration) -> list[str]:
+    """Refusal reasons from the served-axis grid check (unverified refuses too)."""
+    failed, unverified = served_axis_guard.problems(calibration.grid_checks)
+    return [f"axis_grid_check_failed: {r}" for r in failed] + [
+        f"axis_grid_check_unverified: {r}" for r in unverified
+    ]
+
+
 def _digitize_rds_panel(
     panel: ChartPanel,
     crop_path: Path,
@@ -313,6 +324,7 @@ def _digitize_rds_panel(
         curves = []
         reasons = [error.diagnostic]
         binding_error = str(error)
+    reasons = [*reasons, *_grid_reasons(calibration)]
     status = "refused" if reasons else "ok"
     overlay = overlay_drawer(crop_path, panel, calibration, curves, status)
     overlay_path = out_dir / overlay_group / panel.part / f"p{panel.page:02d}_d{panel.diagram}.webp"
@@ -327,6 +339,7 @@ def _digitize_rds_panel(
         "plot_box_px": asdict(calibration.plot),
         "x_axis": axis_to_json(calibration.x_axis),
         "y_axis": axis_to_json(calibration.y_axis),
+        "grid_check": served_axis_guard.payload(calibration.grid_checks),
         "curves": curves,
         "binding_error": binding_error,
         "thresholds": thresholds,
@@ -363,6 +376,7 @@ def _digitize_absolute_temperature_panel(
         curves = []
         reasons = [error.diagnostic]
         binding_error = str(error)
+    reasons = [*reasons, *_grid_reasons(calibration)]
     status = "refused" if reasons else "ok"
     overlay = _draw_overlay(crop_path, panel, calibration, curves, status)
     overlay_path = (
@@ -385,6 +399,7 @@ def _digitize_absolute_temperature_panel(
         "plot_box_px": asdict(calibration.plot),
         "x_axis": axis_to_json(calibration.x_axis),
         "y_axis": axis_to_json(calibration.y_axis),
+        "grid_check": served_axis_guard.payload(calibration.grid_checks),
         "curves": curves,
         "binding_error": binding_error,
         "thresholds": {
@@ -818,7 +833,10 @@ def calibrate_panel(
     x_axis = _snap_axis_to_grid(raw_x, major_x, "X axis", authoritative=True)
     y_axis = _snap_axis_to_grid(raw_y, major_y, "Y axis", authoritative=True)
     plot = tick_aligned_plot(x_axis, y_axis, hint)
-    return PanelCalibration(plot, x_axis, y_axis, hint)
+    grid_checks = served_axis_guard.check_axes(
+        gray, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "rds(tj)"
+    )
+    return PanelCalibration(plot, x_axis, y_axis, hint, grid_checks)
 
 
 def _vector_full_span_grid_lines(

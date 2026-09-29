@@ -44,6 +44,7 @@ from .capacitance_plot_box import find_closed_frame_plot_box
 from .diode_forward_voltage import _full_span_grid_lines, _snap_axis_to_grid
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .capacitance_types import PlotBox, VectorEdge
+from . import served_axis_guard
 from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 from .capacitance_vector import (
     _is_curve_stroke_color,
@@ -741,12 +742,20 @@ def _extract_panel_curves(
     refused valid 1/10/100/1000 A ticks.
     """
     plot = _vector_plot_frame(page, transform, gray.shape) or find_closed_frame_plot_box(gray)
-    x_axis, y_axis = _calibrate_transfer(words, plot)
+    label_x, label_y = _calibrate_transfer(words, plot)
     major_x, major_y = _full_span_grid_lines(gray, plot, plot)
-    x_axis = _snap_axis_to_grid(x_axis, major_x, "X axis (VGS)", authoritative=True)
-    y_axis = _snap_axis_to_grid(y_axis, major_y, "Y axis (ID)", authoritative=True)
+    x_axis = _snap_axis_to_grid(label_x, major_x, "X axis (VGS)", authoritative=True)
+    y_axis = _snap_axis_to_grid(label_y, major_y, "Y axis (ID)", authoritative=True)
+    # the snap returns the label-centre axis silently on too few / no nearby
+    # lines: check what is served, at every labelled tick
+    grid_checks = served_axis_guard.check_axes(
+        gray, plot, {"x": x_axis, "y": y_axis}, {"x": label_x, "y": label_y}, "transfer"
+    )
+    failed, _unverified = served_axis_guard.problems(grid_checks)
+    if failed:
+        raise RuntimeError("served axis misses its gridlines: " + "; ".join(failed))
     pixel_curves = _extract_curves(page, transform, plot, fitz, expected_count)
-    return plot, x_axis, y_axis, pixel_curves
+    return plot, x_axis, y_axis, pixel_curves, grid_checks
 
 
 def _positioned_temperature_labels(
@@ -1305,7 +1314,7 @@ def process_chart(
                         raise
                 raise temperature_refusal
         try:
-            plot, x_axis, y_axis, pixel_curves = _extract_panel_curves(
+            plot, x_axis, y_axis, pixel_curves, grid_checks = _extract_panel_curves(
                 page, transform, gray, words, fitz, len(temperatures)
             )
             positioned_labels = (
@@ -1386,6 +1395,12 @@ def process_chart(
             "GUARD REFUSAL: exact 25 C (Vpl,Id_gc) law and absolute 25 C transfer chart "
             "disagree beyond the provisional residual bound; do not curate this fit"
         )
+    _failed, grid_unverified = served_axis_guard.problems(grid_checks)
+    if grid_unverified:
+        warnings.append(
+            "AXIS GRID CHECK UNVERIFIED: the served axes could not be checked on the "
+            "gridlines their labels name (" + "; ".join(grid_unverified) + ")"
+        )
     status = "guard-refusal-cold-anchor-conflict" if fit and fit["cold_anchor_conflict"] else (
         "overlay-review-required"
     )
@@ -1398,6 +1413,10 @@ def process_chart(
             "x_resid": round(_axis_residual(x_axis), 5),
             "y_ticks": len(y_axis.ticks),
             "y_resid": round(_axis_residual(y_axis), 5),
+            # served mapping, crop px: coordinate = m * px + b (log10 on "log10")
+            "x_axis": {"model": x_axis.model, "m": x_axis.m, "b": x_axis.b},
+            "y_axis": {"model": y_axis.model, "m": y_axis.m, "b": y_axis.b},
+            "grid_check": served_axis_guard.payload(grid_checks),
         },
         "fit": fit,
         "warnings": warnings,

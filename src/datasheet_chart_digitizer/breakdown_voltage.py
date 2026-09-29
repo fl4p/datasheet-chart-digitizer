@@ -57,7 +57,8 @@ from .capacitance_vector import (
 )
 from .crop_transform import CropTransform
 from .diode_forward_voltage import _full_span_grid_lines
-from .numeric_axis import AxisTick, fit_axis_ticks
+from . import served_axis_guard
+from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .region_ocr import ocr_words_in_rect
 
@@ -99,6 +100,14 @@ class LinearAxis:
 
     def value(self, px: float) -> float:
         return self.m * px + self.b
+
+
+def _as_numeric_axis(axis: LinearAxis) -> NumericAxis:
+    return NumericAxis(
+        "linear", axis.m, axis.b,
+        tuple(AxisTick(f"{value:g}", float(value), float(px)) for value, px in axis.ticks),
+        float(axis.resid), (),
+    )
 
 
 def _fit_axis(ticks: list[tuple[float, float]], what: str) -> LinearAxis:
@@ -1275,6 +1284,7 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
                 words_px, plot, gray.shape[0], x_ticks_override=x_ticks
             )
         center_assertions: dict[str, list[dict[str, float]]] = {}
+        label_x, label_y = x_axis, y_axis
         if len(x_grid) >= len(x_axis.ticks) and len(y_grid) >= len(y_axis.ticks):
             x_axis, center_assertions["x"] = _snap_axis_ticks_to_grid(
                 x_axis, x_grid, "X axis (Tj)"
@@ -1282,6 +1292,18 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
             y_axis, center_assertions["y"] = _snap_axis_ticks_to_grid(
                 y_axis, y_grid, "Y axis (V(BR)DSS)"
             )
+        # The snap above is skipped silently when fewer lines than ticks were
+        # found (the label-centre axis is then served): check what is served.
+        grid_checks = served_axis_guard.check_axes(
+            gray,
+            plot,
+            {"x": _as_numeric_axis(x_axis), "y": _as_numeric_axis(y_axis)},
+            {"x": _as_numeric_axis(label_x), "y": _as_numeric_axis(label_y)},
+            "breakdown",
+        )
+        grid_failed, grid_unverified = served_axis_guard.problems(grid_checks)
+        if grid_failed:
+            raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
         if source_points_px is None:
             source_points_px = _extract_single_trace(page, transform, plot, fitz)
         points_px, withheld_points = _clip_points_to_one_unlabeled_interval(
@@ -1354,6 +1376,11 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
     overlay_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(overlay_path), overlay)
 
+    if grid_unverified:
+        warnings = [
+            *warnings,
+            "axis grid check unverified: " + "; ".join(grid_unverified),
+        ]
     result = {
         "method": "vector",
         "frame_method": frame_method,
@@ -1374,6 +1401,9 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
             "x_ticks": len(x_axis.ticks), "x_resid": round(x_axis.resid, 4),
             "y_ticks": len(y_axis.ticks), "y_resid": round(y_axis.resid, 4),
             "exact_center_assertions": center_assertions,
+            "x_axis": {"model": "linear", "m": x_axis.m, "b": x_axis.b},
+            "y_axis": {"model": "linear", "m": y_axis.m, "b": y_axis.b},
+            "grid_check": served_axis_guard.payload(grid_checks),
             "x_exact_center_max_px": round(
                 max(
                     (item["fit_to_grid_px"] for item in center_assertions.get("x", [])),
@@ -1390,7 +1420,8 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
             ),
         },
         "anchor": anchor,
-        "status": anchor_verdict,
+        # unevaluable is not a pass: an unchecked served axis cannot be "verified"
+        "status": "unverified" if grid_unverified and anchor_verdict == "verified" else anchor_verdict,
         "warnings": warnings,
         "csv": str(csv_path),
         "overlay": str(overlay_path),

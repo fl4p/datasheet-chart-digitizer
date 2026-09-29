@@ -33,6 +33,7 @@ from .diode_legend_color import (
     colored_temperature_bindings,
     temperatures_from_source_words,
 )
+from . import served_axis_guard
 from .find_charts import (
     ChartPanel,
     process_pdf,
@@ -87,6 +88,8 @@ class PanelCalibration:
     y_axis: NumericAxis
     hint: PlotBox
     hint_source: str
+    # served_axis_guard verdicts on the served x/y mappings (None: not run)
+    grid_checks: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -151,6 +154,9 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
 
     crop_path = out_dir / panel.crop_png
     calibration = calibrate_panel(panel, crop_path)
+    grid_failed, grid_unverified = served_axis_guard.problems(calibration.grid_checks)
+    if grid_failed:
+        raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
     voltage_on_y = _voltage_on_y_axis(calibration)
     temperatures = _panel_temperatures(panel)
     extracted = _extract_vector_curve_series(
@@ -223,9 +229,14 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         if crossover is None
         else f"verified_high_current_crossover_at_{crossover:.6g}_A"
     )
+    if grid_unverified:
+        # unevaluable is not a pass: the served axes were not checked on
+        # their gridlines, so the panel is not reported ok
+        diagnostics.append("axis_grid_check_unverified")
     return {
-        "status": "ok",
+        "status": "unverified" if grid_unverified else "ok",
         "diagnostics": diagnostics,
+        "grid_check": served_axis_guard.payload(calibration.grid_checks),
         "point_columns": ["vsd_v", "current_a"],
         "panel": asdict(panel),
         "plot_box_px": asdict(calibration.plot),
@@ -278,7 +289,13 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     plot = tick_aligned_plot(x_axis, y_axis, physical_hint)
     if plot.y0 <= 8:
         raise RuntimeError("plot: tick-aligned frame overlaps the panel title band")
-    return PanelCalibration(plot, x_axis, y_axis, hint, hint_source)
+    # _snap_axis_to_grid returns the label-centre axis silently when it finds
+    # too few or no nearby lines, and frame anchoring may move it again: check
+    # what is served, at every labelled tick.
+    grid_checks = served_axis_guard.check_axes(
+        image, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "body diode"
+    )
+    return PanelCalibration(plot, x_axis, y_axis, hint, hint_source, grid_checks)
 
 
 def _voltage_on_y_axis(calibration: PanelCalibration) -> bool:

@@ -27,6 +27,7 @@ from .find_charts import (
     process_pdf,
     run_text_bbox,
 )
+from . import served_axis_guard
 from .finder_caption_geometry import page_vector_plot_frames
 from .chart_classifier import rdson_formula_direction
 from .numeric_axis import AxisTick, NumericAxis
@@ -245,7 +246,11 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
             y_axis.residual_px,
             y_axis.candidate_residuals_px,
         )
-    return PanelCalibration(plot, x_axis, y_axis, tick_box)
+    # checked AFTER frame anchoring and the mOhm rescale: that is what is served
+    grid_checks = served_axis_guard.check_axes(
+        gray, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "rds(id)"
+    )
+    return PanelCalibration(plot, x_axis, y_axis, tick_box, grid_checks)
 
 
 def _owned_vector_plot_hint(
