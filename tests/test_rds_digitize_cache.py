@@ -95,6 +95,32 @@ class RuntimeCheckTests(unittest.TestCase):
         self.assertEqual(dcache.runtime_deviations(), [])
 
 
+class PicklingTests(unittest.TestCase):
+    """Capture entries pickle Trace/Calibration/PlotBox/...; copyreg then writes
+    __slotnames__ onto those classes. Seen 2026-09-29: once a worker had pickled a
+    capture, the runtime check called five classes changed and every later
+    lookup ran live."""
+
+    def test_pickling_and_copying_package_objects_keeps_it_pristine(self):
+        import copy
+        from datasheet_chart_digitizer.capacitance_types import PlotBox
+        pickle.dumps(PlotBox(0, 0, 1, 1))
+        copy.deepcopy(traces_mod.Trace([(0.0, 0.0)], "raster"))
+        self.assertIn("__slotnames__", vars(PlotBox))
+        self.assertEqual(dcache.runtime_deviations(), [])
+
+    def test_a_forged_slotnames_still_differs(self):
+        from datasheet_chart_digitizer.capacitance_types import PlotBox
+        pickle.dumps(PlotBox(0, 0, 1, 1))
+        saved = vars(PlotBox)["__slotnames__"]
+        PlotBox.__slotnames__ = ["x0"]
+        try:
+            self.assertTrue(dcache.runtime_deviations())
+        finally:
+            PlotBox.__slotnames__ = saved
+        self.assertEqual(dcache.runtime_deviations(), [])
+
+
 class DeclaredPatchTests(unittest.TestCase):
     def test_self_contained_replacements_are_keyed_by_code(self):
         a = dcache.replacement_fingerprint(lambda *a, **k: [])
@@ -160,6 +186,17 @@ class EntryTests(unittest.TestCase):
         again = dcache.digitize_pdf(FAST_PDF)
         again[0][0]["status"] = "tampered"
         self.assertNotEqual(dcache.digitize_pdf(FAST_PDF)[0][0]["status"], "tampered")
+
+    def test_lookups_after_a_pickled_capture_still_hit(self):
+        dcache.captured(FAST_PDF)                          # pickles Trace, Calibration, ...
+        dcache.digitize_pdf(FAST_PDF)
+        before = dict(dcache.STATS)
+        dcache.digitize_pdf(FAST_PDF)
+        dcache._MEMORY.clear()
+        dcache.digitize_pdf(FAST_PDF)
+        self.assertEqual(dcache.STATS["uncached"], before["uncached"], dcache.LAST_UNCACHED_REASON)
+        self.assertEqual(dcache.STATS["memory_hit"] - before["memory_hit"], 1)
+        self.assertEqual(dcache.STATS["disk_hit"] - before["disk_hit"], 1)
 
     def test_corrupt_or_partial_entries_are_recomputed(self):
         dcache.digitize_pdf(FAST_PDF)

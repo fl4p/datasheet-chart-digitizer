@@ -42,6 +42,7 @@ Environment
 
 from __future__ import annotations
 
+import atexit
 import builtins
 import contextlib
 import dataclasses
@@ -89,6 +90,22 @@ if enabled():
 # statistics for the log: hits/misses/uncached, and why a call was uncached
 STATS = {"memory_hit": 0, "disk_hit": 0, "computed_stored": 0, "uncached": 0, "corrupt": 0}
 LAST_UNCACHED_REASON: list[str] = []
+UNCACHED_REASONS: dict[str, int] = {}     # first reason of each uncached call -> count
+
+
+def dump_stats(label: str = "") -> None:
+    """Append this process's STATS as one JSON line to $DSDIG_TEST_CACHE_STATS (if set), once."""
+    path = os.environ.get("DSDIG_TEST_CACHE_STATS")
+    if not path or _DUMPED:
+        return
+    _DUMPED.append(True)
+    with open(path, "a") as handle:
+        handle.write(json.dumps({"pid": os.getpid(), "label": label, **STATS,
+                                 "uncached_reasons": UNCACHED_REASONS}) + "\n")
+
+
+_DUMPED: list[bool] = []
+atexit.register(dump_stats, "atexit")
 
 
 # ---------------------------------------------------------------- source hash
@@ -196,6 +213,14 @@ def _same(live, ref, module_name: str, live_globals: dict, ref_globals: dict, as
         skip = {"__dict__", "__weakref__", "_abc_impl"}   # _abc_impl: the ABC subclass-check cache
         live_vars = {k: v for k, v in vars(live).items() if k not in skip}
         ref_vars = {k: v for k, v in vars(ref).items() if k not in skip}
+        # __slotnames__ is copyreg's cache, written onto a class the first time
+        # one of its instances is pickled or copied (the capture entries pickle
+        # Trace/Calibration/...). Accepted only with exactly the value copyreg
+        # derives from the class's __slots__; anything else still differs.
+        for side, cls in ((live_vars, live), (ref_vars, ref)):
+            if "__slotnames__" in side:
+                if side.pop("__slotnames__") != _expected_slotnames(cls):
+                    return False
         return live_vars.keys() == ref_vars.keys() and all(same(live_vars[k], ref_vars[k]) for k in live_vars)
     if isinstance(live, dataclasses.Field):
         return all(same(getattr(live, n), getattr(ref, n)) for n in live.__slots__)
@@ -223,6 +248,22 @@ def _same(live, ref, module_name: str, live_globals: dict, ref_globals: dict, as
             return False
     text = repr(live)
     return " at 0x" not in text and text == repr(ref)
+
+
+def _expected_slotnames(cls: type) -> list[str]:
+    """What copyreg._slotnames computes for ``cls`` (without reading its cache)."""
+    names = []
+    for c in cls.__mro__:
+        if "__slots__" in c.__dict__:
+            slots = c.__dict__["__slots__"]
+            for name in [slots] if isinstance(slots, str) else slots:
+                if name in ("__dict__", "__weakref__"):
+                    continue
+                if name.startswith("__") and not name.endswith("__"):
+                    stripped = c.__name__.lstrip("_")
+                    name = f"_{stripped}{name}" if stripped else name
+                names.append(name)
+    return names
 
 
 def _package_modules() -> list[types.ModuleType]:
@@ -490,6 +531,7 @@ def _get(pdf: Path, mode: str, patches: list[tuple], out_dir: Path | None):
     if reasons:
         STATS["uncached"] += 1
         LAST_UNCACHED_REASON[:] = reasons
+        UNCACHED_REASONS[reasons[0]] = UNCACHED_REASONS.get(reasons[0], 0) + 1
         value, out, tmp = _compute(pdf, mode, patches)
         with tmp:
             if out_dir is not None:
@@ -517,6 +559,7 @@ def _get(pdf: Path, mode: str, patches: list[tuple], out_dir: Path | None):
                         if late:
                             STATS["uncached"] += 1
                             LAST_UNCACHED_REASON[:] = late
+                            UNCACHED_REASONS[late[0]] = UNCACHED_REASONS.get(late[0], 0) + 1
                             if out_dir is not None:
                                 shutil.copytree(out, out_dir, dirs_exist_ok=True)
                             return value
