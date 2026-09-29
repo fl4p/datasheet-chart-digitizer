@@ -46,6 +46,7 @@ import json
 import os
 import math
 import re
+import shutil
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -89,10 +90,12 @@ from .rdson_gate_voltage_traces import (
     PARAM_START_RE,
     parse_label_params,
     temperature_kind,
+    raster_leaders,
     raster_traces,
     vector_traces,
 )
 from .rdson_spec_table import RdsonSpecRow, parse_rdson_spec_rows
+from .region_ocr import _tesseract_words
 
 MAX_RISE_FRACTION = 0.04
 GAP_PX = 2.5                    # consecutive trace columns further apart than this are a gap
@@ -270,6 +273,16 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     if method == "raster":
         extra = (ocr_labels or []) + plot_ocr
     plot_labels = _plot_labels(words, transform, calibration.plot, extra)
+    if method == "raster":
+        grid = row.get("raster_grid_rules_px", {})
+        raster_lines, tail_labels = raster_leaders(
+            gray, calibration.plot, traces, grid.get("x_erased", []), grid.get("y_erased", []), plot_labels,
+            ocr_tail=lambda tail, head: _ocr_leader_tail(gray, tail, head, out_dir, panel, stem))
+        leaders = list(leaders) + raster_lines
+        plot_labels = plot_labels + tail_labels
+        row["raster_leaders_px"] = [{"tail": [round(v, 1) for v in l.points[0]], "tip": [round(v, 1) for v in l.points[-1]]}
+                                    for l in raster_lines]
+        row["labels_read_at_arrow_tails"] = [l.text for l in tail_labels]
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
     binding_notes.extend(_apply_page_temperature_note(traces, page))
     curves, curve_reasons, refusal = _curves(traces, calibration, scale, gray)
@@ -464,6 +477,42 @@ def _flag_calibration_span(curves: list[dict], validation: dict, calibration: Ca
     return reasons
 
 
+_LEADER_TAIL_OCR_SIZE = (200, 50)   # px: the text beside an arrow's tail
+
+
+def _ocr_leader_tail(gray, tail, head, out_dir: Path, panel, stem: str) -> Label | None:
+    """Read the label at an arrow's tail that the plot OCR missed (F4-3:
+    WSR3090's "TJ=25C"): one line, upscaled 3x, beside the tail on the side
+    away from the tip."""
+    if shutil.which("tesseract") is None:
+        return None
+    w, h = _LEADER_TAIL_OCR_SIZE
+    away = np.asarray(tail, float) - np.asarray(head, float)
+    x0 = int(tail[0]) - 10 if away[0] >= 0 else int(tail[0]) - w + 10
+    if abs(away[1]) < 0.5 * abs(away[0]):
+        y0 = int(tail[1]) - h // 2              # a level leader: the text is centred on it
+    else:
+        y0 = int(tail[1]) - 5 if away[1] >= 0 else int(tail[1]) - h + 5
+    x0, y0 = max(0, x0), max(0, y0)
+    window = gray[y0:y0 + h, x0:x0 + w]
+    if window.size == 0:
+        return None
+    up = cv2.resize(window, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
+    _thr, binary = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    target = out_dir / "work" / "leader_ocr" / panel.part / f"{stem}_{int(tail[0])}_{int(tail[1])}.png"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(target), binary)
+    words = _tesseract_words(target, clip=pymupdf.Rect(0, 0, binary.shape[1], binary.shape[0]), scale_x=1.0,
+                             scale_y=1.0, psm=7, timeout=60.0, whitelist=None, min_confidence=0.0)
+    # any confidence: the text is used only if it parses as a curve label, and
+    # the arrow it sits at must still point unambiguously at one curve
+    text = " ".join(t for *_box, t in words).strip()
+    params = parse_label_params(text)
+    if not params:
+        return None
+    return Label(text, float(x0), float(y0), float(x0 + window.shape[1]), float(y0 + window.shape[0]), params)
+
+
 def _traces(page, transform, calibration: Calibration, image, gray, words, labels, ocr, out_dir, panel, stem,
             row: dict | None = None):
     traces, swatches, leaders = vector_traces(page, transform, calibration.plot)
@@ -576,6 +625,10 @@ def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels) -> list[
     selected: list = [w for w in words.words if inside(w)]
     for l in ocr_labels or []:
         if not isinstance(l, _BoxedLabel):
+            continue
+        if not any(ch.isalnum() for ch in l.text):
+            # an OCR "=" or "~" read off a curve or arrow stroke: grouped into
+            # a label line it stretched WSR3090's "T=100" box over half the plot
             continue
         ax, ay = transform.to_pt(l.x0, l.y0)
         bx, by = transform.to_pt(l.x1, l.y1)
@@ -696,7 +749,9 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             (calibration.x_axis.value(x), calibration.y_axis.value(y) * scale, x, y)
             for x, y in interior
         ]
-        points.sort(key=lambda p: p[0])
+        # by VGS; at equal VGS (a near-vertical stroke traced row by row,
+        # F4-1) the higher RDS first, as the curve runs
+        points.sort(key=lambda p: (p[0], -p[1]))
         curve = {
             "curve_index": index,
             "trace_method": trace.method,
@@ -723,6 +778,15 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             ends = [f"starts at {points[0][0]:.2f} V inside the plot"] * open_left + [
                 f"stops at {points[-1][0]:.2f} V inside the plot"] * open_right
             reasons.append(f"curve_{index}_partial_raster_trace ({'; '.join(ends)}; the source curve may continue)")
+        if open_left and trace.method == "raster" and _ink_reaches_frame(gray, trace.points_px[0], plot, "left"):
+            # F4-1: say it plainly when the printed stroke runs on to the frame
+            head_y = trace.points_px[0][1]
+            top = calibration.y_axis.value(plot.y0) * scale
+            here = calibration.y_axis.value(head_y) * scale
+            reasons.append(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "
+                           f"not traced from {here:.3g} to {top:.3g} mOhm)")
+        curve["row_traced_points_px"] = [[round(x, 2), round(y, 2)] for x, y in trace.row_traced_points]
+        curve["shared_tail"] = [dict(note) for note in trace.tail_from]
         if runs_along > FRAME_RUN_FRACTION * (plot.x1 - plot.x0):
             reasons.append(f"curve_{index}_runs_along_the_frame_{runs_along:.0f}px_(clipped)")
         if trace.method == "vector" and backtrack_px(trace.points_px) > MAX_BACKTRACK_PX:

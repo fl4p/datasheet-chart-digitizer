@@ -61,6 +61,8 @@ class Trace:
     bridged_columns: int = 0
     contact_removed_x: list = field(default_factory=list)
     dropped_stub_points: list = field(default_factory=list)
+    row_traced_points: list = field(default_factory=list)   # F4-1: steep head traced row by row
+    tail_from: list = field(default_factory=list)            # F4-4: points taken over from a shared tail
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,8 @@ class Leader:
     """A thin non-data stroke (label leader line or arrow), crop pixels."""
 
     points: tuple[tuple[float, float], ...]
+    raster: bool = False     # followed on the pixels (F4-3)
+    ambiguous: bool = False  # its tip lies in ink shared by two touching curves: names neither
 
 
 @dataclass(frozen=True)
@@ -467,7 +471,11 @@ def raster_traces(
         out.append(Trace([(float(px), float(py)) for px, py in points], "raster", None, t["merged"],
                          bridged_columns=filled, contact_removed_x=t.get("contact_removed_x", []),
                          dropped_stub_points=list(t.get("dropped_stubs", []))))
-    return out
+    gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY) if image_bgr.ndim == 3 else image_bgr
+    # branches take over the tail they merge into FIRST, so a tail's head is
+    # never extended up a branch that already has its own trace
+    out = group_branches(out, plot)
+    return extend_steep_heads(out, gray, plot, erased_cols, erased_rows)
 
 
 def _admit_tracks(tracks: list[dict], erased_cols: np.ndarray, width: int, height: int, plot: PlotBox) -> list[dict]:
@@ -1261,6 +1269,7 @@ def _leader_target(label: Label, traces: list[Trace], leaders: list[Leader], px_
     """
     near_limit = 6.0 * px_per_pt
     hits: list[tuple[int, str]] = []
+    unreadable = False
     for leader in leaders:
         ends = (leader.points[0], leader.points[-1])
         for near, far in (ends, ends[::-1]):
@@ -1279,10 +1288,17 @@ def _leader_target(label: Label, traces: list[Trace], leaders: list[Leader], px_
                 continue
             if len(distances) > 1 and distances[1][0] < 2.0 * distances[0][0] + 1.0:
                 continue
+            if leader.ambiguous:
+                unreadable = True
+                continue
             hits.append((distances[0][1], "leader_line"))
     targets = {index for index, _ in hits}
     if len(targets) == 1:
         return traces[targets.pop()], "leader_line"
+    if unreadable and not targets:
+        # its leader ends where two curves touch: stated, and no fallback
+        # to nearness (the nearest line is the one the leader passed through)
+        return None, "leader_tip_between_touching_curves"
     return None
 
 
@@ -1293,6 +1309,10 @@ def _box_distance(point, label: Label) -> float:
 
 
 def _point_to_trace(point, trace: Trace) -> float:
+    if trace.method == "raster" and len(trace.points_px) > 1:
+        # one sample per column leaves a steep stroke's samples far apart:
+        # measure to the drawn polyline, not the samples (F4-3, RQ3E180AJ)
+        return _polyline_distance(point, trace.points_px)
     pts = np.asarray(trace.points_px, dtype=float)
     return float(np.min(np.hypot(pts[:, 0] - point[0], pts[:, 1] - point[1])))
 
@@ -1356,3 +1376,463 @@ def _temperature_order_check(traces: list[Trace], printed: set[float] | None = N
                     diagnostics.append("extreme_temperature_binding_has_a_curve_beyond_it")
                     break
     return diagnostics
+
+
+# ---------------------------------------------------------------------------
+# F4-1: steep heads traced row by row
+
+ROW_INK_GRAY = 150          # ink for row tracking (the column tracker's mask is eroded at rules)
+ROW_MAX_MISS = 3            # rows without ink (other than rule rows) before a head stops
+ROW_WINDOW_PX = 3.0         # a row's run must lie within this of the predicted x
+ROW_MIN_STEEPNESS = 1.5     # dy/dx at the head: flatter heads are the column tracker's job
+ROW_SPLIT_ROWS = 3          # a band must show two dark cores this many rows running to fork
+
+
+def _row_runs(gray, y: int, lo: int, hi: int, erased_cols) -> list[dict]:
+    """Ink runs in one row between lo and hi; erased rule columns are
+    bridged (a run continues across them) and never start a run."""
+    row = gray[y, lo:hi + 1]
+    runs, start = [], None
+    for i, value in enumerate(row):
+        x = lo + i
+        rule = 0 <= x < len(erased_cols) and erased_cols[x]
+        dark = value < ROW_INK_GRAY and not rule
+        if dark and start is None:
+            start = x
+        elif not dark and not rule and start is not None:
+            runs.append((start, x - 1))
+            start = None
+    if start is not None:
+        runs.append((start, hi))
+    out = []
+    for a, b in runs:
+        profile = gray[y, a:b + 1].astype(float)
+        out.append({"x0": a, "x1": b, "centre": 0.5 * (a + b), "cores": _dark_cores(profile, a)})
+    return out
+
+
+def _dark_cores(profile, offset: int) -> list[float]:
+    """Centres of the separate dark cores of a run: two lines printed side by
+    side read as one run with a lighter column between them (RQ3E110AJ's
+    11.0 A / 5.5 A pair: two 5 px cores, 100-150 gray between)."""
+    if len(profile) < 8:
+        return [offset + 0.5 * (len(profile) - 1)]
+    core = profile < 100
+    cores, start = [], None
+    for i, flag in enumerate(core):
+        if flag and start is None:
+            start = i
+        elif not flag and start is not None:
+            cores.append((start, i - 1))
+            start = None
+    if start is not None:
+        cores.append((start, len(profile) - 1))
+    cores = [c for c in cores if c[1] - c[0] >= 1]
+    if len(cores) == 2 and cores[1][0] - cores[0][1] >= 1:
+        gap = profile[cores[0][1] + 1:cores[1][0]]
+        if gap.size and gap.max() - max(profile[cores[0][0]:cores[0][1] + 1].min(), profile[cores[1][0]:cores[1][1] + 1].min()) >= 30:
+            return [offset + 0.5 * (a + b) for a, b in cores]
+    return [offset + 0.5 * (len(profile) - 1)]
+
+
+def _track_up(gray, x: float, y: float, slope: float, plot: PlotBox, erased_cols, erased_rows,
+              allow_fork: bool = True, side: int = 0, others=None) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
+    """Follow a steep stroke upward, one row at a time, from (x, y).
+
+    Returns (path, forks): the rows traced, and -- when the stroke is two
+    lines printed side by side that separate higher up -- one further path
+    per line from the split on. Rule rows are crossed on the prediction.
+    """
+    path: list[tuple[float, float]] = []
+    miss, split_rows = 0, 0
+    cy = int(round(y)) - 1
+    top = plot.y0 + 1
+    while cy > top:
+        pred = x + slope * (cy - y)
+        if 0 <= cy < len(erased_rows) and erased_rows[cy]:
+            cy -= 1
+            continue
+        lo, hi = max(plot.x0 + 1, int(pred - ROW_WINDOW_PX - 8)), min(plot.x1 - 1, int(pred + ROW_WINDOW_PX + 8))
+        runs = [r for r in _row_runs(gray, cy, lo, hi, erased_cols)
+                if r["x0"] - ROW_WINDOW_PX <= pred <= r["x1"] + ROW_WINDOW_PX and r["x1"] - r["x0"] <= 16]
+        if not runs:
+            miss += 1
+            if miss > ROW_MAX_MISS:
+                break
+            cy -= 1
+            continue
+        run = min(runs, key=lambda r: abs(r["centre"] - pred))
+        if allow_fork and len(run["cores"]) == 2:
+            split_rows += 1
+            if split_rows >= ROW_SPLIT_ROWS:
+                forks = [_track_up(gray, core, cy, slope, plot, erased_cols, erased_rows, allow_fork=False, side=side_)[0]
+                         for core, side_ in zip(run["cores"], (-1, 1))]
+                forks = [[(core, float(cy))] + f for core, f in zip(run["cores"], forks)]
+                return path, forks
+        else:
+            split_rows = 0
+        # after a split each line follows its own dark core, not the band
+        beside = None
+        if others is not None and len(others) and run["x1"] - run["x0"] + 1 >= BAND_MIN_WIDTH_PX:
+            row_pts = others[np.abs(others[:, 1] - cy) <= 1.0]
+            inside = row_pts[(row_pts[:, 0] >= run["x0"] - 1) & (row_pts[:, 0] <= run["x1"] + 1)]
+            if len(inside):
+                beside = float(inside[:, 0].mean())
+        if beside is not None:
+            # another traced curve shares this band (BRCS020N03RA's 25 C and
+            # 125 C lines touch near the top): this line is the other half
+            centre = run["x1"] - LINE_HALF_WIDTH_PX if beside < run["centre"] else run["x0"] + LINE_HALF_WIDTH_PX
+        elif allow_fork:
+            centre = run["centre"]
+        elif len(run["cores"]) == 1 and run["x1"] - run["x0"] >= 8:
+            # the pair reads as one band in this row: this line is its left or
+            # right half, not the band's middle
+            centre = run["x0"] + 2.5 if side < 0 else run["x1"] - 2.5
+        else:
+            centre = min(run["cores"], key=lambda c: abs(c - pred))
+        nx = min(centre, x)                       # a decreasing curve: x does not grow upward
+        if abs(nx - pred) > ROW_WINDOW_PX + 1:
+            miss += 1
+            if miss > ROW_MAX_MISS:
+                break
+            cy -= 1
+            continue
+        path.append((float(nx), float(cy)))
+        miss = 0
+        if len(path) >= 4:
+            ys = np.asarray([p[1] for p in path[-12:]])
+            xs = np.asarray([p[0] for p in path[-12:]])
+            if ys.max() - ys.min() >= 3:
+                slope = float(np.clip(np.polyfit(ys, xs, 1)[0], 0.0, 1.0 / ROW_MIN_STEEPNESS))
+        x, y = nx, float(cy)
+        cy -= 1
+    return path, []
+
+
+def extend_steep_heads(traces: list[Trace], gray, plot: PlotBox, erased_cols, erased_rows) -> list[Trace]:
+    """Trace each raster curve's steep head up to the frame, row by row (F4-1).
+
+    The column tracker samples one point per column, so a near-vertical
+    stroke crossing grid rules loses its top (RQ3E110AJ stopped at 23.4 mOhm,
+    RQ3E180AJ's branches at 39.7 / 48.2 mOhm, all printed up to the top
+    frame). A head that is steep (dy/dx >= 1.5) and below the top frame is
+    followed upward on the ink, across rule rows. A band of two lines printed
+    side by side that separates higher up yields one trace per line, sharing
+    the band below the split (served as coincident, F4-4).
+    """
+    out: list[Trace] = []
+    for trace in traces:
+        pts = trace.points_px
+        hx, hy = pts[0]
+        if hy <= plot.y0 + 3 or len(pts) < 4:
+            out.append(trace)
+            continue
+        head = [p for p in pts[:12]]
+        xs = np.asarray([p[0] for p in head])
+        ys = np.asarray([p[1] for p in head])
+        span_x = max(1.0, xs.max() - xs.min())
+        if (ys.max() - ys.min()) / span_x < ROW_MIN_STEEPNESS:
+            out.append(trace)
+            continue
+        slope = float(np.clip(np.polyfit(ys, xs, 1)[0], 0.0, 1.0 / ROW_MIN_STEEPNESS)) if ys.max() > ys.min() else 0.0
+        others = [np.asarray(t.points_px, float) for t in traces if t is not trace]
+        others = np.concatenate(others) if others else np.zeros((0, 2))
+        path, forks = _track_up(gray, hx, hy, slope, plot, erased_cols, erased_rows, others=others)
+        if len(forks) == 2:
+            tops = [f[-1] for f in forks]
+            others = [t.points_px for t in traces if t is not trace]
+            if abs(tops[0][0] - tops[1][0]) <= 3 or any(
+                    min(_polyline_distance(f[-1], o) for o in others) <= 3 for f in forks if others):
+                # the "split" converged again, or runs onto a curve that has
+                # its own trace: not a second printed line
+                forks = [min(forks, key=lambda f: min((_polyline_distance(f[-1], o) for o in others), default=0.0) * -1)]
+        if len(forks) == 2:
+            out.extend(_split_band(trace, forks, gray, plot, erased_cols, erased_rows))
+            continue
+        extension = list(reversed(path + (forks[0] if forks else [])))
+        if not extension:
+            out.append(trace)
+            continue
+        out.append(replace_trace(trace, extension + list(pts), row_traced_points=extension))
+    return out
+
+
+BAND_MIN_WIDTH_PX = 8       # a steep run this wide is two lines side by side
+LINE_HALF_WIDTH_PX = 2.5
+
+
+def _track_band_down(gray, x: float, y: float, plot: PlotBox, erased_cols, erased_rows) -> list[tuple[float, int, int]]:
+    """Rows (y, x0, x1) of a two-line band, from its split downward while it
+    stays wider than one line (>= BAND_MIN_WIDTH_PX) and steep. Rows where a
+    rule or a label leader touches the band (run > 12 px) are crossed, not
+    measured."""
+    rows: list[tuple[float, int, int]] = []
+    narrow = 0
+    cy = int(round(y)) + 1
+    while cy < plot.y1 - 1:
+        if 0 <= cy < len(erased_rows) and erased_rows[cy]:
+            cy += 1
+            continue
+        lo, hi = max(plot.x0 + 1, int(x - 12)), min(plot.x1 - 1, int(x + 12))
+        runs = [r for r in _row_runs(gray, cy, lo, hi, erased_cols) if r["x0"] - 3 <= x <= r["x1"] + 3]
+        if not runs:
+            break
+        run = min(runs, key=lambda r: abs(r["centre"] - x))
+        if run["x1"] - run["x0"] + 1 > 12:
+            cy += 1                                # rule or leader contact: cross it
+            continue
+        if run["centre"] < x - 1.0:
+            break                                  # the curve turned: not the steep band
+        if run["x1"] - run["x0"] + 1 < BAND_MIN_WIDTH_PX:
+            narrow += 1
+            if narrow >= 3:
+                break                              # one line's width: the pair has merged
+        else:
+            narrow = 0
+            rows.append((float(cy), run["x0"], run["x1"]))
+        x = run["centre"]
+        if len(rows) >= 10:
+            ys = np.asarray([r[0] for r in rows[-10:]])
+            xs = np.asarray([0.5 * (r[1] + r[2]) for r in rows[-10:]])
+            if np.polyfit(ys, xs, 1)[0] > 1.0 / ROW_MIN_STEEPNESS:
+                break                              # no longer steep: the column tracker's part
+        cy += 1
+    return rows
+
+
+def _split_band(trace: Trace, forks, gray, plot: PlotBox, erased_cols, erased_rows) -> list[Trace]:
+    """Two printed lines that run side by side as one band (RQ3E110AJ's
+    11.0 A / 5.5 A pair) become two traces: each line's own top from the
+    split, then its half of the band row by row down to where the band
+    narrows to one line, then the shared single line (coincident, F4-4)."""
+    split_x, split_y = forks[0][0][0], forks[0][0][1]
+    band = _track_band_down(gray, split_x, split_y, plot, erased_cols, erased_rows)
+    below = band[-1][0] if band else split_y
+    rest = [p for p in trace.points_px if p[1] > below + 0.5]
+    out = []
+    for fork, side in zip(forks, (-1, 1)):
+        halves, last = [], -1e9
+        for y, x0, x1 in band:
+            last = max(last, (x0 + LINE_HALF_WIDTH_PX) if side < 0 else (x1 - LINE_HALF_WIDTH_PX))
+            halves.append((last, y))               # x never decreases downward on a falling curve
+        head = list(reversed(fork))
+        extension = head + halves
+        new = replace_trace(trace, extension + rest, row_traced_points=extension)
+        new.tail_from = new.tail_from + [{"kind": "band_split", "side": "left" if side < 0 else "right",
+                                          "split_px": [float(split_x), float(split_y)],
+                                          "band_rows": len(band),
+                                          "band_ends_px_y": float(below)}]
+        out.append(new)
+    return out
+
+
+def replace_trace(trace: Trace, points, **extra) -> Trace:
+    new = Trace(list(points), trace.method, trace.style, trace.merged_columns, dict(trace.params),
+                dict(trace.binding), trace.bridged_columns, list(trace.contact_removed_x),
+                list(trace.dropped_stub_points), list(extra.get("row_traced_points", trace.row_traced_points)),
+                list(extra.get("tail_from", trace.tail_from)))
+    return new
+
+
+# ---------------------------------------------------------------------------
+# F4-4: serve exactly the printed curves
+
+BRANCH_JOIN_PX = 6.0        # a branch end this close to another trace flows into it
+
+
+def _polyline_distance(point, points) -> float:
+    p = np.asarray(point, dtype=float)
+    q = np.asarray(points, dtype=float)
+    if len(q) == 1:
+        return float(np.hypot(*(q[0] - p)))
+    a, b = q[:-1], q[1:]
+    ab = b - a
+    t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+    closest = a + t[:, None] * ab
+    return float(np.sqrt(((closest - p) ** 2).sum(1)).min())
+
+
+def group_branches(traces: list[Trace], plot: PlotBox) -> list[Trace]:
+    """Each printed curve = its own branch + the tail it merges into (F4-4).
+
+    The column tracker follows two steep branches as separate tracks and the
+    merged stretch below them as a third (RQ6E080AJ: 4.0 A and 8.0 A branches
+    and their shared tail). A trace that stops inside the plot on another
+    trace flows into it and takes over its continuation; a trace whose head
+    only repeats such a branch is a tail, and a tail is never served as a
+    curve of its own. The shared stretch is then coincident (recorded by
+    the digitizer), never silently duplicated.
+    """
+    margin = 7.5
+    joins: dict[int, tuple[int, float]] = {}
+    for i, trace in enumerate(traces):
+        end = trace.points_px[-1]
+        if not (end[0] < plot.x1 - margin and end[1] < plot.y1 - margin):
+            continue
+        best = None
+        for j, other in enumerate(traces):
+            if j == i or not any(p[0] > end[0] + 0.5 for p in other.points_px):
+                continue
+            distance = _polyline_distance(end, other.points_px)
+            if distance <= BRANCH_JOIN_PX and (best is None or distance < best[0]):
+                best = (distance, j)
+        if best is not None:
+            joins[i] = (best[1], end[0])
+    tails = {j for i, (j, _x) in joins.items()
+             if _polyline_distance(traces[j].points_px[0], traces[i].points_px) <= BRANCH_JOIN_PX}
+
+    def full_points(i: int, seen: frozenset) -> list:
+        own = list(traces[i].points_px)
+        if i not in joins or joins[i][0] in seen:
+            return own
+        j, _x_end = joins[i]
+        tail = full_points(j, seen | {i})
+        # continue from the tail point nearest the junction, in the tail's own
+        # order: a steep tail is still above the junction for some columns
+        end = np.asarray(own[-1], dtype=float)
+        k = int(np.argmin([np.hypot(p[0] - end[0], p[1] - end[1]) for p in tail]))
+        # a dropped tail's head re-sampled this branch: its samples are real
+        # ink of this line and are kept (RQ6E080AJ: 381 px, 243.5-262 on the
+        # 8 A line), not lost with the tail
+        head = [p for p in tail[:k + 1] if p not in own and _polyline_distance(p, own) <= 3.0] \
+            if j in tails else []
+        merged = sorted(own + head, key=lambda p: (p[0], p[1])) if head else own
+        return merged + [p for p in tail[k + 1:] if p[0] > end[0] - 0.5 and p[1] >= end[1] - 1.0]
+
+    out = []
+    for i, trace in enumerate(traces):
+        if i in tails:
+            continue
+        if i in joins:
+            j, x_end = joins[i]
+            out.append(replace_trace(trace, full_points(i, frozenset({i})),
+                                     tail_from=trace.tail_from + [{"kind": "shared_tail", "from_x_px": float(x_end),
+                                                                   "tail_was_separate": j in tails}]))
+        else:
+            out.append(trace)
+    return out
+
+
+# ---------------------------------------------------------------------------
+# F4-3: raster label arrows and leader lines, followed to their tip
+
+LEADER_MIN_LENGTH_PX = 25.0
+LEADER_MIN_ELONGATION = 8.0
+LEADER_LABEL_REACH_PX = 25.0     # the tail starts this close to its label box
+LEADER_MAX_MISS = 4              # steps without ink before the line has ended
+LEADER_TIP_CLEAR_PX = 8          # the ink just before a tip may touch only the tip's curve
+
+
+def _line_ink(raw, p, d) -> np.ndarray | None:
+    perp = np.array([-d[1], d[0]])
+    for offset in (0.0, -1.0, 1.0, -2.0, 2.0):
+        q = p + offset * perp
+        xi, yi = int(round(q[0])), int(round(q[1]))
+        if 0 <= yi < raw.shape[0] and 0 <= xi < raw.shape[1] and raw[yi, xi]:
+            return q
+    return None
+
+
+def _follow_straight(raw, start, through, seed_points, max_len: float = 500.0) -> np.ndarray:
+    """From ``start`` through ``through``, follow a straight stroke to its end.
+
+    The line is refitted on the ink accepted so far, so it stays on the
+    stroke across curve and rule crossings (a crossing is ink ON the line);
+    it ends after LEADER_MAX_MISS steps without ink. Returns the last ink
+    point (the tip) and the unbroken stretch of ink that ends there."""
+    accepted = [tuple(p) for p in seed_points]
+    direction = np.asarray(through, float) - np.asarray(start, float)
+    direction /= max(np.linalg.norm(direction), 1e-9)
+    origin = np.asarray(through, float)
+    tip, t, miss = origin.copy(), 0.0, 0
+    last_run: list = [origin.copy()]
+    while miss <= LEADER_MAX_MISS and t < max_len:
+        pts = np.asarray(accepted[-300:], float)
+        centre = pts.mean(0)
+        _u, _s, vt = np.linalg.svd(pts - centre, full_matrices=False)
+        axis = vt[0] if vt[0] @ direction > 0 else -vt[0]
+        t += 1.0
+        p = centre + ((origin - centre) @ axis + t) * axis
+        q = _line_ink(raw, p, axis)
+        if q is None:
+            miss += 1
+        else:
+            if miss:
+                last_run = []               # white on the line: a new stretch of ink begins
+            tip, miss = q, 0
+            last_run.append(q)
+            accepted.append(tuple(q))
+    return tip, last_run
+
+
+def raster_leaders(gray, plot: PlotBox, traces: list[Trace], grid_x, grid_y, labels: list[Label],
+                   ocr_tail=None) -> tuple[list[Leader], list[Label]]:
+    """Label arrows and leader lines of a raster chart (review F4-3).
+
+    WSR3090 points each "TJ=..." label at its curve with an arrow; the 125 C
+    arrow crosses the 100 C curve on its way to the top one, so nearness
+    binds it wrongly. A thin straight stroke that starts at a label box (or,
+    with ``ocr_tail``, at text read there) is followed to where the stroke
+    ends -- its tip -- across any curve or rule it crosses. The binder then
+    names the curve at the tip (``_leader_target``). Returns the leaders and
+    any labels read at a tail that the plot OCR had missed.
+    """
+    raw = gray < ROW_INK_GRAY
+    ink = np.zeros_like(raw)
+    ink[plot.y0 + 3:plot.y1 - 2, plot.x0 + 3:plot.x1 - 2] = raw[plot.y0 + 3:plot.y1 - 2, plot.x0 + 3:plot.x1 - 2]
+    ink = ink.astype(np.uint8)
+    for x in grid_x:
+        ink[:, max(0, int(round(x)) - 2):int(round(x)) + 3] = 0
+    for y in grid_y:
+        ink[max(0, int(round(y)) - 2):int(round(y)) + 3, :] = 0
+    for trace in traces:
+        pts = np.round(np.asarray(trace.points_px, float)).astype(np.int32).reshape(-1, 1, 2)
+        cv2.polylines(ink, [pts], False, 0, 7)
+    count, comp, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+    curve_pts = np.concatenate([np.asarray(t.points_px, float) for t in traces]) if traces else np.zeros((0, 2))
+    leaders: list[Leader] = []
+    found: list[Label] = []
+    for index in range(1, count):
+        if stats[index, cv2.CC_STAT_AREA] < 20:
+            continue
+        ys, xs = np.nonzero(comp == index)
+        pts = np.c_[xs, ys].astype(float)
+        centre = pts.mean(0)
+        _u, sv, vt = np.linalg.svd(pts - centre, full_matrices=False)
+        if len(sv) < 2:
+            continue
+        length = sv[0] / math.sqrt(len(pts)) * math.sqrt(12.0)
+        if length < LEADER_MIN_LENGTH_PX or sv[0] < LEADER_MIN_ELONGATION * max(sv[1], 1e-6):
+            continue
+        along = (pts - centre) @ vt[0]
+        ends = (pts[int(along.argmin())], pts[int(along.argmax())])
+        if not len(curve_pts):
+            continue
+        # the tip is at a curve, so the tail is the end farther from the curves
+        to_curve = [float(np.hypot(*(curve_pts - end).T).min()) for end in ends]
+        tail, head = (ends[0], ends[1]) if to_curve[0] >= to_curve[1] else (ends[1], ends[0])
+        if max(to_curve) < 8.0:
+            continue                               # both ends on curves: curve ink, not a leader
+        on_line = pts[np.abs((pts - centre) @ np.array([-vt[0][1], vt[0][0]])) <= 1.5]
+        # the component may stop at an erased grid rule short of its label
+        # (RQ6E080AJ's 8.0 A leader): follow it back to where the line starts
+        tail = _follow_straight(raw, head, tail, on_line, max_len=120.0)[0]
+        if min((_box_distance(tail, label) for label in labels if label.params), default=1e9) > LEADER_LABEL_REACH_PX:
+            if ocr_tail is None:
+                continue
+            label = ocr_tail(tail, head)
+            if label is None or not label.params:
+                continue
+            found.append(label)
+        tip, last_run = _follow_straight(raw, tail, head, on_line)
+        # the last LEADER_TIP_CLEAR_PX of unbroken ink before the tip must
+        # touch ONE curve: lines that touch side by side (RQ3E110AJ's 11.0 A /
+        # 5.5 A band) leave the tip unreadable. A curve crossed further back
+        # (WSR3090's 125 C arrow over the 100 C curve, RQ3E180AJ's 9 A leader
+        # over the 18 A branch, 16 px before its tip) does not.
+        end = last_run[-LEADER_TIP_CLEAR_PX:]
+        touched = {k for k, trace in enumerate(traces)
+                   if any(_polyline_distance(q, trace.points_px) <= 2.0 for q in end)}
+        leaders.append(Leader((tuple(map(float, tail)), tuple(map(float, tip))), raster=True,
+                              ambiguous=len(touched) > 1))
+    return leaders, found

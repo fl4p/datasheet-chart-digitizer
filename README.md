@@ -168,8 +168,20 @@ which keeps the panel off `ok`. Two curves drawn on top of each other are listed
 `coincident_with` on both, with a reason. A usable curve read above a table maximum at the
 table's VGS, which no anchor judged, is recorded in `validation.diagnostics` together with
 what is unknown about its bindings, without a verdict. The overlay marks every used tick
-in white bands outside the crop, draws traces in an Okabe-Ito palette (no dark colours) on
-white halos, labels each curve directly, and gives each curve a legend row with a swatch.
+with blue "+" markers and values on the plot (the v3 style), draws traces in an Okabe-Ito
+palette (no dark colours) on white halos with nested widths (c0 widest, each later curve
+narrower on top, all solid), labels each curve directly, and gives each curve a legend
+row with a swatch.
+
+Raster curve structure: a steep head is traced row by row up to the frame across grid
+rules (`row_traced_points_px`); a head still short of the frame while its ink runs on
+gets `curve_N_head_not_traced_to_frame`. Exactly the printed curves are served: a branch
+that merges into a tail takes the tail over (`shared_tail`), the tail is never a curve of
+its own, and two lines printed side by side as one band are split into their halves;
+shared stretches are `coincident_with`. Label arrows and leader lines are followed
+straight to their tip, across the curves they cross (`raster_leaders_px`); a label the
+plot OCR missed is read at the arrow's tail; a tip in ink shared by two touching lines
+names neither (`leader_tip_between_touching_curves`).
 
 Table check: `verified` needs a consistent anchor at the table's own drain current (within
 2 %); consistent anchors only at a nearby current (within the 0.75-1.34 ratio used for

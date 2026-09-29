@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from .numeric_axis import NumericAxis
+from .overlay import draw_axis_ticks, draw_plot_frame
 from .rdson_gate_voltage_axes import Calibration
 from .rdson_gate_voltage_locate import LocatedPanel
 from .rdson_spec_table import RdsonSpecRow
@@ -278,12 +279,10 @@ PALETTE_HEX = ("#D55E00", "#56B4E9", "#009E73", "#E69F00", "#CC79A7", "#0072B2",
 _COLORS = tuple((int(h[5:7], 16), int(h[3:5], 16), int(h[1:3], 16)) for h in PALETTE_HEX)
 MIN_CONTRAST_VS_BLACK = 4.0      # WCAG contrast ratio of every curve colour against black ink
 _UNUSABLE = (165, 165, 165)      # grey for a not-usable curve (not in the palette)
-_FRAME = (128, 128, 128)         # plot frame: mid grey
 _MARK = (0, 0, 0)                # ticks, table markers: black on a white halo
 _ANCHOR_COLOR = (20, 20, 20)
 _TEXT = (20, 20, 20)
 _FONT, _FONT_SCALE = cv2.FONT_HERSHEY_SIMPLEX, 0.42
-_BAND_LEFT, _BAND_BOTTOM = 96, 46
 LABEL_CLEARANCE_PX = 8           # a direct curve label keeps this far from every traced point
 
 
@@ -334,41 +333,55 @@ def _segments(curve: dict):
     return pts, [(a, b) for a, b in zip(breaks, breaks[1:]) if b > a]
 
 
+NESTED_BASE_WIDTH_PX = 3      # the last (top) curve's line width
+NESTED_STEP_PX = 4            # each earlier curve is this much wider underneath (2 px border per side)
+
+
+def line_widths(curves: list[dict]) -> dict[int, int]:
+    """Nested widths (review F4-5): c0 widest, each later curve narrower and
+    drawn on top, so every colour shows as a border wherever curves overlap."""
+    order = sorted(c["curve_index"] for c in curves)
+    return {index: NESTED_BASE_WIDTH_PX + NESTED_STEP_PX * (len(order) - 1 - rank) for rank, index in enumerate(order)}
+
+
 def _draw_curves(body, curves: list[dict]) -> None:
-    """Traces 3 px wide on a white halo, dots with a white rim (R3-14); a
-    curve lying on another is drawn in alternating dashes over it so both
-    stay visible (R3-13b)."""
+    """One rule on every overlay (review F4-5): solid lines on a white halo,
+    nested widths (c0 widest, later curves narrower on top), no style change
+    along a curve. Coincidence is stated in the data and the legend only.
+    Sample dots are filled in the curve colour with a white rim (R3-14) where
+    no other curve is near; next to another curve a dot stays inside its own
+    line so it hides nothing underneath."""
     order = sorted(curves, key=lambda c: c["curve_index"])
-    for layer in ("halo", "line"):
-        for curve in order:
-            pts, segments = _segments(curve)
-            color = curve_color(curve)
-            # the higher-index curve is dashed over the lower one, whose
-            # line then shows through every other 10 px
-            dashed = [(c["from_vgs_v"], c["to_vgs_v"]) for c in curve.get("coincident_with", [])
-                      if c["curve_index"] < curve["curve_index"]]
-            vgs = [p[0] for p in curve.get("points") or []]
-            for a, b in segments:
-                for k in range(a, b - 1):
-                    p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
-                    p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
-                    over = k < len(vgs) and any(v0 <= vgs[k] <= v1 for v0, v1 in dashed)
-                    if over and (p0[0] // 10) % 2:
-                        continue  # the gap in the dash shows the curve underneath
-                    if layer == "halo":
-                        cv2.line(body, p0, p1, (255, 255, 255), 7, cv2.LINE_AA)
-                    else:
-                        cv2.line(body, p0, p1, color, 3, cv2.LINE_AA)
-                if b - a == 1 and layer == "line":
-                    cv2.circle(body, (int(round(pts[a, 0])), int(round(pts[a, 1]))), 2, color, -1, cv2.LINE_AA)
-            if layer == "line":
-                step = max(1, len(pts) // 60)
-                for k in range(0, len(pts), step):
-                    x, y = pts[k]
-                    if dashed and k < len(vgs) and any(v0 <= vgs[k] <= v1 for v0, v1 in dashed):
-                        continue  # no dots where this curve lies dashed over another: they would hide it
-                    cv2.circle(body, (int(round(x)), int(round(y))), 5, (255, 255, 255), -1, cv2.LINE_AA)
-                    cv2.circle(body, (int(round(x)), int(round(y))), 3, color, -1, cv2.LINE_AA)
+    widths = line_widths(order)
+    all_pts = {c["curve_index"]: np.asarray(c.get("points_px") or np.zeros((0, 2)), dtype=float) for c in order}
+    for curve in order:
+        pts, segments = _segments(curve)
+        for a, b in segments:
+            for k in range(a, b - 1):
+                p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
+                p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
+                cv2.line(body, p0, p1, (255, 255, 255), widths[curve["curve_index"]] + 4, cv2.LINE_AA)
+    for curve in order:
+        pts, segments = _segments(curve)
+        color, width = curve_color(curve), widths[curve["curve_index"]]
+        for a, b in segments:
+            for k in range(a, b - 1):
+                p0 = (int(round(pts[k, 0])), int(round(pts[k, 1])))
+                p1 = (int(round(pts[k + 1, 0])), int(round(pts[k + 1, 1])))
+                cv2.line(body, p0, p1, color, width, cv2.LINE_AA)
+            if b - a == 1:
+                cv2.circle(body, (int(round(pts[a, 0])), int(round(pts[a, 1]))), max(2, width // 2), color, -1, cv2.LINE_AA)
+        others = [v for i, v in all_pts.items() if i != curve["curve_index"] and len(v)]
+        step = max(1, len(pts) // 60)
+        for k in range(0, len(pts), step):
+            x, y = pts[k]
+            centre = (int(round(x)), int(round(y)))
+            crowded = any((np.hypot(o[:, 0] - x, o[:, 1] - y) < 8).any() for o in others)
+            if crowded:
+                cv2.circle(body, centre, max(1, width // 2), color, -1, cv2.LINE_AA)
+            else:
+                cv2.circle(body, centre, width // 2 + 3, (255, 255, 255), -1, cv2.LINE_AA)
+                cv2.circle(body, centre, width // 2 + 1, color, -1, cv2.LINE_AA)
 
 
 def _place_curve_labels(body, curves: list[dict], plot) -> list[dict]:
@@ -421,47 +434,12 @@ def _place_curve_labels(body, curves: list[dict], plot) -> list[dict]:
     return out
 
 
-def _axis_bands(canvas, calibration: Calibration, unit: str | None, offset_x: int, height: int) -> dict:
-    """Every used tick marked in white bands outside the datasheet crop, with
-    its value and the used span as a bar (R3-10): nothing drawn on the grid."""
-    plot = calibration.plot
-    bar = (60, 60, 60)
-    marks = {"x": [], "y": []}
-    y_ticks = sorted(calibration.y_axis.ticks, key=lambda t: t.pixel)
-    cv2.line(canvas, (offset_x - 8, int(round(y_ticks[0].pixel))), (offset_x - 8, int(round(y_ticks[-1].pixel))), bar, 3)
-    for tick in y_ticks:
-        y = int(round(tick.pixel))
-        cv2.line(canvas, (offset_x - 14, y), (offset_x - 1, y), _MARK, 2)
-        marks["y"].append(tick.value)
-        text = f"{tick.value:g}"
-        _put(canvas, text, (offset_x - 18 - _text_px(text), y + 5), _TEXT)
-    unit_text = {"mOhm": "RDS mOhm", "Ohm": "RDS Ohm"}.get(unit or "", "RDS ?")
-    _put(canvas, unit_text, (4, max(14, plot.y0 - 8)), _TEXT)
-    x_ticks = sorted(calibration.x_axis.ticks, key=lambda t: t.pixel)
-    y_bar = height + 5
-    cv2.line(canvas, (offset_x + int(round(x_ticks[0].pixel)), y_bar), (offset_x + int(round(x_ticks[-1].pixel)), y_bar), bar, 3)
-    last_right = -10**9
-    for k, tick in enumerate(x_ticks):
-        x = offset_x + int(round(tick.pixel))
-        cv2.line(canvas, (x, height), (x, height + 12), _MARK, 2)
-        marks["x"].append(tick.value)
-        text = f"{tick.value:g}"
-        left = x - _text_px(text) // 2
-        row = 0 if left > last_right + 6 else 1   # stagger labels that would touch
-        _put(canvas, text, (left, height + 28 + 14 * row), _TEXT)
-        if row == 0:
-            last_right = left + _text_px(text)
-    _put(canvas, "VGS V", (canvas.shape[1] - _text_px("VGS V") - 6, height + 28), _TEXT)
-    _put(canvas, "used ticks: marks + grey bar", (4, height + 42), (90, 90, 90), 0.38)
-    return marks
-
-
 def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: str,
                    calibration: Calibration | None = None, unit: str | None = None) -> None:
     body = image.copy()
     if calibration is not None:
         plot = calibration.plot
-        cv2.rectangle(body, (plot.x0, plot.y0), (plot.x1, plot.y1), _FRAME, 1)
+        draw_plot_frame(body, plot, (0, 190, 0), 2)
         for readout_v in READOUT_VGS_V:
             x = int(round(_px(calibration.x_axis, readout_v)))
             if plot.x0 < x < plot.x1:
@@ -492,10 +470,17 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
                     cv2.drawMarker(body, centre, (255, 255, 255), marker, 16, 5, cv2.LINE_AA)
                     cv2.drawMarker(body, centre, _ANCHOR_COLOR, marker, 14, 2, cv2.LINE_AA)
         row["overlay_curve_labels"] = _place_curve_labels(body, row.get("curves", []), plot)
-        framed = np.full((body.shape[0] + _BAND_BOTTOM, body.shape[1] + _BAND_LEFT, 3), 255, dtype=np.uint8)
-        framed[: body.shape[0], _BAND_LEFT:] = body
-        row["overlay_tick_marks"] = _axis_bands(framed, calibration, unit, _BAND_LEFT, body.shape[0])
-        body = framed
+        # the v3 tick rendering (review F4-2: the white axis bands of R3-10
+        # were an unrequested inference and are reverted); every USED tick
+        # is marked, with its value
+        draw_axis_ticks(
+            body, plot,
+            x_ticks=[(t.pixel, t.value) for t in calibration.x_axis.ticks],
+            y_ticks=[(t.pixel, t.value) for t in calibration.y_axis.ticks],
+            color=(255, 0, 0), font_scale=0.4, marker_size=10, unit_x="V",
+            unit_y="mOhm" if unit == "mOhm" else "Ohm" if unit == "Ohm" else "?",
+            line_aa=True, halo=True,
+        )
     width_px = body.shape[1] - 8
     header = _header_lines(row, panel, width_px)
     legend = _legend_lines(row, width_px - 44)
@@ -505,17 +490,17 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
     for i, (text, color) in enumerate(header):
         cv2.putText(top, text, (4, 14 + i * line_h), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     curves = {c["curve_index"]: c for c in row.get("curves", [])}
+    widths = line_widths(list(curves.values()))
     for i, (text, color) in enumerate(legend):
         y = 14 + i * line_h
         match = re.match(r"c(\d+) ", text)
         if match and int(match.group(1)) in curves:
             # the curve's swatch: its line on a white halo, as drawn on the chart
-            swatch = curve_color(curves[int(match.group(1))])
-            cv2.line(bottom, (6, y - 4), (36, y - 4), (0, 0, 0), 7)
-            cv2.line(bottom, (6, y - 4), (36, y - 4), (255, 255, 255), 5)
-            cv2.line(bottom, (6, y - 4), (36, y - 4), swatch, 3)
-            cv2.circle(bottom, (21, y - 4), 4, (255, 255, 255), -1, cv2.LINE_AA)
-            cv2.circle(bottom, (21, y - 4), 3, swatch, -1, cv2.LINE_AA)
+            index = int(match.group(1))
+            swatch, width = curve_color(curves[index]), min(widths[index], line_h - 6)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), (0, 0, 0), width + 4)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), (255, 255, 255), width + 2)
+            cv2.line(bottom, (6, y - 4), (36, y - 4), swatch, width)
         cv2.putText(bottom, text, (44, y), _FONT, _FONT_SCALE, color, 1, cv2.LINE_AA)
     canvas = np.vstack([top, body, bottom])
     path = out_dir / "overlays" / panel.part / f"{stem}.rds_vgs_overlay.png"
@@ -595,7 +580,7 @@ def _legend_lines(row: dict, width_px: int | None = None):
         ident = (f"c{curve['curve_index']} {temperature_text(curve)} "
                  f"{'ID=%gA' % curve['id_a'] if curve.get('id_a') is not None else 'ID unknown'}")
         together = "".join(
-            f"; coincident with c{c['curve_index']} {c['from_vgs_v']:.2f}..{c['to_vgs_v']:.2f} V (drawn dashed over it)"
+            f"; coincident with c{c['curve_index']} {c['from_vgs_v']:.2f}..{c['to_vgs_v']:.2f} V (drawn nested)"
             for c in curve.get("coincident_with", []))
         if not curve.get("usable", True):
             lines += _wrapped(f"{ident} NOT USABLE (grey): {curve.get('not_usable_reason', '')}{together}", (90, 90, 90), width_px)
