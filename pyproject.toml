@@ -26,3 +26,12 @@ datasheet-layout-cluster = "datasheet_chart_digitizer.layout_clustering:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[dependency-groups]
+dev = [
+  "pytest",
+  "pytest-xdist",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
