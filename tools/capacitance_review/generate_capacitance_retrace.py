@@ -99,8 +99,10 @@ class Part:
     notes: tuple[str, ...] = field(default=())
 
 
-def _ao(stem, part, row, defect, evidence, notes=()):
-    return Part(stem, "ao", part, 4, 8, row, "vector", (34.0, 12.0, 12.0, 36.0), defect, evidence=evidence, notes=notes)
+def _ao(stem, part, row, defect, evidence, notes=(), left_pt=34.0):
+    # left margin: the rotated y title sits 30-38 pt left of the frame; the
+    # gate-charge panel starts a few pt further out
+    return Part(stem, "ao", part, 4, 8, row, "vector", (left_pt, 12.0, 12.0, 36.0), defect, evidence=evidence, notes=notes)
 
 
 def _nxp(stem, part, page, row, defect, evidence, notes=()):
@@ -124,10 +126,10 @@ PARTS = [
          ("Coss", 9.0, 420.0, "old Coss hook onto the Crss label arrow at ~9 V"))),
     _ao("02_ao_AON6226", "AON6226", "MANIFEST.codex-ee-8ae6.ao.jsonl:49",
         "Crss traced along the 0 pF rail (real Crss never traced); plot box takes in the gate-charge panel",
-        (("Crss", 10.0, 120.0, "old Crss on the 0 pF rail vs the real Crss stroke"),)),
+        (("Crss", 10.0, 120.0, "old Crss on the 0 pF rail vs the real Crss stroke"),), left_pt=40.0),
     _ao("03_ao_AON6276", "AON6276", "MANIFEST.codex-ee-8ae6.ao.jsonl:53",
         "Crss traced along the 0 pF rail (real Crss never traced); plot box takes in the gate-charge panel",
-        (("Crss", 8.0, 400.0, "old Crss on the 0 pF rail vs the real Crss stroke"),)),
+        (("Crss", 8.0, 400.0, "old Crss on the 0 pF rail vs the real Crss stroke"),), left_pt=40.0),
     _ao("04_ao_AOT2610L", "AOT2610L", "MANIFEST.codex-ee-8ae6.ao.jsonl:89",
         "Crss traced along the 0 pF rail (real Crss never traced); plot box takes in the gate-charge panel; "
         "Coss misses the low-VDS rise",
