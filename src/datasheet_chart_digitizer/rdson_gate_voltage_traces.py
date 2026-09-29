@@ -2054,7 +2054,10 @@ def fill_unsampled_stretches(traces: list[Trace], gray, plot: PlotBox, erased_co
         if not notes and not decisions:
             out.append(trace)
             continue
-        out.append(replace(trace, points_px=list(trace.points_px) + added, gap_traced=notes,
+        # interior points go between the trace's first and last points: the
+        # end checks (_open_ends, _ink_reaches_frame) read points_px[0] / [-1]
+        pts = list(trace.points_px)
+        out.append(replace(trace, points_px=pts[:-1] + added + pts[-1:], gap_traced=notes,
                            dropped_stub_points=kept_stubs, stub_decisions=decisions))
     return out
 

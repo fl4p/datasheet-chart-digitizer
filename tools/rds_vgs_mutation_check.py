@@ -650,9 +650,12 @@ MUTANTS = {
         [F6 + "test_f6_1_end_stubs_are_served_or_named"]),
     "stretch_points_move_existing (F6-1)": (
         [_source_mutant(traces, "fill_unsampled_stretches", (
-            "out.append(replace(trace, points_px=list(trace.points_px) + added, gap_traced=notes,",
-            "out.append(replace(trace, points_px=[(x, y + 0.6) for x, y in trace.points_px] + added, gap_traced=notes,"))],
+            "out.append(replace(trace, points_px=pts[:-1] + added + pts[-1:], gap_traced=notes,",
+            "out.append(replace(trace, points_px=[(x, y + 0.6) for x, y in pts[:-1]] + added + pts[-1:], gap_traced=notes,"))],
         [F6 + "test_f6_1_no_existing_point_moves"]),
+    "stretch_points_appended_after_end (F6-1)": (
+        [_source_mutant(traces, "fill_unsampled_stretches", ("points_px=pts[:-1] + added + pts[-1:]", "points_px=pts + added"))],
+        [F6 + "test_f6_1_no_new_end_reasons"]),
     "tube_core_whole_width (F5-2 opposite: legibility)": (
         [_source_mutant(report, "_draw_curves", ("_stroke(core, curve, 255, TRACE_CORE_PX)", "_stroke(core, curve, 255, widths[curve['curve_index']])"))],
         [F5 + "test_f5_2_traces_stay_colourful_beside_the_print"]),

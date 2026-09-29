@@ -1815,6 +1815,19 @@ class RoundSixTests(unittest.TestCase):
                 self.assertEqual([(r["vgs_v"], r["rds_mohm"], r["status"]) for r in old["readouts"]],
                                  [(r["vgs_v"], r["rds_mohm"], r["status"]) for r in new["readouts"]], name)
 
+    def test_f6_1_no_new_end_reasons(self):
+        # the added interior points must not change what the ends say
+        # (a first v7 run appended them after the last point: four panels
+        # gained "partial_raster_trace (stops at 10.00 V inside the plot)")
+        for name, page, diagram in F6_PANELS:
+            before = _panel_without(name, page, diagram, "stretch_tracer")
+            after = _panel(name, page, diagram)
+            for old, new in zip(before["curves"], after["curves"]):
+                self.assertEqual(old["trace_complete"], new["trace_complete"], (name, old["curve_index"]))
+                self.assertEqual(old["vgs_range_v"], new["vgs_range_v"], (name, old["curve_index"]))
+            self.assertEqual([r for r in before["reasons"] if "partial_raster_trace" in r or "head_not_traced" in r],
+                             [r for r in after["reasons"] if "partial_raster_trace" in r or "head_not_traced" in r], name)
+
     def test_f6_1_rq3e110aj_each_line_keeps_its_half_of_the_band(self):
         # Fab's crop: below the ID leader tips the two lines print as one
         # band; the 11 A line (c0) is its right half, the 5.5 A line (c1) its left
