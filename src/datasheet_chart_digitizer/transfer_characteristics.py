@@ -57,6 +57,7 @@ from .capacitance_vector import (
 from .capacitance_vector import _chain_vector_components
 from .crop_transform import CropTransform
 from .chart_classifier import compact_formula_chart_kind
+from . import axis_title_identity as titles
 from .source_color_binding import bind_two_source_color_legend
 from .transfer_temperature_order import inverse_vgs as _inverse_vgs
 from .transfer_temperature_order import bind_opposite_outer_labels, validate_two_curve_order
@@ -949,9 +950,10 @@ def _bind_two_temperature_labels(
 
 
 def _validate_transfer_panel_semantics(
-    chart: dict, source_words: list[tuple[str, float, float]] | None = None
+    chart: dict, source_words: list[tuple[str, float, float]] | None = None,
+    owned_titles: tuple[str, str] | None = None,
 ) -> None:
-    """Fail closed unless title and owned panel text describe Id(Vgs)."""
+    """Fail closed unless title and owned panel text (or frame-owned x/y titles) describe Id(Vgs)."""
 
     title = str(chart.get("title", "")).lower()
     source_text = " ".join(word[0] for word in source_words or [])
@@ -974,6 +976,9 @@ def _validate_transfer_panel_semantics(
         or "draintosourcecurrent" in alpha_compact
         or "currentdraintosource" in alpha_compact
     )
+    if owned_titles is not None:
+        has_gate_axis = has_gate_axis or bool(titles.TRANSFER_X_TITLE_RE.search(owned_titles[0]))
+        has_current_axis = has_current_axis or bool(titles.TRANSFER_Y_TITLE_RE.search(owned_titles[1]))
     if not (has_gate_axis and has_current_axis):
         raise RuntimeError(
             "transfer panel lacks owned VGS and ID axis evidence; refusing curve-shape inference"
@@ -1292,10 +1297,17 @@ def process_chart(
             semantic_refusal = original_semantic_error
             try:
                 temperatures = _temperatures(str(chart.get("text", "")))
-                _validate_transfer_panel_semantics(chart, words)
+                # A tight crop can clip the panel's own axis titles: read the ones its frame
+                # owns. Proven so, a later refusal reports its own reason.
+                try:
+                    owned = titles.frame_owned_axis_titles(page, transform, lambda: _vector_plot_frame(
+                        page, transform, gray.shape) or find_closed_frame_plot_box(gray))
+                    _validate_transfer_panel_semantics(chart, owned_titles=owned)
+                except RuntimeError:
+                    _validate_transfer_panel_semantics(chart, words)
+                    source_semantics_recovered = True
             except RuntimeError:
                 raise semantic_refusal from None
-            source_semantics_recovered = True
         else:
             try:
                 temperatures = _temperatures(str(chart.get("text", "")))
@@ -1333,10 +1345,10 @@ def process_chart(
                 if positioned_labels is not None
                 else None
             )
-        except RuntimeError:
+        except RuntimeError as downstream:
             if source_semantics_recovered:
                 assert semantic_refusal is not None
-                raise semantic_refusal from None
+                raise RuntimeError(f"{semantic_refusal} (after crop-text recovery: {downstream})") from None
             raise
     finally:
         doc.close()
@@ -1360,10 +1372,10 @@ def process_chart(
             source_bindings=source_bindings,
             plot=plot,
         )
-    except RuntimeError:
+    except RuntimeError as downstream:
         if source_semantics_recovered:
             assert semantic_refusal is not None
-            raise semantic_refusal from None
+            raise RuntimeError(f"{semantic_refusal} (after crop-text recovery: {downstream})") from None
         raise
     # _assign_temperatures preserves each points-list object, so retain that
     # identity instead of matching by sampled current values.  Both traces can
