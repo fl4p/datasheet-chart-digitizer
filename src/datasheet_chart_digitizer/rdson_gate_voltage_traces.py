@@ -44,6 +44,7 @@ SWATCH_MAX_SPAN_FRACTION = 0.14
 AXIS_ALIGNED_TOLERANCE_PT = 0.25
 GRID_RULE_MIN_FRACTION = 0.45
 CHAIN_JOIN_PT = 0.8
+CHAIN_FOLD_PT = 1.5          # a join may not fold the chain back in VGS by more than this
 RASTER_INK_GRAY = 135
 RASTER_COLOR_SATURATION = 80
 RASTER_EDGE_MARGIN_PX = 3
@@ -114,6 +115,7 @@ def vector_traces(
     fx0, fy0 = transform.to_pt(plot.x0, plot.y0)
     fx1, fy1 = transform.to_pt(plot.x1, plot.y1)
     width_pt, height_pt = fx1 - fx0, fy1 - fy0
+    clip = (fx0 - 0.3, fy0 - 0.3, fx1 + 0.3, fy1 + 0.3)
     pieces: dict[tuple, list[list[tuple[float, float]]]] = {}
     fill_groups: list[list] = []  # [fill, last drawing index, union bbox, polygons, last piece bbox]
     for index, drawing in enumerate(page.get_drawings()):
@@ -145,7 +147,7 @@ def vector_traces(
                 points = _bezier(item[1], item[2], item[3], item[4])
             else:
                 continue
-            for run in _clip_polyline(points, (fx0 - 0.3, fy0 - 0.3, fx1 + 0.3, fy1 + 0.3)):
+            for run in _clip_polyline(points, clip):
                 if _is_full_span_rule(run, width_pt, height_pt):
                     continue
                 # Shorter axis-aligned strokes stay in until chaining: a steep
@@ -155,7 +157,7 @@ def vector_traces(
     traces: list[Trace] = []
     short: list[tuple[tuple, list[tuple[float, float]]]] = []
     for style, runs in pieces.items():
-        for chain in _chain(runs):
+        for chain in _chain(runs, clip):
             xs = [p[0] for p in chain]
             ys = [p[1] for p in chain]
             if _is_rule(chain, width_pt, height_pt):
@@ -367,8 +369,29 @@ def _is_rule(run, width_pt: float, height_pt: float) -> bool:
     return dx <= AXIS_ALIGNED_TOLERANCE_PT and dy >= GRID_RULE_MIN_FRACTION * height_pt
 
 
-def _chain(runs: list[list[tuple[float, float]]]) -> list[list[tuple[float, float]]]:
-    """Join same-style pieces whose endpoints meet; ambiguous joins stay apart."""
+def _on_clip_edge(point: tuple[float, float], clip) -> bool:
+    """A point the frame clip produced: exactly on the clip rectangle's edge."""
+    if clip is None:
+        return False
+    x, y = point
+    return min(abs(x - clip[0]), abs(x - clip[2]), abs(y - clip[1]), abs(y - clip[3])) <= 1e-6
+
+
+def _chain(runs: list[list[tuple[float, float]]], clip=None) -> list[list[tuple[float, float]]]:
+    """Join same-style pieces whose endpoints meet; ambiguous joins stay apart.
+
+    Two pieces are never joined at a point the frame clip cut them at: that
+    point is where each LEAVES the frame, not where one continues the other.
+    AON7524's 125 C and 25 C curves are two paths in one style that both
+    leave through the top frame 0.3 pt apart; joined there, they became one
+    trace running up one curve and back down the other (F-all-1).
+
+    Nor is a join made that folds the chain back on itself in VGS by more
+    than CHAIN_FOLD_PT beyond what either piece already does: DMN3023L's
+    3.5 A and 4.0 A curves are two paths that END at the same point on the
+    right frame (0.12 pt apart); joined tail to tail they ran right along one
+    curve and back left along the other.
+    """
     chains = [list(run) for run in runs]
     merged = True
     while merged:
@@ -378,16 +401,34 @@ def _chain(runs: list[list[tuple[float, float]]]) -> list[list[tuple[float, floa
                 if i == j or not chains[i] or not chains[j]:
                     continue
                 a, b = chains[i], chains[j]
+                if _on_clip_edge(a[-1], clip) and (_on_clip_edge(b[0], clip) or _on_clip_edge(b[-1], clip)):
+                    continue
                 if math.dist(a[-1], b[0]) <= CHAIN_JOIN_PT:
-                    chains[i] = a + b[1:]
-                    chains[j] = []
-                    merged = True
+                    joined = a + b[1:]
                 elif math.dist(a[-1], b[-1]) <= CHAIN_JOIN_PT:
-                    chains[i] = a + list(reversed(b))[1:]
-                    chains[j] = []
-                    merged = True
+                    joined = a + list(reversed(b))[1:]
+                else:
+                    continue
+                if _x_fold_pt(joined) > max(_x_fold_pt(a), _x_fold_pt(b)) + CHAIN_FOLD_PT:
+                    continue
+                chains[i] = joined
+                chains[j] = []
+                merged = True
         chains = [c for c in chains if c]
     return chains
+
+
+def _x_fold_pt(points: list[tuple[float, float]]) -> float:
+    """How far a polyline runs back against its own overall x direction (0 when monotone in x)."""
+    xs = [p[0] for p in points]
+    if len(xs) < 2:
+        return 0.0
+    sign = 1.0 if xs[-1] >= xs[0] else -1.0
+    worst, running = 0.0, -math.inf
+    for x in xs:
+        running = max(running, sign * x)
+        worst = max(worst, running - sign * x)
+    return worst
 
 
 def _as_function_of_x(points: list[tuple[float, float]]) -> list[tuple[float, float]]:

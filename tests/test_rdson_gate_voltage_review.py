@@ -1903,6 +1903,68 @@ def _shift_x_label(text: str, dx: float):
 class BatchAllV2Tests(unittest.TestCase):
     """Fab's batch_all findings (FAB-FINDINGS-batch_all.md, 2026-09-30) and the batch agent's A-list."""
 
+    def test_f_all_1_two_curves_meeting_at_the_top_frame_stay_two(self):
+        # AON7524 p3 fig 5: "125° C" (upper) and "25° C" (lower), I_D = 20 A, two
+        # vector paths that both leave through the top frame. Was ONE curve hopping
+        # between them, refused as "rdson rises with VGS".
+        row = _panel("AON7524_AOS", 3, "5")
+        self.assertNotEqual(row["status"], "refused", row.get("reasons"))
+        curves = sorted(row["curves"], key=lambda c: c["temperature_c"] or 0)
+        self.assertEqual([(c["temperature_c"], c["temperature_kind"], c["id_a"]) for c in curves],
+                         [(25.0, "unspecified", 20.0), (125.0, "unspecified", 20.0)])
+        cold, hot = curves
+        at = lambda c, v: next(r["rds_mohm"] for r in c["readouts"] if r["vgs_v"] == v)
+        # sanity only (a by-eye reading: ~3.3 at 3.3 V, ~3.0 at 4.5 V; table 3.0 typ @ 4.5 V, 18 A)
+        self.assertTrue(3.0 <= at(cold, 3.3) <= 3.7 and 2.7 <= at(cold, 4.5) <= 3.3, cold["readouts"])
+        self.assertTrue(all(at(hot, v) > at(cold, v) for v in (2.5, 3.3, 4.5)))
+        for curve in curves:
+            xs = [p[0] for p in curve["points_px"]] if "points_px" in curve else [p[2] for p in curve["points"]]
+            self.assertTrue(all(b >= a - 3.0 for a, b in zip(xs, xs[1:])), "a trace folds back in VGS")
+
+    def test_f_all_1_two_curves_ending_together_on_the_right_frame_stay_two(self):
+        row = _panel("DMN3023L_Diodes", 3, "4")
+        self.assertNotEqual(row["status"], "refused", row.get("reasons"))
+        self.assertEqual(sorted(c["id_a"] for c in row["curves"]), [3.5, 4.0])
+
+    def test_f_all_1_known_bad_chain_joins_on_real_paths(self):
+        import math as _math
+        import pymupdf
+        from datasheet_chart_digitizer import rdson_gate_voltage_traces as tm
+
+        def runs(name, page, width, clip):
+            with pymupdf.open(DS / f"{name}.pdf") as document:
+                drawings = document[page - 1].get_drawings()
+            out = []
+            for d in drawings:
+                if d.get("type") != "s" or round(float(d.get("width") or 0), 2) != width:
+                    continue
+                for item in d["items"]:
+                    pts = tm._bezier(*item[1:5]) if item[0] == "c" else [(item[1].x, item[1].y), (item[2].x, item[2].y)]
+                    out.extend(tm._clip_polyline(pts, clip))
+            return out
+
+        # AON7524: the two curves' pieces, clipped to the frame (+0.3 pt) as vector_traces does
+        clip = (128.0 - 0.3, 488.7 - 0.3, 289.2 + 0.3, 615.4 + 0.3)
+        aon = runs("AON7524_AOS", 3, 1.78, clip)
+        self.assertEqual(len(tm._chain(aon, clip)), 2)
+        # the hazard: their clipped top ends ARE within the join distance
+        tops = sorted((r for r in aon), key=lambda r: min(p[1] for p in r))[:2]
+        ends = [min(r, key=lambda p: p[1]) for r in tops]
+        self.assertLessEqual(_math.dist(*ends), tm.CHAIN_JOIN_PT)
+        # DMN3023L: two curves ending 0.12 pt apart on the right frame
+        clip = (370.4 - 0.3, 305.8 - 0.3, 553.1 + 0.3, 463.7 + 0.3)
+        dmn = runs("DMN3023L_Diodes", 3, 1.44, clip)
+        chains = tm._chain(dmn, clip)
+        self.assertEqual(len(chains), 2)
+        self.assertGreater(tm._x_fold_pt(chains[0] + list(reversed(chains[1]))), 50.0)
+        # calibration the other way: ONE real curve cut in two, the second half drawn
+        # backwards, is still joined (tail to tail) into one chain
+        whole = max(chains, key=len)
+        half = len(whole) // 2
+        rejoined = tm._chain([whole[:half + 1], list(reversed(whole[half:]))], clip)
+        self.assertEqual(len(rejoined), 1)
+        self.assertEqual(len(rejoined[0]), len(whole))
+
     def test_f_all_2_tick_label_centred_on_the_frame_edge_is_inside(self):
         # ME95N03T p3: "10" is printed centred under the right frame line; its ink
         # centroid sits 8.5 px right of it. It was refused ("lies outside the plot frame").
