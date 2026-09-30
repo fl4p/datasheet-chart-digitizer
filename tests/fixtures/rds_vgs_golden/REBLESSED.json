@@ -77,6 +77,47 @@
    "finding": "F4-1 (steep head to the frame), F5-3 (125/25 C bound by the order rule, kind unspecified), frame-traced right ends (10 V row verified), F6-1 (2 gap-traced points)",
    "note": "Re-verified by Fab on the batch15_v7 review packet (rds-vgs/review/rds-vgs-v7-001.html), his words 2026-09-30: \"all green\". Earlier: v6 \"the rest is PASS\" and \"fix the other four too\" for the F6-1 stretches. Frozen from batch15_v7 (commit 2481153 output; a944bcd reproduces it).",
    "date": "2026-09-30"
+  },
+  {
+   "part": "IRLB8314_IFX",
+   "path": "validation_verdict",
+   "frozen": "not_evaluable",
+   "now": "consistent_at_approximate_conditions",
+   "finding": "C1 (batch_all v2)",
+   "note": "Fab re-verified IRLB8314 on the batch_all v2 review packet (rds-vgs/review/rds-vgs-all-v2-001.html; export rds-vgs-all-v2-001.review.json, 2026-09-30 11:59 UTC: green). C1 spec-row fix reads the printed rows (4.5 V/68 A 2.6/3.2, 10 V/68 A 1.9/2.4 mOhm); no curve, point, readout or calibration changed.",
+   "date": "2026-09-30"
+  },
+  {
+   "part": "IRLB8314_IFX",
+   "path": "anchor_verdicts",
+   "frozen": [
+    {
+     "vgs_v": 4.5,
+     "id_a": 68.0,
+     "temperature_c": 25.0,
+     "verdict": "not_evaluable",
+     "chart_mohm": null
+    }
+   ],
+   "now": [
+    {
+     "vgs_v": 10.0,
+     "id_a": 68.0,
+     "temperature_c": 25.0,
+     "verdict": "consistent",
+     "chart_mohm": 2.2787
+    },
+    {
+     "vgs_v": 4.5,
+     "id_a": 68.0,
+     "temperature_c": 25.0,
+     "verdict": "consistent",
+     "chart_mohm": 3.0266
+    }
+   ],
+   "finding": "C1 (batch_all v2)",
+   "note": "Fab re-verified IRLB8314 on the batch_all v2 review packet (rds-vgs/review/rds-vgs-all-v2-001.html; export rds-vgs-all-v2-001.review.json, 2026-09-30 11:59 UTC: green). C1 spec-row fix reads the printed rows (4.5 V/68 A 2.6/3.2, 10 V/68 A 1.9/2.4 mOhm); no curve, point, readout or calibration changed.",
+   "date": "2026-09-30"
   }
  ]
 }

@@ -130,6 +130,32 @@ changes these fixtures, and each change must be re-blessed explicitly:
 - IRLB8721 and IRLTS6342: `axis_ticks_not_bound_to_grid`.
 - VBZM150N03 and IRLTS6342: chart vs table disagreement. That is a datasheet fact.
 
+## batch_all v2 parts (Fab's review of the v2 packet, 2026-09-30)
+
+**Human-verified by Fab** on `rds-vgs/review/rds-vgs-all-v2-001.html` (export
+`rds-vgs-all-v2-001.review.json`, 11:59 UTC). These panels were marked **green**. They are
+frozen from `/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch_all_v2/rdson_gate_voltage.json`
+(produced at f6cbee3). The primary panels are listed in
+`rds-vgs/work/batch_all_v2_primary_manifest.json`.
+
+| part | panel |
+|---|---|
+| HSP4048_LCSC_C701029 | p3 fig 2 |
+| AON7524_AOS | p3 fig 5 |
+| DMT6009LCT_Diodes | p3 fig 4 |
+| DMN3023L_Diodes | p3 fig 4 |
+| ME95N03T_LCSC_C709730 | p3 fig t344 |
+
+Known served-field defects are frozen as they are. Fixing them requires an explicit
+re-bless:
+- HSP4048 and ME95N03T: the printed I_D ("ID=20A", "Id=50A") is not bound.
+- ME95N03T: the printed y "0" tick is not used.
+
+**IRLB8314_IFX re-blessed.** It was marked green in the same packet. The C1 spec-row fix
+changes only `validation_verdict` (not_evaluable → consistent_at_approximate_conditions)
+and `anchor_verdicts`. These changes are recorded as path entries in `REBLESSED.json`, and
+its PENDING entry is removed. `PENDING.json` is empty.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the
