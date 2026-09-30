@@ -33,6 +33,8 @@ DEFAULT_MIX = {  # class -> share of the set
     "breakdown": 20, "zth": 25,
 }
 TIER_MIX = {"easy": 0.2, "medium": 0.3, "hard": 0.3, "adversarial": 0.2}
+# Known-bad hooks for the self-check controls (checks.py). Empty in normal use.
+MUTATE: set = set()
 
 
 def git_rev():
@@ -81,11 +83,15 @@ def _gt_curves(spec_prep, rec):
     for c in spec_prep["curves"]:
         lab = str(c["label"])
         pieces = [q for pc in rec["drawn"][lab] for q in G.clip_polyline(pc)]
+        if "unclipped_gt" in MUTATE:
+            pieces = [np.asarray(pc) for pc in rec["drawn"][lab]]
         if not pieces:
             dropped.append(lab)
             continue
         uv = np.vstack([G.douglas_peucker(q) for q in pieces])
         x, y = G.denorm(spec_prep, uv)
+        if "gt_scale" in MUTATE:
+            y = y * 1.001
         out.append({"label": c["label"], "printed": c["printed"], "x": [float(f"{v:.10g}") for v in x],
                     "y": [float(f"{v:.10g}") for v in y], "n_pieces": len(pieces)})
         uv_all[lab] = uv
@@ -189,10 +195,12 @@ def build_case(out: Path, seed: int, set_name: str, pdf: Path, page_idx: int, re
     cid = f"{set_name}_{ci:04d}_{cls}"
     # crop: chart art + caption, with a margin; neighbours may intrude (panel isolation)
     crop_pt = RD._union([rec["art_bbox_pt"]] + rec["boxes"]["caption"])
-    m = 5.0
+    m = -8.0 if "crop_cut" in MUTATE else 5.0
     crop_pt = [crop_pt[0] - m, crop_pt[1] - m, crop_pt[2] + m, crop_pt[3] + m]
     img, origin, s = R.render_clip(pdf, 0, crop_pt, style["dpi"])
     box_px = R.pt_to_px(rec["plot_box_pt"], origin, s)
+    if "box_px_off_by_one" in MUTATE:
+        box_px = [box_px[0] + 1, box_px[1], box_px[2] + 1, box_px[3]]
     deg = None
     if style["degrade"]:
         rng = np.random.default_rng([seed, ci, 4])
@@ -220,7 +228,8 @@ def build_case(out: Path, seed: int, set_name: str, pdf: Path, page_idx: int, re
         "gt_provenance": {
             "generator": GENERATOR, "generator_rev": rev, "seed": seed, "index": ci, "set": set_name,
             "pdf": str(pdf.relative_to(out)), "pdf_page": 0, "part": part, "diagram": rec["caption"],
-            "plot_box_pt": [round(v, 4) for v in rec["plot_box_pt"]], "crop_pt": [round(v, 4) for v in crop_pt],
+            "plot_box_pt": [round(v + (0.5 if "box_pt_off" in MUTATE and i % 2 == 0 else 0), 4)
+                            for i, v in enumerate(rec["plot_box_pt"])], "crop_pt": [round(v, 4) for v in crop_pt],
             "render": {"dpi": style["dpi"], "origin_px": list(origin), "engine": f"pymupdf {R.fitz.VersionBind}"},
             "pixel_convention": "continuous, origin at top-left corner of pixel (0,0)",
             "axis_min_is": "value at the left (x) / bottom (y) frame edge",
