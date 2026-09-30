@@ -42,6 +42,11 @@ from .find_charts import (
     run_text_bbox,
     words_in_bbox,
 )
+from .transfer_temperature_labels import (
+    LEGEND_LINE_RE,
+    normalize_temperature_text,
+    temperature_values_in_text,
+)
 from .gate_charge_trace import _detect_regular_grid_box, _projection_line_centers
 from .numeric_axis import (
     AxisTick,
@@ -1236,17 +1241,17 @@ def _legend_temperature_styles(
         for words in lines.values():
             words.sort()
             text = " ".join(word[4] for word in words)
-            match = re.fullmatch(r"\s*(-?\d+)\s*°?\s*C\s*(?:,\s*(max))?\s*", text, re.I)
+            match = LEGEND_LINE_RE.fullmatch(normalize_temperature_text(text))
             if not match:
                 continue
-            temperature = float(match.group(1))
+            temperature = float(match.group("value").replace(" ", ""))
             if not -100 <= temperature <= 250:
                 continue
             legend_lines.append(
                 (
                     min(word[0] for word in words),
                     sum((word[1] + word[3]) / 2 for word in words) / len(words),
-                    CurveIdentity(temperature, "maximum" if match.group(2) else "typical"),
+                    CurveIdentity(temperature, "maximum" if match.group("role") else "typical"),
                 )
             )
         drawings = list(page.get_drawings())
@@ -1277,19 +1282,7 @@ def _legend_temperature_styles(
 
 
 def _temperatures(text: str) -> list[float]:
-    normalized = (
-        text.replace("−", "-")
-        .replace("º", "°")
-        .replace("˚", "°")
-        .replace("℃", "°C")
-    )
-    values = {
-        float(value)
-        for value in re.findall(
-            r"(-?\d+)\s*(?:°|[oO])?\s*C\b", normalized, re.I
-        )
-    }
-    return sorted(value for value in values if -100 <= value <= 250)
+    return temperature_values_in_text(text)
 
 
 def _panel_temperatures(panel: ChartPanel) -> list[float]:

@@ -154,8 +154,10 @@ class GluedTemperatureTokenTests(unittest.TestCase):
         def word(text, x0):
             return SimpleNamespace(text=text, x0=x0, x1=x0 + 20.0, y0=0.0, y1=8.0)
 
+        # The shared label grammar also admits Ta/Tc-prefixed curve labels; a stray condition
+        # label still only adds a value, and the curve/label count check refuses on it.
         words = [word("Tj=150°C", 0), word("TJ=25°C", 100), word("VGS=10V", 200), word("Ta=85°C", 300)]
-        self.assertEqual(temperatures_from_source_words(words), [25.0, 150.0])
+        self.assertEqual(temperatures_from_source_words(words), [25.0, 85.0, 150.0])
 
 
 class _FakePage:
