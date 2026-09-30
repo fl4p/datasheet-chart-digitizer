@@ -97,6 +97,73 @@ class SpecTableTests(unittest.TestCase):
         rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("AO3416_AOS"))}
         self.assertEqual((rows[4.5].unit_token, rows[4.5].typ_mohm), ("mW", 16.0))
 
+    # --- batch_all class C (2026-09-30) -------------------------------------------
+
+    def test_c1_unit_glued_to_the_next_rows_vgs_by_symbol_spaces(self):
+        # IRLB8314: "mVGS" was one word; both rows lost their unit
+        # and the 10 V row lost its VGS. Printed: 10 V 1.9/2.4, 4.5 V 2.6/3.2 mOhm @ 68 A.
+        rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("IRLB8314_IFX"))}
+        self.assertEqual(sorted(rows), [4.5, 10.0])
+        self.assertEqual((rows[10.0].id_a, rows[10.0].typ_mohm, rows[10.0].max_mohm), (68.0, 1.9, 2.4))
+        self.assertEqual((rows[4.5].id_a, rows[4.5].typ_mohm, rows[4.5].max_mohm), (68.0, 2.6, 3.2))
+
+    def test_c1_symbol_omega_padded_with_symbol_spaces(self):
+        # IRL3705N: the unit cell is "" (Omega + Symbol spaces).
+        rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("IRL3705N_IFX"))}
+        self.assertEqual({v: (r.typ_mohm, r.max_mohm) for v, r in rows.items()},
+                         {10.0: (None, 10.0), 5.0: (None, 12.0), 4.0: (None, 18.0)})
+        # the label column's "Resistance" is not a row qualifier
+        self.assertEqual({r.qualifier for r in rows.values()}, {""})
+
+    def test_c1_undecodable_omega_and_a_unit_printed_once_per_block(self):
+        # FDP5800: Omega is U+0002 in IntDutch801G (dropped by PyMuPDF), printed
+        # once on the 10 V row; the table heading is "(TC = 25 C ...)".
+        rows = parse_rdson_spec_rows(_pdf("FDP5800_onsemi"))
+        got = [(r.vgs_v, r.temperature_c, r.temperature_kind, r.typ_mohm, r.max_mohm) for r in rows]
+        self.assertEqual(got, [(10.0, 25.0, "Tc", 4.6, 6.0), (4.5, 25.0, "Tc", 5.9, 7.2),
+                               (5.0, 25.0, "Tc", 5.6, 7.0), (10.0, 175.0, "Tj", 10.4, 12.6)])
+        self.assertEqual([r.unit_source.split(":")[0] for r in rows], ["row", "row", "row_block", "row_block"])
+
+    def test_c1_known_bad_bare_m_or_conflicting_block_units_stay_unreadable(self):
+        import pymupdf
+        from datasheet_chart_digitizer import rdson_spec_table as st
+        from datasheet_chart_digitizer.finder_types import Word
+        with pymupdf.open(_pdf("FDP5800_onsemi")) as document:
+            words = st.page_words(document[2])
+        # (a) a bare "m" (no undecodable glyph after it) is no unit at all
+        bare = [Word(w.text.replace("�", ""), w.x0, w.y0, w.x1, w.y1) for w in words]
+        self.assertEqual({(r.typ_mohm, r.max_mohm) for r in st._page_rows(3, bare)}, {(None, None)})
+        # (b) a block whose units disagree lends none: an Ohm cell on the 5 V row
+        five = next(w for w in words if w.text == "5" and 225 < w.y0 < 227)
+        clash = words + [Word("Ω", 528.0, five.y0, 534.0, five.y1)]
+        rows = {(r.vgs_v, r.temperature_c): r for r in st._page_rows(3, clash)}
+        self.assertEqual((rows[(4.5, 25.0)].typ_mohm, rows[(4.5, 25.0)].unit_source), (None, "unreadable"))
+        self.assertFalse(any(r.unit_source.startswith("row_block") for r in rows.values()))
+
+    def test_c1_smd_version_rows_are_read_and_qualified(self):
+        rows = parse_rdson_spec_rows(_pdf("IPP100N06S2L05_IFX"))
+        got = sorted((r.vgs_v, r.typ_mohm, r.max_mohm, r.qualifier) for r in rows)
+        self.assertEqual(got, [(4.5, 4.0, 5.6, "SMD version"), (4.5, 4.3, 5.9, ""),
+                               (10.0, 3.2, 4.4, "SMD version"), (10.0, 3.5, 4.7, "")])
+
+    def test_c2_drain_current_in_milliamps(self):
+        rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("BS107P_Diodes"))}
+        self.assertEqual({v: (r.id_a, r.id_unit) for v, r in rows.items()}, {2.6: (0.025, "mA"), 5.0: (0.1, "mA")})
+        rows = {r.vgs_v: r for r in parse_rdson_spec_rows(_pdf("TN0606_Microchip"))}
+        self.assertEqual({v: r.id_a for v, r in rows.items()}, {3.0: 0.25, 5.0: 0.75, 10.0: 0.75})
+        # amps stay amps
+        self.assertEqual({r.id_unit for r in parse_rdson_spec_rows(_pdf("IRLB8748_IFX"))}, {"A"})
+
+    def test_c3_rows_of_other_parameters_are_not_rdson_rows(self):
+        # Goford gFS "VGS = 5V, ID = 50A ... S"; Toshiba V(BR)DSX "ID = 10 mA, VGS = -20 V";
+        # Microchip "Change in RDS(ON) with Temperature ... %/C VGS = 10V, ID = 1A".
+        self.assertEqual(sorted(r.vgs_v for r in parse_rdson_spec_rows(_pdf("G020N03T_Goford"))), [4.5, 10.0])
+        self.assertEqual(sorted(r.vgs_v for r in parse_rdson_spec_rows(_pdf("TK3R1E04PL_Toshiba"))), [4.5, 10.0])
+        tn = parse_rdson_spec_rows(_pdf("TN0104_Microchip"))
+        self.assertEqual(sorted((r.vgs_v, r.typ_mohm) for r in tn), [(3.0, 5000.0), (5.0, 2300.0)])
+        self.assertFalse(any("%" in r.row_text for pdf in ("TN0606_Microchip", "VN2406_Microchip")
+                             for r in parse_rdson_spec_rows(_pdf(pdf))))
+
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
 class LocatorTests(unittest.TestCase):

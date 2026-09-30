@@ -52,8 +52,24 @@ def _resolve(node, path: str):
 
 
 def pending_parts() -> set[str]:
+    return set(pending_entries())
+
+
+def pending_entries() -> dict[str, dict]:
     path = GOLDEN / "PENDING.json"
-    return {e["part"] for e in json.loads(path.read_text())["entries"]} if path.exists() else set()
+    return {e["part"]: e for e in json.loads(path.read_text())["entries"]} if path.exists() else {}
+
+
+def _panel_field(panel: dict, name: str, served: bool):
+    """A panel-level field, from the frozen fixture or from the served row."""
+    if name == "status":
+        return panel["status"]
+    if name == "validation_verdict":
+        return panel["validation"]["verdict"] if served else panel["validation_verdict"]
+    if name == "anchor_verdicts":
+        return ([[a["row"]["vgs_v"], a["verdict"]] for a in panel["validation"]["anchors"]] if served
+                else [[a["vgs_v"], a["verdict"]] for a in panel["anchor_verdicts"]])
+    raise KeyError(name)
 
 
 def load_golden(part: str) -> dict:
@@ -123,8 +139,12 @@ class GoldenTests(unittest.TestCase):
         self.assertEqual(len(rows), 1, f"{part}: panel p{golden['page']} fig {golden['diagram']} not produced")
         row = rows[0]
         self._check_calibration(part, row, golden)
-        if part in pending_parts():
+        pending = pending_entries().get(part)
+        if pending is not None:
             self._check_ink_only(part, row, golden)
+            changed = pending.get("changed_fields")
+            if changed is not None:
+                self._check_pending_fields(part, row, golden, changed)
             return
         self._check_served(part, row, golden)
 
@@ -133,6 +153,23 @@ class GoldenTests(unittest.TestCase):
         self.assertEqual(row["validation"]["verdict"], golden["validation_verdict"], f"{part}: validation")
         self.assertEqual([(a["row"]["vgs_v"], a["verdict"]) for a in row["validation"]["anchors"]],
                          [(a["vgs_v"], a["verdict"]) for a in golden["anchor_verdicts"]], f"{part}: anchors")
+
+    def _check_pending_fields(self, part: str, row: dict, golden: dict, changed: dict) -> None:
+        """A pending entry that names its changed fields (batch_all v2 onward)
+        pins everything else as for a verified panel: the served curves in
+        full unless "curves" is named, and every panel field it does not name.
+        A named field must still hold its frozen value in the fixture (else
+        the entry is stale) and must now serve exactly the entry's new value."""
+        if "curves" not in changed:
+            self._check_served(part, row, golden)
+        for name in ("status", "validation_verdict", "anchor_verdicts"):
+            got = _panel_field(row, name, served=True)
+            frozen = _panel_field(golden, name, served=False)
+            if name not in changed:
+                self.assertEqual(got, frozen, f"{part}: {name} changed but PENDING.json does not name it")
+                continue
+            self.assertEqual(frozen, changed[name]["frozen"], f"{part}: PENDING {name} 'frozen' is stale")
+            self.assertEqual(got, changed[name]["now"], f"{part}: {name} is not the PENDING 'now' value")
 
     def _check_calibration(self, part: str, row: dict, golden: dict) -> None:
         for axis in ("x_axis", "y_axis"):

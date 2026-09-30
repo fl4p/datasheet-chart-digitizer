@@ -91,6 +91,12 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
         if row.typ_mohm is None and row.max_mohm is None:
             anchor.update({"verdict": "not_evaluable", "reason": "row has no owned typ/max value or unit"})
             continue
+        if getattr(row, "qualifier", ""):
+            # IPP100N06S2L05 repeats its rows for the "SMD version"; which
+            # package the chart shows is not printed, so neither row anchors it.
+            anchor.update({"verdict": "not_evaluable",
+                           "reason": f"row is qualified {row.qualifier!r}; the chart's variant is not stated"})
+            continue
         candidates = [c for c in usable if c.get("readouts") and _temperature_matches(c, row)]
         if not candidates:
             anchor.update({"verdict": "not_evaluable",

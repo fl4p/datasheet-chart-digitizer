@@ -1,4 +1,35 @@
 {
  "_doc": "Golden panels Fab found defects in on the v4 overlays (2026-09-29). Their labels and curve grouping are being changed by the named findings; only the ink is still pinned (see test_rdson_gate_voltage_golden.py). Fab re-blesses them after he has seen the fix; nobody else removes an entry here.",
- "entries": []
+ "entries": [
+  {
+   "part": "IRLB8314_IFX",
+   "pending": "re-bless: C1 (spec-row parser reads IRLB8314's printed RDS(on) rows)",
+   "why": "Frozen with validation not_evaluable because the parser dropped the printed values (PROVENANCE.md, 'batch_all parts'). The unit cell 'm\\uf057' was glued to the next row's 'VGS' by Symbol-font spaces (U+F020); page_words now splits it. The 4.5 V / 68 A row reads typ 2.6 / max 3.2 mOhm and the 10 V / 68 A row (previously dropped) typ 1.9 / max 2.4 mOhm. The curves are ID = 86 A, so both anchors are evaluated at approximate conditions (86/68 = 1.26, inside the 0.75..1.34 window): chart 3.027 mOhm at 4.5 V and 2.279 mOhm at 10 V on the 25 C curve, both consistent. No curve, point, readout or calibration changes; status stays review_required (its reason changes from validation_not_evaluable to validation_consistent_at_approximate_conditions).",
+   "changed_fields": {
+    "validation_verdict": {
+     "frozen": "not_evaluable",
+     "now": "consistent_at_approximate_conditions"
+    },
+    "anchor_verdicts": {
+     "frozen": [
+      [
+       4.5,
+       "not_evaluable"
+      ]
+     ],
+     "now": [
+      [
+       10.0,
+       "consistent"
+      ],
+      [
+       4.5,
+       "consistent"
+      ]
+     ]
+    }
+   },
+   "date": "2026-09-30"
+  }
+ ]
 }

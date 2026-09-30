@@ -84,6 +84,9 @@ _UNIT_TOKENS = {
     ":": ("ohm", 1000.0),
     "w": ("ohm", 1000.0),
     "": ("ohm", 1000.0),
+    # "m" + a glyph with no Unicode map (FDP5800's Omega, see page_words).
+    # In an RDS(on) row block the only unit spelled "m" + one glyph is mOhm.
+    "m\ufffd": ("mohm", 1.0),
 }
 
 
@@ -106,6 +109,9 @@ class RdsonSpecRow:
     bbox_pt: tuple[float, float, float, float]
     unparsed_cells: dict = field(default_factory=dict)
     temperature_evidence: str = ""
+    unit_source: str = "row"
+    id_unit: str = ""
+    qualifier: str = ""
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -125,13 +131,74 @@ def parse_rdson_spec_rows(pdf: Path) -> list[RdsonSpecRow]:
     rows: list[RdsonSpecRow] = []
     with pymupdf.open(pdf) as document:
         for index in range(min(_MAX_TABLE_PAGES, document.page_count)):
-            words = [
-                Word(str(w[4]), float(w[0]), float(w[1]), float(w[2]), float(w[3]))
-                for w in document[index].get_text("words")
-                if str(w[4]).strip()
-            ]
-            rows.extend(_page_rows(index + 1, words))
+            rows.extend(_page_rows(index + 1, page_words(document[index])))
     return rows
+
+
+def page_words(page) -> list[Word]:
+    """PyMuPDF's words, with two text-layer defects of Symbol-font tables undone.
+
+    * U+F020 is the Symbol font's SPACE. PyMuPDF does not split on it, so
+      International Rectifier's unit cell and the next row's "VGS" come out
+      as ONE word ("m\uf057\uf020\uf020VGS", IRLB8314): the unit is then
+      unreadable and the VGS lands on the wrong baseline. Such a word is
+      split at the U+F020 run, each piece boxed by its own glyphs.
+    * A glyph whose font has no Unicode map comes out as a control
+      character (FDP5800's Omega is U+0002 in IntDutch801G), which PyMuPDF
+      treats as a word break and drops. When one directly follows a word
+      (gap under 1 pt, same baseline) the word gets U+FFFD appended, so the
+      unit reader can see "m" + an undecodable glyph instead of a bare "m".
+    """
+    raw = [w for w in page.get_text("words") if str(w[4]).strip()]
+    chars = [
+        (c["c"], tuple(float(v) for v in c["bbox"]))
+        for block in page.get_text("rawdict").get("blocks", [])
+        for line in block.get("lines", [])
+        for span in line.get("spans", [])
+        for c in span.get("chars", [])
+    ]
+    undecoded = [box for c, box in chars if len(c) == 1 and ord(c) < 0x20 and c not in "\t\n\r"]
+    out: list[Word] = []
+    for w in raw:
+        text, box = str(w[4]), tuple(float(v) for v in w[:4])
+        pieces = _split_symbol_spaces(text, box, chars) if "\uf020" in text else [(text, box)]
+        for piece, (x0, y0, x1, y1) in pieces:
+            if any(-0.5 <= g[0] - x1 <= 1.0 and min(y1, g[3]) - max(y0, g[1]) > 0.5 * (y1 - y0) for g in undecoded):
+                piece += "\ufffd"
+            out.append(Word(piece, x0, y0, x1, y1))
+    return out
+
+
+def _split_symbol_spaces(text: str, box, chars) -> list[tuple[str, tuple[float, float, float, float]]]:
+    """Split a word at its U+F020 runs; box each piece by its own glyphs.
+
+    The word's glyphs are found as the contiguous run of rawdict characters
+    that spells the word inside its box. If they cannot be found, the word
+    is split with its x range shared out by character count and the word's
+    own y range (no glyph-level evidence, so no baseline claim is made).
+    """
+    inside = [(c, b) for c, b in chars if b[0] >= box[0] - 0.5 and b[2] <= box[2] + 0.5
+              and b[1] >= box[1] - 0.5 and b[3] <= box[3] + 0.5]
+    seq = "".join(c for c, _ in inside)
+    start = seq.find(text)
+    out = []
+    if start >= 0:
+        glyphs = inside[start:start + len(text)]
+        piece: list = []
+        for c, b in glyphs + [("\uf020", None)]:
+            if c == "\uf020" or c.isspace():
+                if piece:
+                    out.append(("".join(ch for ch, _ in piece), (
+                        min(g[0] for _, g in piece), min(g[1] for _, g in piece),
+                        max(g[2] for _, g in piece), max(g[3] for _, g in piece))))
+                piece = []
+            else:
+                piece.append((c, b))
+        return out
+    step = (box[2] - box[0]) / max(len(text), 1)
+    for match in re.finditer(r"[^\uf020\s]+", text):
+        out.append((match.group(0), (box[0] + step * match.start(), box[1], box[0] + step * match.end(), box[3])))
+    return out
 
 
 def _page_rows(page_num: int, words: list[Word]) -> list[RdsonSpecRow]:
@@ -142,22 +209,27 @@ def _page_rows(page_num: int, words: list[Word]) -> list[RdsonSpecRow]:
     labels = [
         line.bbox for line in lines if _RDS_LABEL_RE.search(line.text)
     ]
+    # A heading states the table's default temperature and nothing else: a
+    # row such as "BVDSS ... ID = 250 uA, VGS = 0 V, TJ = 25 C" (FDP5800)
+    # names its OWN test temperature, not the table's.
     headings = [
         (_cy(line), _KIND_BY_CONDITION["T" + match.group(1).upper()], line.text)
         for line in lines
         for match in [_HEADING_TEMPERATURE_RE.search(line.text)] if match
+        and _condition_names(line) <= {"TJ", "TC", "TA"}
     ]
-    rows: list[RdsonSpecRow] = []
+    specs: list[dict] = []
     value_only: list[tuple[_Line, dict[str, float]]] = []
     condition_only: list[_Line] = []
     for line in lines:
+        if _foreign_parameter(line):
+            continue
         header = _header_for(line, headers)
         values, unparsed = _owned_values(line, header) if header is not None else ({}, {})
         if _is_rds_condition(line) and _near_rds_label(line, labels):
             if values:
-                row = _row(page_num, line, line, values, lines, header, "same_baseline", unparsed, headings)
-                if row is not None:
-                    rows.append(row)
+                specs.append({"condition": line, "value_line": line, "values": values, "header": header,
+                              "pairing": "same_baseline", "unparsed": unparsed})
             else:
                 condition_only.append(line)
         elif values and not line.conditions and _near_rds_label(line, labels):
@@ -180,14 +252,116 @@ def _page_rows(page_num: int, words: list[Word]) -> list[RdsonSpecRow]:
         if len(near) != 1 or len(claimants) != 1:
             continue
         value_line, values, unparsed = near[0]
-        header = _header_for(value_line, headers)
-        row = _row(
-            page_num, condition, value_line, values, lines, header,
-            "values_and_condition_on_separate_baselines", unparsed, headings,
-        )
+        specs.append({"condition": condition, "value_line": value_line, "values": values,
+                      "header": _header_for(value_line, headers),
+                      "pairing": "values_and_condition_on_separate_baselines", "unparsed": unparsed})
+    _resolve_units(specs, lines, headers)
+    rows: list[RdsonSpecRow] = []
+    for spec in specs:
+        row = _row(page_num, spec, headings, _qualifier(spec, specs, lines))
         if row is not None:
             rows.append(row)
     return _attach_temperature_lines(rows, temperature_lines)
+
+
+# Rows of OTHER parameters whose test condition also names VGS and ID:
+# Goford's "Forward Transconductance gFS VGS = 5V, ID = 50A" (unit S),
+# Toshiba's "V(BR)DSX ... ID = 10 mA, VGS = -20 V", and Microchip's
+# "Change in RDS(ON) with Temperature  dRDS(ON) ... %/C  VGS = 10V, ID = 1A".
+# A line naming one of these is never an RDS(on) row, whatever its condition.
+_FOREIGN_PARAMETER_RE = re.compile(
+    r"\bg\s*fs\b|transconductance|V\s*\(\s*BR\s*\)|\bBV\s*DSS|breakdown|[\u0394\uf044]|\bchange\s+in\b"
+    r"|coefficient|%\s*/\s*[°º]?\s*[CK]\b|threshold|V\s*GS\s*\(\s*th|\bI\s*[DG]SS\b|leakage|I\s*D\s*\(\s*on\s*\)",
+    re.IGNORECASE,
+)
+_BLOCK_GAP_PT = 50.0
+_QUALIFIER_GAP_PT = 8.0
+
+
+def _foreign_parameter(line: _Line) -> bool:
+    return _FOREIGN_PARAMETER_RE.search(line.text) is not None
+
+
+def _spec_y(spec: dict) -> float:
+    return 0.5 * (_cy(spec["condition"]) + _cy(spec["value_line"]))
+
+
+def _resolve_units(specs: list[dict], lines: list[_Line], headers) -> None:
+    """Each spec's unit: its own row block's reading, else its RDS(on) block's.
+
+    onsemi (FDP5800) and Infineon (IPP100N06S2L05) print the unit ONCE for
+    the whole RDS(on) block, on its first row; the later rows sit farther
+    than ``_UNIT_WINDOW_PT`` from it. A row without a unit of its own
+    inherits the block's unit only when (a) the block is a run of RDS(on)
+    rows under the same header with no other parameter's value line between
+    consecutive rows and no gap over ``_BLOCK_GAP_PT``, and (b) every unit
+    read inside the block has the same scale. Otherwise it stays unreadable.
+    """
+    for spec in specs:
+        spec["unit"] = _row_unit(spec["condition"], spec["value_line"], lines)
+        spec["unit_source"] = "row" if spec["unit"] is not None else "unreadable"
+    ordered = sorted(specs, key=_spec_y)
+    own = {id(line) for spec in specs for line in (spec["condition"], spec["value_line"])}
+    blocks: list[list[dict]] = []
+    for spec in ordered:
+        if blocks:
+            previous = blocks[-1][-1]
+            y0, y1 = _spec_y(previous), _spec_y(spec)
+            between = [
+                line for line in lines
+                if id(line) not in own and y0 < _cy(line) < y1
+                and (spec["header"] is not None and _owned_values(line, spec["header"])[0] or _foreign_parameter(line))
+            ]
+            if previous["header"] is spec["header"] and y1 - y0 <= _BLOCK_GAP_PT and not between:
+                blocks[-1].append(spec)
+                continue
+        blocks.append([spec])
+    for block in blocks:
+        read = [s for s in block if s["unit"] is not None]
+        if not read or len({s["unit"][1] for s in read}) != 1:
+            continue
+        donor = read[0]
+        for spec in block:
+            if spec["unit"] is None:
+                spec["unit"] = donor["unit"]
+                spec["unit_source"] = (
+                    f"row_block: unit printed once for the RDS(on) block, on the row at y={_spec_y(donor):.1f} pt"
+                )
+
+
+def _qualifier(spec: dict, specs: list[dict], lines: list[_Line]) -> str:
+    """A text line printed under a row's condition that qualifies it ("SMD version").
+
+    Infineon repeats the RDS(on) rows for the SMD package with the words
+    "SMD version" under the condition. Without that qualifier the second
+    4.5 V row reads as a contradiction of the first. The line must sit
+    within ``_QUALIFIER_GAP_PT`` below the row, inside the condition's
+    column, and carry no condition, no value and no RDS(on) label.
+    """
+    condition = spec["condition"]
+    bottom = max(spec["condition"].bbox[3], spec["value_line"].bbox[3])
+    # the condition CELL: the words the condition matches cover, not the whole
+    # line (which also holds the parameter label: "Resistance" is not a qualifier)
+    cell = [
+        word for word, (start, end) in zip(condition.words, condition.spans)
+        if any(start < c_end and end > c_start for *_, c_start, c_end in condition.conditions)
+    ]
+    if not cell:
+        return ""
+    x0, x1 = min(w.x0 for w in cell) - 5.0, max(w.x1 for w in cell) + 5.0
+    taken = {id(line) for other in specs for line in (other["condition"], other["value_line"])}
+    out = []
+    for line in lines:
+        if id(line) in taken or line.conditions or _RDS_LABEL_RE.search(line.text):
+            continue
+        if not (0.0 <= line.bbox[1] - bottom <= _QUALIFIER_GAP_PT or 0.0 <= _cy(line) - _cy(spec["value_line"]) <= _QUALIFIER_GAP_PT):
+            continue
+        if line.bbox[0] < x0 or line.bbox[2] > x1 or not re.search(r"[A-Za-z]{3,}", line.text):
+            continue
+        if spec["header"] is not None and _owned_values(line, spec["header"])[0]:
+            continue
+        out.append(line.text)
+    return " ".join(out)
 
 
 def _attach_temperature_lines(
@@ -336,20 +510,11 @@ def _near_rds_label(line: _Line, labels) -> bool:
     return any(abs(0.5 * (bbox[1] + bbox[3]) - _cy(line)) <= _LABEL_WINDOW_PT for bbox in labels)
 
 
-def _row(
-    page_num: int,
-    condition: _Line,
-    value_line: _Line,
-    values: dict[str, float],
-    lines: list[_Line],
-    header: dict[str, float] | None,
-    pairing: str,
-    unparsed: dict[str, str] | None = None,
-    headings: list | None = None,
-) -> RdsonSpecRow | None:
-    unit = _row_unit(condition, value_line, lines)
+def _row(page_num: int, spec: dict, headings: list | None, qualifier: str = "") -> RdsonSpecRow | None:
+    condition, value_line, values = spec["condition"], spec["value_line"], spec["values"]
+    unit = spec["unit"]
     vgs = next(value for name, value, *_ in condition.conditions if name == "VGS")
-    current = next((value for name, value, *_ in condition.conditions if name == "ID"), None)
+    current = next(((value, unit_text) for name, value, unit_text, *_ in condition.conditions if name == "ID"), None)
     temps = [(value, name) for name, value, *_ in condition.conditions if name in {"TJ", "TC", "TA"}]
     if len(temps) > 1:
         return None
@@ -370,10 +535,15 @@ def _row(
             return None
         return round(values[key] * scale, 6)
 
+    id_a = None
+    if current is not None:
+        # "ID = 25mA" (BS107P, Microchip TN/VN): the printed unit decides.
+        id_a = abs(current[0]) / (1000.0 if current[1] == "mA" else 1.0)
+        id_a = round(id_a, 9)
     return RdsonSpecRow(
         page=page_num,
         vgs_v=abs(vgs),
-        id_a=abs(current) if current is not None else None,
+        id_a=id_a,
         temperature_c=temperature,
         temperature_kind=kind,
         temperature_source=source,
@@ -381,11 +551,14 @@ def _row(
         typ_mohm=convert("typ"),
         max_mohm=convert("max"),
         unit_token=unit[0] if unit is not None else "",
-        pairing=pairing,
+        pairing=spec["pairing"],
         row_text=condition.text if condition is value_line else f"{value_line.text} || {condition.text}",
         bbox_pt=tuple(round(v, 2) for v in condition.bbox),  # type: ignore[arg-type]
-        unparsed_cells=dict(unparsed or {}),
+        unparsed_cells=dict(spec["unparsed"] or {}),
         temperature_evidence=evidence,
+        unit_source=spec.get("unit_source", "row"),
+        id_unit=(current[1] or "A") if current is not None else "",
+        qualifier=qualifier,
     )
 
 
