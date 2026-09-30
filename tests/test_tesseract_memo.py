@@ -9,6 +9,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -99,6 +100,28 @@ class TesseractMemoTests(unittest.TestCase):
         with patch.object(subprocess, "run", return_value=failed):
             self.assertEqual(self._run().returncode, 1)
         self.assertIsNone(tesseract_memo.load(self.root, tesseract_memo.cache_key(self.argv, self.png)))
+
+    def test_a_call_that_cannot_be_keyed_passes_through_unchanged(self):
+        # 2026-09-30, merge with main: rds_digitize_cache (imported by another
+        # test in the same process) had turned the memo on, and find_charts'
+        # mocked-subprocess test lost its return value to a hash of a missing file
+        missing = self.tmp / "no-such-page.png"
+        argv = ["/usr/bin/tesseract", str(missing), "stdout", "--psm", "11", "tsv"]
+        fake = types.SimpleNamespace(stdout="tsv")          # not a CompletedProcess
+        with patch.object(subprocess, "run", return_value=fake) as run:
+            self.assertIs(tesseract_memo.run(argv, missing, text=True, stdout=subprocess.PIPE,
+                                             stderr=subprocess.PIPE, timeout=7), fake)
+        run.assert_called_once_with(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7)
+        self.assertFalse(self.root.exists())
+
+    def test_an_unidentifiable_installation_is_not_fingerprinted(self):
+        fake = types.SimpleNamespace(stdout="tsv")
+        with patch.dict(tesseract_memo._FINGERPRINT, clear=True), \
+                patch.object(subprocess, "run", return_value=fake) as run:
+            self.assertIs(self._run(), fake)                    # passed through
+            self.assertEqual(tesseract_memo._FINGERPRINT, {})   # nothing remembered
+        self.assertEqual(run.call_args_list[-1].args[0], self.argv)
+        self.assertFalse(self.root.exists())
 
     def test_off_without_the_environment_variable(self):
         with patch.dict(os.environ, {tesseract_memo.ENV: ""}), \

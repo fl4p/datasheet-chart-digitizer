@@ -55,10 +55,14 @@ def tesseract_fingerprint(executable: str) -> str:
     parts = {"binary": _sha256_file(real)}
     version = subprocess.run([str(real), "--version"], capture_output=True, text=True, timeout=60)
     parts["version"] = version.stdout + version.stderr
+    if version.returncode != 0 or not parts["version"].lstrip().startswith("tesseract "):
+        raise RuntimeError(f"{real} --version did not identify tesseract: {parts['version'][:200]!r}")
     for lib in sorted((real.parent.parent / "lib").glob("libtesseract*")):
         if lib.is_file() and not lib.is_symlink():
             parts[f"lib:{lib.name}"] = _sha256_file(lib)
     langs = subprocess.run([str(real), "--list-langs"], capture_output=True, text=True, timeout=60)
+    if langs.returncode != 0:
+        raise RuntimeError(f"{real} --list-langs failed")
     tessdata = None
     for line in (langs.stdout + langs.stderr).splitlines():
         if '"' in line and "languages" in line:
@@ -120,18 +124,25 @@ def run(argv: list[str], image: str | os.PathLike, **kwargs) -> subprocess.Compl
     """``subprocess.run(argv, **kwargs)`` for a tesseract call reading ``image``.
 
     Memoized only when DSDIG_OCR_CACHE is set and the call captures text
-    output; otherwise exactly ``subprocess.run``.
+    output; otherwise exactly ``subprocess.run``. If the key cannot be
+    formed (image missing, the installation not identifiable) the call is
+    passed through unchanged and nothing is stored: the memo never changes
+    what a caller sees, only how often tesseract runs.
     """
     root = os.environ.get(ENV)
     captured = kwargs.get("capture_output") or (
         kwargs.get("stdout") == subprocess.PIPE and kwargs.get("stderr") == subprocess.PIPE)
     if not root or not captured or not kwargs.get("text") or "input" in kwargs:
         return subprocess.run(argv, **kwargs)
-    key = cache_key(argv, Path(image), kwargs.get("cwd"))
+    try:
+        key = cache_key(argv, Path(image), kwargs.get("cwd"))
+    except Exception:  # noqa: BLE001 - no key, no memo: the plain call below decides
+        return subprocess.run(argv, **kwargs)
     hit = load(Path(root), key)
     if hit is not None:
         return subprocess.CompletedProcess(argv, 0, hit[0], hit[1])
     proc = subprocess.run(argv, **kwargs)
-    if proc.returncode == 0:
+    if (isinstance(proc, subprocess.CompletedProcess) and proc.returncode == 0
+            and isinstance(proc.stdout, str) and isinstance(proc.stderr, str)):
         store(Path(root), key, proc.stdout, proc.stderr)
     return proc
