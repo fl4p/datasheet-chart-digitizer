@@ -118,6 +118,28 @@
    "finding": "C1 (batch_all v2)",
    "note": "Fab re-verified IRLB8314 on the batch_all v2 review packet (rds-vgs/review/rds-vgs-all-v2-001.html; export rds-vgs-all-v2-001.review.json, 2026-09-30 11:59 UTC: green). C1 spec-row fix reads the printed rows (4.5 V/68 A 2.6/3.2, 10 V/68 A 1.9/2.4 mOhm); no curve, point, readout or calibration changed.",
    "date": "2026-09-30"
+  },
+  {
+   "part": "FDP8870_onsemi",
+   "kind": "refreeze",
+   "dir": "batch_all_v4",
+   "superseded_sha256": {
+    "panel.json": "c0dd704581522242c1b7bfa70fd6bfc638acfcc215482f5ff8502488260bb371",
+    "points_c0.csv": "0f2408fca8c8a93864f843851391102995b9e8da146305c3ca87c34aa6e7bc12",
+    "points_c1.csv": "d377d00ffc932bf9ff8362775670310317f5758244f6a81d040032eef8aac6a0"
+   },
+   "finding": "F-v2-1 (steep heads of filled-outline curves traced to the top frame; 375 points added, none moved; I_D binding provenance proximity/elimination, same values)",
+   "note": "Fab marked it green on the batch_all v4 review packet (rds-vgs/review/rds-vgs-all-v4-001.html), his words 2026-09-30: \"all green\". Frozen from batch_all_v4 (produced at 69ba77b).",
+   "date": "2026-09-30"
+  },
+  {
+   "part": "IRLB8721_IFX",
+   "path": "status",
+   "frozen": "review_required",
+   "now": "ok",
+   "finding": "F-v3-1 (y axis bound to its printed filled-rectangle rules; axis_ticks_not_bound_to_grid gone; every readout unchanged)",
+   "note": "Fab marked it green on the batch_all v4 review packet (rds-vgs/review/rds-vgs-all-v4-001.html), his words 2026-09-30: \"all green\".",
+   "date": "2026-09-30"
   }
  ]
 }

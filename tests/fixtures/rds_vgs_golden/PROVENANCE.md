@@ -156,6 +156,25 @@ changes only `validation_verdict` (not_evaluable → consistent_at_approximate_c
 and `anchor_verdicts`. These changes are recorded as path entries in `REBLESSED.json`, and
 its PENDING entry is removed. `PENDING.json` is empty.
 
+## batch_all v4 (Fab's review of the v4 packet, 2026-09-30)
+
+**Human-verified by Fab** on `rds-vgs/review/rds-vgs-all-v4-001.html`, in his words: "all green".
+
+- **DMN4008LFG_Diodes p3 fig 4: newly frozen** from
+  `/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch_all_v4/rdson_gate_voltage.json`
+  (produced at 69ba77b; manifest `rds-vgs/work/batch_all_v4_primary_manifest.json`).
+  - 3 curves, I_D 10 / 8 / 6 A. The y axis is bound to its printed rules (F-v3-1).
+  - Temperature is not printed at the chart, so validation is not_evaluable.
+- **FDP8870_onsemi: re-frozen** into `FDP8870_onsemi/batch_all_v4/` (kind `refreeze`).
+  - F-v2-1 traced its steep heads to the frame: 375 points added, none moved.
+  - The I_D binding provenance changed; the values did not.
+- **IRLB8721_IFX: re-blessed.** A path entry records `status` review_required → ok (F-v3-1).
+  - Its known defect `axis_ticks_not_bound_to_grid` is resolved, and every readout is
+    unchanged.
+  - IRLTS6342's same known defect is also resolved, with no pinned field changed.
+
+`PENDING.json` is empty. There are 41 golden panels.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the
