@@ -30,9 +30,11 @@ from .capacitance_vector import (
     _vector_curve_edges,
 )
 from .crop_transform import CropTransform
-from .diode_legend_color import (
-    colored_temperature_bindings,
-    temperatures_from_source_words,
+from .diode_legend_color import colored_temperature_bindings
+from .diode_temperature_assignment import (
+    ORDER_BOUND,
+    assign_temperatures as _assign_temperatures,
+    in_plot_label_evidence,
 )
 from . import served_axis_guard
 from .axis_title_identity import refuse_contradicted_body_diode
@@ -44,7 +46,9 @@ from .find_charts import (
 )
 from .transfer_temperature_labels import (
     LEGEND_LINE_RE,
+    TemperatureLabel,
     normalize_temperature_text,
+    temperature_labels,
     temperature_values_in_text,
 )
 from .gate_charge_trace import _detect_regular_grid_box, _projection_line_centers
@@ -77,6 +81,8 @@ _VECTOR_JOIN_SEPARATION_FRACTION = 0.45
 _VECTOR_JOIN_WIDTH_ABS_TOLERANCE_PT = 0.12
 _VECTOR_JOIN_WIDTH_REL_TOLERANCE = 0.15
 _SOURCE_BOUND_EXIT_MIN_X_SPAN = 0.50
+# capacitance_vector._vector_curve_edges default stroke-width ceiling
+_VECTOR_MAX_STROKE_PT = 2.2
 
 
 @dataclass(frozen=True)
@@ -166,7 +172,8 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     if grid_failed:
         raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
     voltage_on_y = _voltage_on_y_axis(calibration)
-    temperatures = _panel_temperatures(panel)
+    labels = _panel_temperature_labels(panel)
+    temperatures = _panel_temperatures(panel, labels)
     extracted = _extract_vector_curve_series(
         panel,
         crop_path,
@@ -206,14 +213,22 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
             identities = [None] * len(extracted)
             for temperature, curve_index in color_bindings:
                 identities[curve_index] = CurveIdentity(temperature, "typical")
-    assigned, crossover = _assign_temperatures(
+    style_bound = bool(style_identities) or color_bindings is not None
+    assigned, crossover, identity_diagnostic = _assign_temperatures(
         curves_px,
         calibration,
         temperatures,
         voltage_on_y=voltage_on_y,
-        curve_identities=identities
-        if style_identities or color_bindings is not None
-        else None,
+        curve_identities=identities if style_bound else None,
+        label_evidence=None
+        if style_bound
+        else in_plot_label_evidence(
+            labels,
+            _crop_transform(panel, crop_path),
+            calibration.plot,
+            curves_px,
+            *_label_strokes(panel),
+        ),
     )
     overlay = _draw_overlay(crop_path, calibration, assigned, panel)
     overlay_path = (
@@ -226,7 +241,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         if color_bindings is not None
         else "temperature_and_limit_identity_bound_by_source_legend_style"
         if style_identities
-        else "temperature_identity_stable_over_low_mid_shared_current"
+        else identity_diagnostic or ORDER_BOUND
     ]
     if voltage_on_y:
         diagnostics.append("source_axes_current_x_voltage_y")
@@ -256,6 +271,40 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         "crossover_current_a": crossover,
         "overlay": str(overlay_path.relative_to(out_dir)),
     }
+
+
+def _crop_transform(panel: ChartPanel, crop_path: Path) -> CropTransform:
+    image = cv2.imread(str(crop_path), cv2.IMREAD_GRAYSCALE)
+    if image is None:
+        raise RuntimeError(f"could not read crop: {crop_path}")
+    return CropTransform.for_chart(asdict(panel), image.shape)
+
+
+def _label_strokes(panel: ChartPanel) -> tuple[list, list]:
+    """Lone straight strokes in the panel: sloped leaders, horizontal swatches.
+
+    Curves are many-segment paths and grid rules span the plot, so a lone
+    sloped line can only be a label leader and a short lone horizontal line
+    beside a label is a legend swatch (the label is then a legend entry).
+    """
+
+    x0, y0, x1, y1 = panel.bbox_pt
+    leaders, swatches = [], []
+    with pymupdf.open(panel.pdf) as doc:
+        for drawing in doc[panel.page - 1].get_drawings():
+            items = drawing.get("items") or []
+            if drawing.get("type") != "s" or len(items) != 1 or items[0][0] != "l":
+                continue
+            start, end = items[0][1], items[0][2]
+            if not all(x0 <= p.x <= x1 and y0 <= p.y <= y1 for p in (start, end)):
+                continue
+            segment = ((float(start.x), float(start.y)), (float(end.x), float(end.y)))
+            dx, dy = abs(end.x - start.x), abs(end.y - start.y)
+            if dx > 1.0 and dy > 1.0:
+                leaders.append(segment)
+            elif dy <= 0.5 and 1.0 < dx <= 0.25 * (x1 - x0):
+                swatches.append(segment)
+    return leaders, swatches
 
 
 def _write_results(out_dir: Path, results: list[dict[str, object]]) -> None:
@@ -797,6 +846,15 @@ def _extract_vector_curve_series(
                         float(drawing.get("width") or 0.0),
                     )
                 )
+            elif _excluded_wide_curve(
+                drawing, rect, curve_spans_x, expected_curve_count
+            ):
+                # A curve-shaped stroke outside the width gate is a curve we
+                # cannot serve; dropping it silently lets the remaining curve
+                # count coincide with a partial label set.
+                raise RuntimeError(
+                    "a curve-shaped source stroke is wider than the vector width gate"
+                )
             elif _is_neutral_gray_stroke(drawing.get("color")):
                 gray_edges = _vector_curve_edges(
                     [drawing],
@@ -865,6 +923,26 @@ def _extract_vector_curve_series(
                 )
             )
     return curves
+
+
+def _excluded_wide_curve(
+    drawing: dict,
+    rect: pymupdf.Rect,
+    curve_spans_x: bool,
+    expected_curve_count: int | None,
+) -> bool:
+    if float(drawing.get("width") or 0.0) <= _VECTOR_MAX_STROKE_PT:
+        return False
+    components = _chain_vector_components(
+        _vector_curve_edges(
+            [drawing], rect, min_stroke_width=0.4, max_stroke_width=math.inf
+        )
+    )
+    return any(
+        _vector_group_span_status(component, rect, curve_spans_x, expected_curve_count)[0]
+        for component in components
+        if len(component) >= 2
+    )
 
 
 def _vector_group_span_status(
@@ -1285,138 +1363,24 @@ def _temperatures(text: str) -> list[float]:
     return temperature_values_in_text(text)
 
 
-def _panel_temperatures(panel: ChartPanel) -> list[float]:
-    """Read temperature tokens owned by this panel's source-text geometry."""
+def _panel_temperature_labels(panel: ChartPanel) -> list[TemperatureLabel]:
+    """Positioned temperature labels owned by this panel's source words."""
 
     page = run_text_bbox(Path(panel.pdf))[panel.page - 1]
-    words = words_in_bbox(page.words, panel.bbox_pt)
-    values = temperatures_from_source_words(words)
+    return temperature_labels(words_in_bbox(page.words, panel.bbox_pt))
+
+
+def _panel_temperatures(
+    panel: ChartPanel, labels: list[TemperatureLabel] | None = None
+) -> list[float]:
+    """Read temperature tokens owned by this panel's source-text geometry."""
+
+    if labels is None:
+        labels = _panel_temperature_labels(panel)
+    values = sorted({label.value_c for label in labels})
     if values:
         return values
     return _temperatures(panel.text)
-
-
-def _assign_temperatures(
-    curves_px: list[list[tuple[int, int]]],
-    calibration: PanelCalibration,
-    temperatures: list[float],
-    *,
-    voltage_on_y: bool = False,
-    curve_identities: list[CurveIdentity | None] | None = None,
-) -> tuple[list[dict[str, object]], float | None]:
-    style_bound = curve_identities is not None
-    if style_bound:
-        if len(curve_identities) != len(curves_px) or any(item is None for item in curve_identities):
-            raise RuntimeError("not every extracted curve has a source-legend identity")
-        identities = [item for item in curve_identities if item is not None]
-        if len(set(identities)) != len(identities):
-            raise RuntimeError("source legend contains duplicate curve identities")
-        if {item.temperature_c for item in identities} != set(temperatures):
-            raise RuntimeError("source-legend temperatures disagree with panel labels")
-    elif len(curves_px) != len(temperatures) or len(curves_px) < 2:
-        raise RuntimeError(
-            f"curve/temperature mismatch: {len(curves_px)} curves, {len(temperatures)} labels"
-        )
-    voltage_axis = calibration.y_axis if voltage_on_y else calibration.x_axis
-    current_axis = calibration.x_axis if voltage_on_y else calibration.y_axis
-    voltage_bounds = sorted(tick.value for tick in voltage_axis.ticks)[
-        :: len(voltage_axis.ticks) - 1
-    ]
-    current_bounds = sorted(tick.value for tick in current_axis.ticks)[
-        :: len(current_axis.ticks) - 1
-    ]
-    data = []
-    for curve in curves_px:
-        points = []
-        for x, y in curve:
-            if voltage_on_y:
-                current, voltage = current_axis.value(x), voltage_axis.value(y)
-            else:
-                current, voltage = current_axis.value(y), voltage_axis.value(x)
-            if (
-                voltage_bounds[0] <= voltage <= voltage_bounds[1]
-                and current_bounds[0] <= current <= current_bounds[1]
-            ):
-                points.append((current, voltage))
-        data.append(sorted(points))
-    if any(not points for points in data):
-        raise RuntimeError("curve contains no calibrated points")
-    if style_bound:
-        results = []
-        for identity, points, points_px in zip(identities, data, curves_px):
-            results.append(
-                {
-                    "temperature_c": identity.temperature_c,
-                    "curve_role": identity.role,
-                    "points": [[round(vsd, 6), round(current, 6)] for current, vsd in points],
-                    "points_px": [[x, y] for x, y in points_px],
-                }
-            )
-        results.sort(key=lambda item: (float(item["temperature_c"]), item["curve_role"] != "typical"))
-        return results, _verified_crossover(
-            results,
-            current_axis.model == "log10",
-            voltage_bounds[1] - voltage_bounds[0],
-        )
-    lo = max(points[0][0] for points in data)
-    hi = min(points[-1][0] for points in data)
-    if not hi > lo:
-        raise RuntimeError("curves have no shared current range")
-    log_current = current_axis.model == "log10"
-    lo_c, hi_c = (math.log10(lo), math.log10(hi)) if log_current else (lo, hi)
-    sample_currents = [10**value if log_current else value for value in np.linspace(lo_c, hi_c, 6)]
-    orders = []
-    for current in sample_currents:
-        voltages = [float(np.interp(current, [p[0] for p in points], [p[1] for p in points])) for points in data]
-        orders.append(tuple(np.argsort(voltages)))
-    if len(set(orders[:4])) != 1:
-        raise RuntimeError("temperature ordering is unstable over low/mid shared current")
-    ordered_curves = orders[2]
-    assigned_temp = {curve_index: temp for curve_index, temp in zip(ordered_curves, sorted(temperatures, reverse=True))}
-    results = []
-    for index, points in enumerate(data):
-        results.append(
-            {
-                "temperature_c": assigned_temp[index],
-                "points": [[round(vsd, 6), round(current, 6)] for current, vsd in points],
-                "points_px": [[x, y] for x, y in curves_px[index]],
-            }
-        )
-    results.sort(key=lambda item: float(item["temperature_c"]))
-    return results, _verified_crossover(
-        results, log_current, voltage_bounds[1] - voltage_bounds[0]
-    )
-
-
-def _verified_crossover(curves: list[dict[str, object]], log_current: bool, voltage_span: float):
-    by_temp = {
-        float(curve["temperature_c"]): curve["points"]
-        for curve in curves
-        if curve.get("curve_role", "typical") == "typical"
-    }
-    if 25.0 not in by_temp or 175.0 not in by_temp:
-        return None
-    cold, hot = by_temp[25.0], by_temp[175.0]
-    lo, hi = max(cold[0][1], hot[0][1]), min(cold[-1][1], hot[-1][1])
-    coordinate = np.linspace(math.log10(lo), math.log10(hi), 256) if log_current else np.linspace(lo, hi, 256)
-    current = 10**coordinate if log_current else coordinate
-    def voltage(points):
-        return np.interp(current, [p[1] for p in points], [p[0] for p in points])
-
-    delta = voltage(cold) - voltage(hot)
-    margin = max(0.005, 0.01 * voltage_span)
-    significant = [(index, 1 if value > 0 else -1) for index, value in enumerate(delta) if abs(value) > margin]
-    states = [item for index, item in enumerate(significant) if index == 0 or item[1] != significant[index - 1][1]]
-    if not states or states[0][1] != 1:
-        raise RuntimeError("temperature ordering reverses in the low-current band")
-    if len(states) == 1:
-        return None
-    if len(states) != 2 or states[1][0] < 0.60 * (len(current) - 1):
-        raise RuntimeError("temperature curves have repeated or low/mid-current crossings")
-    left = max(item for item in significant if item[1] == 1)[0]
-    right = min(item for item in significant if item[1] == -1)[0]
-    fraction = delta[left] / (delta[left] - delta[right])
-    return float(10 ** (coordinate[left] + fraction * (coordinate[right] - coordinate[left])) if log_current else current[left] + fraction * (current[right] - current[left]))
 
 
 def _draw_overlay(

@@ -449,6 +449,7 @@ def _vector_curve_edges(
     min_stroke_width: float = 0.8,
     allow_neutral_gray: bool = False,
     allow_chromatic: bool = False,
+    max_stroke_width: float = 2.2,
 ) -> list[VectorEdge]:
     edges: list[VectorEdge] = []
     expanded = plot_rect + (-1.5, -1.5, 1.5, 1.5)
@@ -490,7 +491,7 @@ def _vector_curve_edges(
         ):
             continue
         width = float(drawing.get("width") or 0.0)
-        if width < min_stroke_width or width > 2.2:
+        if width < min_stroke_width or width > max_stroke_width:
             continue
         keep_boundary_horizontals = (
             _is_chromatic_stroke(color)
