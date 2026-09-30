@@ -1031,6 +1031,64 @@ def _smooth_polyline(points: list[tuple[int, int]], stride: int = 4) -> list[tup
     return out[::stride]
 
 
+def _band_has_crossing_stroke(ink: np.ndarray, along_rows: bool) -> bool:
+    """True when a stroke crosses *ink* (bool band), ignoring full grid rules."""
+
+    if ink.size == 0 or min(ink.shape) < 3:
+        return False
+    ink = ink.copy()
+    # A gridline running across the band is not the curve continuing.
+    ink[:, ink.mean(axis=0) >= 0.85] = False
+    ink[ink.mean(axis=1) >= 0.85, :] = False
+    lines = ink.any(axis=1) if along_rows else ink.any(axis=0)
+    return float(lines.mean()) >= 0.6
+
+
+def _curve_clipped_by_plot_box(
+    gray: np.ndarray,
+    curve: list[tuple[int, int]],
+    plot_box: tuple[int, int, int, int],
+    frame: tuple[int, int, int, int] | None,
+    *,
+    edge_px: float = 4.0,
+    edge_fraction: float = 0.015,
+    beyond_px: int = 6,
+    ink_threshold: int = 128,
+) -> bool:
+    """The served box cut the curve at an interior gridline.
+
+    Evidence, all three required: the curve ends on the box's top or right
+    edge, the panel's own closed frame lies beyond that edge, and source ink
+    keeps going past the edge next to the exit point. A curve that genuinely
+    ends at its frame has no frame beyond it; one that ends at an interior
+    level has no stroke beyond it. Unevaluable input (no frame, too few
+    points) returns False: this flags a proven cut, it does not certify one's
+    absence.
+    """
+
+    if frame is None or len(curve) < 8:
+        return False
+    x0, y0, x1, y1 = plot_box
+    fx0, fy0, fx1, fy1 = frame
+    height, width = gray.shape[:2]
+    top = min(curve, key=lambda point: point[1])
+    right = max(curve, key=lambda point: point[0])
+    # the upper-axis trim stops a trace a few px short of the edge it reached
+    top_edge = max(edge_px, edge_fraction * (y1 - y0))
+    right_edge = max(edge_px, edge_fraction * (x1 - x0))
+    if fy0 < y0 - beyond_px and top[1] <= y0 + top_edge:
+        r0, r1 = max(0, fy0 + 2, y0 - 16), max(0, y0 - 2)
+        c0, c1 = max(0, top[0] - 3), min(width, fx1 - 2, top[0] + 26)
+        if r1 - r0 >= 3 and _band_has_crossing_stroke(gray[r0:r1, c0:c1] < ink_threshold, True):
+            return True
+    if fx1 > x1 + beyond_px and right[0] >= x1 - right_edge:
+        r0, r1 = max(0, fy0 + 2, right[1] - 26), min(height, right[1] + 3)
+        c0, c1 = min(width, x1 + 2), min(width, fx1 - 2, x1 + 16)
+        if c1 - c0 >= 3 and _band_has_crossing_stroke(gray[r0:r1, c0:c1] < ink_threshold, False):
+            return True
+    return False
+
+
 def _trim_terminal_branch_hop(
     points: list[tuple[int, int]],
     plot_box: tuple[int, int, int, int],

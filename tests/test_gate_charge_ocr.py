@@ -558,10 +558,22 @@ class ToshibaDualYAxisOcrRegression(unittest.TestCase):
             "toshiba/TPH3R70APL1,LQ.pdf": (3.97, 1, 810),
             "toshiba/TPN2R903PL.pdf": (3.07, 1, 810),
             "toshiba/TPHR8504PL1.pdf": (3.18, 1, 810),
-            "toshiba/TK110U65Z.pdf": (5.96, 1, 811),
         }
         if not all((root / rel).exists() for rel in cases):
             self.skipTest("optional Toshiba dual-Y regression PDFs are not configured")
+        # Withheld since the served curve is checked (2026-09-30, astra-review-50):
+        # TK110U65Z p6 d811: the box ends on the 48 nC rule, the frame and the VGS
+        # stroke continue to 60 nC / 15 V (Vpl 6.03 V is right, the curve is cut).
+        clipped = root / "toshiba/TK110U65Z.pdf"
+        if clipped.exists():
+            with self.subTest(pdf="toshiba/TK110U65Z.pdf"):
+                result = next(
+                    item
+                    for item in gate.digitize_gate_charge(clipped)
+                    if item.panel.page == 6 and item.panel.diagram == 811
+                )
+                self.assertNotEqual(result.status, "ok")
+                self.assertIn("plot_box_clips_source_curve", result.diagnostics)
 
         for rel, (reference, polarity, diagram) in cases.items():
             with self.subTest(pdf=rel):

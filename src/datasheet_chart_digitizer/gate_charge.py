@@ -32,6 +32,7 @@ from .gate_charge_estimation import (
     _text_near_rect,
 )
 from .gate_charge_trace import (
+    _curve_clipped_by_plot_box,
     _curve_score,
     _detect_aligned_plot_frame,
     _detect_inner_plot_box,
@@ -47,6 +48,7 @@ from .gate_charge_trace import (
     _trim_terminal_branch_hop,
 )
 from .gate_axis_ocr import (
+    carried_x_ticks,
     MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
     bounded_axis_result_is_trusted as _bounded_axis_result_is_trusted,
     bounded_gate_axis_ocr,
@@ -218,6 +220,7 @@ def digitize_gate_charge(
                                     status="ok" if not (grid_diagnostics or curve_blocked) else "low_confidence",
                                     y_tick_count=len(y_ticks_px),
                                     y_ticks_px=y_ticks_px,
+                                    x_ticks_px=result.x_ticks_px or carried_x_ticks(ocr_result, result),
                                     x_tick_unit=x_tick_unit,
                                     y_grid=seated.payload(),
                                     diagnostics=tuple(
@@ -408,8 +411,11 @@ def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
 
 
+CURVE_CLIPPED_DIAGNOSTIC = "plot_box_clips_source_curve"
 # Curve-fidelity findings an axis repair cannot cure.
-CURVE_BLOCKING_DIAGNOSTICS = frozenset({"non_monotone_gate_curve", "low_trace_confidence"})
+CURVE_BLOCKING_DIAGNOSTICS = frozenset(
+    {"non_monotone_gate_curve", CURVE_CLIPPED_DIAGNOSTIC, "low_trace_confidence"}
+)
 
 
 def _bounded_ocr_diagnostics(panel: ChartPanel) -> tuple[str, ...]:
@@ -740,6 +746,11 @@ def _digitize_panel(
     # (STN1NF20 p7: 5.1 V -> 0.15 V after the crossing) was served "ok".
     # Too few points/bins to evaluate is non-monotone here (fail closed).
     non_monotone_gate_curve = not _gate_curve_is_monotone(curve, plot_box)
+    # The box ended at an interior rule and cut the served curve (AP80N08D:
+    # box top on the 8 V line, frame and stroke continue to 10 V).
+    clipped_curve = _curve_clipped_by_plot_box(
+        np.asarray(trace_crops[0].convert("L")), curve, plot_box, aligned_frame
+    )
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
@@ -750,6 +761,8 @@ def _digitize_panel(
         diagnostics.append("curve_missing_axis_origin")
     if non_monotone_gate_curve:
         diagnostics.append("non_monotone_gate_curve")
+    if clipped_curve:
+        diagnostics.append(CURVE_CLIPPED_DIAGNOSTIC)
     if axis_assumed:
         diagnostics.append("axis_assumed_0_10")
     elif axis_grid_inferred:
@@ -797,6 +810,7 @@ def _digitize_panel(
         or missing_initial_ramp
         or missing_axis_origin
         or non_monotone_gate_curve
+        or clipped_curve
         # A value the digitizer itself calls implausible, or one it had to extrapolate
         # off the end of its ticks, must not be reported as "ok". These two diagnostics
         # were computed and then dropped on the floor by the status: SUP90140E returned

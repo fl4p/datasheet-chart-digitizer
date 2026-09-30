@@ -1047,3 +1047,19 @@ def refine_oversized_ocr_gate_panel(
         bottom + 2.0,
     )
     return refined & pymupdf.Rect(0.0, 0.0, page_width, page_height)
+
+
+def carried_x_ticks(source, target) -> tuple[tuple[float, float], ...]:
+    """Re-express *source*'s Qg ticks in *target*'s crop pixels.
+
+    Used when an OCR re-digitisation is not served (its box cut the curve) but
+    its OCR'd Qg labels are still the panel's own evidence: the recalibrated
+    first-pass result would otherwise ship no Qg ticks at all. Pixels are
+    continuous crop px ((pt - crop.x0) * scale), as everywhere in gate charge.
+    """
+
+    if source is None or not source.x_ticks_px or source.dpi != target.dpi:
+        return ()
+    scale = target.dpi / 72.0
+    dx = (float(source.crop_box_pt[0]) - float(target.crop_box_pt[0])) * scale
+    return tuple((float(value), float(px) + dx) for value, px in source.x_ticks_px)

@@ -22,19 +22,16 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "rohm/RX3P10BBHC16.pdf": 4.01,
             "xnrusemi/XRT90N20T.pdf": 4.67,
             "nce/NCEP080N10.pdf": 5.11,
-            "toshiba/TK72E12N1.pdf": 5.62,
             "huayi/HY1710P.pdf": 4.47,
             "siliup/SP015N15HTQ.pdf": 4.71,
             "siliup/SP012N06GHTQ.pdf": 5.55,
             "siliup/SP010N02AGHTO.pdf": 4.82,
             "siliup/SP010N14HTQ.pdf": 4.23,
             "infineon/IRFP4127PBF.pdf": 4.48,
-            "nce/NCE0160G.pdf": 5.16,
             "nce/NCEP25N10AK.pdf": 3.20,
             "siliup/SP010N07AGTQ.pdf": 3.92,
             "siliup/SP010N07AGNK.pdf": 3.92,
             "toshiba/TPH5R60APL,L1Q.pdf": 3.74,
-            "st/STH240N10F7-2.pdf": 4.39,
             "st/STP40NF10.pdf": 5.61,
             "st/STP80NF12.pdf": 5.13,
             "toshiba/TPW4R50ANH,L1Q.pdf": 5.93,
@@ -48,7 +45,21 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
         # the dotted 1.5 V grid. That OCR line served Vpl 5.886 V where the
         # frame rules (15 V at 137 px, 0 V at 612 px) put the plateau at
         # 433 px = 5.65 V.
-        withheld = {"huayi/HY1720P.pdf": "y_axis_grid_check_unverified"}
+        # Withheld since the served curve is checked (2026-09-30, astra-review-50):
+        # NCE0160G p5: box top on the 8 V rule (frame 10 V), the trace stops at
+        #   8 V and picks up the "VDS = 50 V" leader; plot_box_clips_source_curve.
+        # STH240N10F7-2 p5: box top ~11 V, stroke continues to 12 V; same.
+        # TK72E12N1 p6: the bounded-OCR result's box ends at 120 of 160 nC and cuts
+        #   the VGS stroke (not served); the first-pass fallback climbs VGS to
+        #   ~45 nC and then rides the falling VDS stroke to 0 V:
+        #   non_monotone_gate_curve.
+        # Their Vpl reads were right; the served curves were not.
+        withheld = {
+            "huayi/HY1720P.pdf": "y_axis_grid_check_unverified",
+            "nce/NCE0160G.pdf": "plot_box_clips_source_curve",
+            "st/STH240N10F7-2.pdf": "plot_box_clips_source_curve",
+            "toshiba/TK72E12N1.pdf": "non_monotone_gate_curve",
+        }
         if not all((root / relative).exists() for relative in (*cases, *withheld)):
             self.skipTest("requested Vpl regression PDFs are not configured")
         for relative, diagnostic in withheld.items():
