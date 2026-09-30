@@ -91,12 +91,17 @@ def sample_style(rng, tier: str, spec: dict) -> dict:
     s["color_mode"] = _p(rng, {"color": 6 - T, "bw": 3 + T})
     s["distinguish"] = (_p(rng, {"color": 6, "dash": 2, "width": 1, "none": T}) if s["color_mode"] == "color"
                         else _p(rng, {"dash": 3, "width": 1, "none": 2 + T}))
+    if s["identity"] == "legend" and s["distinguish"] == "none" and multi:
+        # a legend over identical strokes identifies nothing: the GT would be unbindable
+        s["distinguish"] = "color" if s["color_mode"] == "color" else "dash"
     s["palette"] = _p(rng, {"tab": 3, "office": 2, "primary": 2, "muted": 2})
     s["stroke_pt"] = {0: _u(rng, 0.8, 1.6, 2), 1: _u(rng, 0.5, 1.6, 2), 2: _u(rng, 0.25, 2.0, 2),
                       3: float(rng.choice([_u(rng, 0.25, 0.45, 2), _u(rng, 1.8, 2.2, 2)]))}[T]
     s["markers"] = bool(rng.random() < (0.1 if T == 0 else 0.2))
 
     s["vector_structure"] = _p(rng, {"single": 8 - 2 * T, "split": 1 + T, "merged": T, "filled": T, "bezier": 1})
+    if s["vector_structure"] == "merged" and s["identity"] == "legend":
+        s["identity"] = "inplot"  # merged curves share one style, so only in-plot labels can identify them
     s["pdf_clip"] = _p(rng, {"clip_path": 3, "pre_clipped": 1})
     s["raster_embed"] = bool(rng.random() < [0.0, 0.05, 0.12, 0.3][T])
     s["dpi"] = int(rng.choice({0: [150, 200, 300], 1: [100, 120, 150, 200], 2: [72, 96, 110, 150],

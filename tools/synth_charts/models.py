@@ -303,7 +303,7 @@ def gate_charge(rng, traps=frozenset()):
     vpl = _u(rng, 2.2, 5.5)
     qgs = _logu(rng, 3, 60)
     qgd0 = qgs * _u(rng, 0.4, 1.8)
-    vend = _choice(rng, [10, 10, 12, 4.5, 8])
+    vend = _choice(rng, [v for v in (10, 10, 12, 4.5, 8) if v >= vpl + 1.5])
     slope_after = _u(rng, 0.25, 0.6) * vpl / qgs
     plateau_slope = _u(rng, 0.0, 0.03) * vpl / qgs
     curves = []
@@ -314,7 +314,7 @@ def gate_charge(rng, traps=frozenset()):
         pre = vpl * q / qgs
         plat = vpl + plateau_slope * (q - qgs)
         post = vpl + plateau_slope * qgd + slope_after * (q - qgs - qgd)
-        w = 0.04 * qgs
+        w = 0.03 * vpl  # corner smoothing width in volts
         hi = plat + w * softplus((post - plat) / w)      # smooth max(plateau, post-plateau)
         vg = pre - w * softplus((pre - hi) / w)          # smooth min(pre-plateau, that)
         vg = np.maximum(vg, 0.0)

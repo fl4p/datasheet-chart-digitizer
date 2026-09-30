@@ -99,7 +99,9 @@ SI = [(1e9, "G"), (1e6, "M"), (1e3, "k"), (1, ""), (1e-3, "m"), (1e-6, "µ"), (1
 
 
 def _trim(v: float, nd: int = 6) -> str:
-    s = f"{v:.{nd}f}".rstrip("0").rstrip(".")
+    s = f"{v:.{nd}f}"
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
     return "0" if s in ("-0", "") else s
 
 
