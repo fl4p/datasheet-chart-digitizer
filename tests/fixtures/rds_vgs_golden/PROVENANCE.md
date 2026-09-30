@@ -53,6 +53,32 @@ point the row tracker added on a steep head (F4-1, listed in `row_traced_points_
 read value must also be a golden read value. Labels, curve count and grouping are not
 compared until the panel is re-blessed.
 
+## Round 7 (Fab's review of the v7 packet, 2026-09-30)
+
+**All six open panels human-verified by Fab on the batch15_v7 review packet**
+(`/Users/fab/dev/ee/solar-charger-eval/rds-vgs/review/rds-vgs-v7-001.html`), in his words
+"all green". The Round-5/6 changes they carry: I_D and temperature bound by the order
+rule (F5-1/F5-3), the print visible under the traces (F5-2), right ends traced to the
+frame, and unsampled stretches traced (F6-1). Source run:
+`/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch15_v7/rdson_gate_voltage.json`, manifest
+`batch15_v7_manifest.json`, produced at 2481153; a944bcd reproduces it.
+
+- **Newly frozen** (`tools/rds_vgs_freeze_golden.py`):
+
+| part | pdf | page | figure | sha256 |
+|---|---|---|---|---|
+| RQ3E110AJ_Rohm | RQ3E110AJ_Rohm.pdf | 7 | 12 | `a3643501e6d06eb5dad4cb25dd79959d043a1c9e808626f3571b46406588a850` |
+| FDP8870_onsemi | FDP8870_onsemi.pdf | 5 | 9 | `d91898fd60742a51d35f8d7cf465d7ef0356ffbfab429a147b5c7303ed2b5879` |
+| RQ3E180AJ_Rohm | RQ3E180AJ_Rohm.pdf | 7 | 12 | `e831dc30efad352f105385d4ac504220b36ee49876ef8de6e5450f92382a19cc` |
+
+- **Re-frozen** (`--refreeze v7`): WSR3090_LCSC_C719278, RQ6E080AJ_Rohm and
+  BRCS020N03RA_LCSC_C22449012. Their original fixtures stay untouched; the verified v7
+  output sits in `<part>/v7/`. A `"kind": "refreeze"` entry in `REBLESSED.json` points the
+  test at it and pins the SHA-256 of every file it supersedes, so the entry goes stale
+  (the test fails) if the original changes. Path entries listed before a refreeze
+  applied to the superseded fixture and are no longer applied.
+- `PENDING.json` is empty: all 15 panels get the full comparison below.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the

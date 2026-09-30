@@ -1,0 +1,166 @@
+{
+ "part": "FDP8870_onsemi",
+ "pdf_name": "FDP8870_onsemi.pdf",
+ "pdf_sha256": "d91898fd60742a51d35f8d7cf465d7ef0356ffbfab429a147b5c7303ed2b5879",
+ "page": 5,
+ "diagram": "9",
+ "title": "Drain to Source On Resistance vs Gate Voltage and Drain Current",
+ "status": "review_required",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 35.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 3.229
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 35.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 3.7812
+  },
+  {
+   "vgs_v": 10.0,
+   "id_a": 35.0,
+   "temperature_c": 175.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_coincident_with_curve_1 (4.41..10.00 V, median separation 0.00 px, max 1.00 px: drawn on top of each other there, so both serve the same values; not separable in that range)"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 254,
+  "y0": 49,
+  "x1": 964,
+  "y1": 586
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.011267605633802818,
+   "b": -0.8619718309859157,
+   "ticks": [
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 254.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 431.49999999999994
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 609.0
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 786.4999999999999
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 963.9999999999999
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.0148975791433892,
+   "b": 10.729981378026071,
+   "ticks": [
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 49.000000000000036
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 183.25000000000003
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 317.50000000000006
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 451.75000000000006
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 586.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tc=25C, ID=1A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tc",
+   "id_a": 1.0,
+   "usable": true,
+   "n_points": 648,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 4.9264,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 3.7803,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tc=25C, ID=35A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tc",
+   "id_a": 35.0,
+   "usable": true,
+   "n_points": 637,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 5.0624,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 3.7812,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

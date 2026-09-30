@@ -57,14 +57,28 @@ def pending_parts() -> set[str]:
 
 
 def load_golden(part: str) -> dict:
-    """The frozen panel with every explicit re-blessing applied."""
-    panel = json.loads((GOLDEN / part / "panel.json").read_text())
+    """The frozen panel with every explicit re-blessing applied.
+
+    A "refreeze" entry (Fab re-verified a changed panel) points at a newer
+    fixture in <part>/<dir>/. It is honoured only while the files it
+    supersedes still hash as recorded; path entries listed before it applied
+    to the superseded fixture and are skipped."""
+    entries = [e for e in json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"] if e["part"] == part]
+    base = GOLDEN / part
+    refreezes = [i for i, e in enumerate(entries) if e.get("kind") == "refreeze"]
+    if refreezes:
+        last = entries[refreezes[-1]]
+        for name, digest in last["superseded_sha256"].items():
+            if _sha256(base / name) != digest:
+                raise AssertionError(f"refreeze of {part} to {last['dir']}: {name} no longer hashes as superseded "
+                                     f"-- the entry is stale")
+        base = base / last["dir"]
+        entries = entries[refreezes[-1] + 1:]
+    panel = json.loads((base / "panel.json").read_text())
     for curve in panel["curves"]:
-        rows = (GOLDEN / part / curve["points_csv"]).read_text().splitlines()[1:]
+        rows = (base / curve["points_csv"]).read_text().splitlines()[1:]
         curve["points_px"] = [tuple(float(v) for v in r.split(",")[2:4]) for r in rows]
-    for entry in json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"]:
-        if entry["part"] != part:
-            continue
+    for entry in entries:
         parent, key = _resolve(panel, entry["path"])
         if parent[key] != entry["frozen"]:
             raise AssertionError(f"re-blessing {entry['path']} for {part}: frozen value is {parent[key]!r}, "
@@ -187,6 +201,45 @@ class GoldenTests(unittest.TestCase):
                 if read["rds_mohm"] is not None:
                     rel = abs(got["rds_mohm"] - read["rds_mohm"]) / abs(read["rds_mohm"])
                     self.assertLessEqual(rel, READOUT_REL_TOL, f"{where}: {read['vgs_v']} V {got['rds_mohm']} vs {read['rds_mohm']}")
+
+
+class RefreezeTests(unittest.TestCase):
+    """A refreeze entry must go stale, never silently pass, when a file it
+    supersedes changes; and it must actually redirect to the newer fixture."""
+
+    def test_refreeze_redirects_and_goes_stale(self) -> None:
+        import shutil
+        import tempfile
+        global GOLDEN
+        refrozen = [e["part"] for e in json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"]
+                    if e.get("kind") == "refreeze"]
+        self.assertTrue(refrozen, "no refreeze entry to test")
+        part = refrozen[0]
+        saved = GOLDEN
+        OUT_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=OUT_ROOT) as tmp:
+            copy = Path(tmp) / "golden"
+            shutil.copytree(saved, copy)
+            GOLDEN = copy
+            try:
+                entry = [e for e in json.loads((copy / "REBLESSED.json").read_text())["entries"]
+                         if e["part"] == part and e.get("kind") == "refreeze"][-1]
+                redirected = load_golden(part)
+                self.assertEqual(redirected, _plain(copy / part / entry["dir"], redirected),
+                                 f"{part}: refreeze did not load <part>/{entry['dir']}")
+                (copy / part / "panel.json").write_text((copy / part / "panel.json").read_text() + " ")
+                with self.assertRaisesRegex(AssertionError, "stale"):
+                    load_golden(part)
+            finally:
+                GOLDEN = saved
+
+
+def _plain(base: Path, like: dict) -> dict:
+    panel = json.loads((base / "panel.json").read_text())
+    for curve in panel["curves"]:
+        rows = (base / curve["points_csv"]).read_text().splitlines()[1:]
+        curve["points_px"] = [tuple(float(v) for v in r.split(",")[2:4]) for r in rows]
+    return panel
 
 
 for _part in golden_parts():

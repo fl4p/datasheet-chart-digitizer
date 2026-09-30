@@ -1,20 +1,4 @@
 {
  "_doc": "Golden panels Fab found defects in on the v4 overlays (2026-09-29). Their labels and curve grouping are being changed by the named findings; only the ink is still pinned (see test_rdson_gate_voltage_golden.py). Fab re-blesses them after he has seen the fix; nobody else removes an entry here.",
- "entries": [
-  {
-   "part": "WSR3090_LCSC_C719278",
-   "pending": "re-bless: F4-3",
-   "why": "temperature labels were unbound; bound by following the label arrows"
-  },
-  {
-   "part": "RQ6E080AJ_Rohm",
-   "pending": "re-bless: F4-4",
-   "why": "3 served pieces for 2 printed curves; now 2 curves, each its own branch plus the shared tail"
-  },
-  {
-   "part": "BRCS020N03RA_LCSC_C22449012",
-   "pending": "re-bless: F4-1",
-   "why": "frozen from v4 as Fab verified it; F4-1 now traces c0's steep head up the band it shares with c1 to the top frame (77 row-traced points added, 3.40-3.56 V); no v4 point moved"
-  }
- ]
+ "entries": []
 }

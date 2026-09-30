@@ -36,6 +36,47 @@
    "finding": "R3-6",
    "note": "follows from curves/1/usable (see that entry)",
    "date": "2026-09-28"
+  },
+  {
+   "part": "WSR3090_LCSC_C719278",
+   "kind": "refreeze",
+   "dir": "v7",
+   "superseded_sha256": {
+    "panel.json": "97a526891a14daeeffb6b0947cd2d9e086bcd14fca28cf3cdd9db02486d58205",
+    "points_c0.csv": "8c79c27dcdcbfb8fbfa425cfc7ebdb5fac384f84c44af9b2499a441401377327",
+    "points_c1.csv": "de2b4b81a4a8b7035d0a96950a18a44f6d69c5dce1f9e52b403e2f46c5653bd8",
+    "points_c2.csv": "b430b69e916da959442929763b63c97d6c2063eccf72c4d02d431b056b34ee94"
+   },
+   "finding": "F4-3 (temperatures bound by the label arrows), F5-2 rendering, F6-1 (42 gap-traced points at four grid-rule crossings)",
+   "note": "Re-verified by Fab on the batch15_v7 review packet (rds-vgs/review/rds-vgs-v7-001.html), his words 2026-09-30: \"all green\". Earlier: v6 \"the rest is PASS\" and \"fix the other four too\" for the F6-1 stretches. Frozen from batch15_v7 (commit 2481153 output; a944bcd reproduces it).",
+   "date": "2026-09-30"
+  },
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "kind": "refreeze",
+   "dir": "v7",
+   "superseded_sha256": {
+    "panel.json": "977b213a6030d3515fd72d4682928d96f5a20430ecfbdae152516a14c9bec600",
+    "points_c0.csv": "57c447cf80c091cc785663798364a9c50e59557a022cdb69f9f736877b3e9470",
+    "points_c1.csv": "cbe9b882e688e31e455002f900e7540bcc8dbd7a41047a4cdd58b4322339a563",
+    "points_c2.csv": "605deccf41a4f131bbdd6fd1721eafaf78fa17f71b93ee663cdcdd4b8ce096e4"
+   },
+   "finding": "F4-4 (2 curves for 2 printed curves), F5-1 (I_D bound by the order rule: c1 = 8.0 A, c0 = 4.0 A; kind Ta from the box), frame-traced right ends, F6-1 (18 gap-traced points)",
+   "note": "Re-verified by Fab on the batch15_v7 review packet (rds-vgs/review/rds-vgs-v7-001.html), his words 2026-09-30: \"all green\". Earlier: v6 \"the rest is PASS\" and \"fix the other four too\" for the F6-1 stretches. Frozen from batch15_v7 (commit 2481153 output; a944bcd reproduces it).",
+   "date": "2026-09-30"
+  },
+  {
+   "part": "BRCS020N03RA_LCSC_C22449012",
+   "kind": "refreeze",
+   "dir": "v7",
+   "superseded_sha256": {
+    "panel.json": "622132bf942379844b83c4c1d058bc58b499e681a76131087133f630740378ed",
+    "points_c0.csv": "1c9b61b8e26cfd42bb5fe528aaac94287869108c95605b7a0c9f3ce0edb5465f",
+    "points_c1.csv": "556b0448d37d1ab9d5f3b9f31066af5a69b3387fd2940ef7ba2b33361fe134ec"
+   },
+   "finding": "F4-1 (steep head to the frame), F5-3 (125/25 C bound by the order rule, kind unspecified), frame-traced right ends (10 V row verified), F6-1 (2 gap-traced points)",
+   "note": "Re-verified by Fab on the batch15_v7 review packet (rds-vgs/review/rds-vgs-v7-001.html), his words 2026-09-30: \"all green\". Earlier: v6 \"the rest is PASS\" and \"fix the other four too\" for the F6-1 stretches. Frozen from batch15_v7 (commit 2481153 output; a944bcd reproduces it).",
+   "date": "2026-09-30"
   }
  ]
 }

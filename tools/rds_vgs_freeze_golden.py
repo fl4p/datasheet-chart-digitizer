@@ -8,8 +8,14 @@ It only ever CREATES a panel's fixture. An existing fixture is never
 rewritten: a deliberate change to a golden panel is recorded as an explicit
 re-blessing in `tests/fixtures/rds_vgs_golden/REBLESSED.json`, with a note.
 
+A panel Fab re-verifies after its output changed is RE-FROZEN: `--refreeze DIR`
+writes the new output to `<part>/DIR/` beside the untouched original and prints
+the REBLESSED.json entry (kind "refreeze") that points the test at it. The entry
+pins the SHA-256 of the files it supersedes, so it goes stale if they change.
+
 Usage (from the repo root):
     python tools/rds_vgs_freeze_golden.py RUN_JSON MANIFEST_JSON PART [PART ...]
+    python tools/rds_vgs_freeze_golden.py --refreeze DIR RUN_JSON MANIFEST_JSON PART [PART ...]
 """
 
 from __future__ import annotations
@@ -31,11 +37,19 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def freeze(run: dict, manifest: dict, part: str) -> None:
+def freeze(run: dict, manifest: dict, part: str, refreeze: str | None = None) -> dict | None:
     entry = next(p for p in manifest["parts"] if p["part"] == part)
     row = next(p for p in run["panels"]
                if p["part"] == part and p["page"] == entry["page"] and str(p["diagram"]) == str(entry["figure"]))
-    target = GOLDEN / part
+    superseded = None
+    if refreeze:
+        base = GOLDEN / part
+        if not (base / "panel.json").is_file():
+            raise SystemExit(f"{base} has no frozen panel to re-freeze; freeze it without --refreeze")
+        superseded = {f.name: sha256(f) for f in sorted(base.iterdir()) if f.is_file()}
+        target = base / refreeze
+    else:
+        target = GOLDEN / part
     if target.exists():
         raise SystemExit(f"{target} exists: golden fixtures are never rewritten; re-bless in REBLESSED.json")
     target.mkdir(parents=True)
@@ -86,14 +100,23 @@ def freeze(run: dict, manifest: dict, part: str) -> None:
             writer.writerow(["vgs_v", "rds_mohm", "crop_x_px", "crop_y_px"])
             for (vgs, rds), (x, y) in zip(curve["points"], curve["points_px"]):
                 writer.writerow([vgs, rds, x, y])
-    print(f"froze {part}: page {row['page']} fig {row['diagram']}, {len(row['curves'])} curves")
+    print(f"froze {part}: page {row['page']} fig {row['diagram']}, {len(row['curves'])} curves"
+          + (f" -> {target.relative_to(GOLDEN)}" if refreeze else ""))
+    if superseded is None:
+        return None
+    return {"part": part, "kind": "refreeze", "dir": refreeze, "superseded_sha256": superseded}
 
 
 def main() -> None:
-    run = json.loads(Path(sys.argv[1]).read_text())
-    manifest = json.loads(Path(sys.argv[2]).read_text())
-    for part in sys.argv[3:]:
-        freeze(run, manifest, part)
+    args = sys.argv[1:]
+    refreeze = None
+    if args[:1] == ["--refreeze"]:
+        refreeze, args = args[1], args[2:]
+    run = json.loads(Path(args[0]).read_text())
+    manifest = json.loads(Path(args[1]).read_text())
+    entries = [freeze(run, manifest, part, refreeze) for part in args[2:]]
+    if refreeze:
+        print(json.dumps([e for e in entries if e], indent=1))
 
 
 if __name__ == "__main__":
