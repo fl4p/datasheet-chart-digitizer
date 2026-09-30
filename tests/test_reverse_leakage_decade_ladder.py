@@ -138,13 +138,13 @@ class ServedUnitTests(unittest.TestCase):
             _current_unit_scale(self.panel("IR (A)"), axis)
 
 
-    def test_rotated_title_unit_is_read_from_crop_words(self):
+    def test_rotated_title_unit_is_read_from_the_owned_y_title(self):
         panel = self.panel("T = 25 °C Tj=50°C 20 40 60")
-        self.assertEqual(_current_unit_scale(panel, None, ("IR,", "Current", "(µA)")), (1e-6, "uA"))
+        self.assertEqual(_current_unit_scale(panel, None, "IR, Reverse Current (µA)"), (1e-6, "uA"))
         with self.assertRaisesRegex(ValueError, "cannot read"):
-            _current_unit_scale(panel, None, ("IR,", "Current"))
+            _current_unit_scale(panel, None, "IR, Reverse Current")
         with self.assertRaisesRegex(ValueError, "different current units"):
-            _current_unit_scale(panel, None, ("(µA)", "[nA]"))
+            _current_unit_scale(panel, None, "IR (µA) [nA]")
 
 
 class GluedTemperatureTokenTests(unittest.TestCase):

@@ -819,7 +819,16 @@ def _extract_vector_curve_series(
     *,
     curve_spans_x: bool = False,
     expected_curve_count: int | None = None,
+    split_merged_drawings: bool = False,
 ) -> list[ExtractedVectorCurve]:
+    """Vector curves inside *plot*, one record per source drawing.
+
+    *split_merged_drawings* (opt-in): a single source drawing may hold
+    several disjoint subpaths that EACH pass the full-span gate (one path
+    object carrying the whole family). Those become separate curves instead of
+    keeping only the longest; a drawing with one spanning component is
+    handled exactly as without the flag.
+    """
     image = cv2.imread(str(crop_path), cv2.IMREAD_GRAYSCALE)
     if image is None:
         raise RuntimeError(f"could not read crop: {crop_path}")
@@ -839,13 +848,23 @@ def _extract_vector_curve_series(
             edges = _vector_curve_edges([drawing], rect, min_stroke_width=0.4)
             components = _chain_vector_components(edges)
             if components:
-                paths.append(
-                    (
-                        max(components, key=len),
-                        _dash_pattern(drawing),
-                        float(drawing.get("width") or 0.0),
+                spanning = [
+                    component
+                    for component in components
+                    if split_merged_drawings
+                    and len(component) >= 2
+                    and _vector_group_span_status(
+                        component, rect, curve_spans_x, expected_curve_count
+                    )[0]
+                ]
+                for component in spanning if len(spanning) >= 2 else [max(components, key=len)]:
+                    paths.append(
+                        (
+                            component,
+                            _dash_pattern(drawing),
+                            float(drawing.get("width") or 0.0),
+                        )
                     )
-                )
             elif _excluded_wide_curve(
                 drawing, rect, curve_spans_x, expected_curve_count
             ):

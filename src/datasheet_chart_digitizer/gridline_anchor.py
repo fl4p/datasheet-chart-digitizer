@@ -71,6 +71,14 @@ _MAX_SCALE_DISAGREEMENT = 0.08
 _LOG_MINOR_UNEXPLAINED_MAX = 0.30
 # A tick mark must be ink over this fraction of its band beside the frame.
 _TICK_MARK_MIN_FILL = 0.80
+# Opt-in major-rule evidence for a tied registration: every rule one
+# hypothesis binds (and its rival does not) must carry at least this multiple
+# of the ink per unit length of every rule the rival binds. Two, not a small
+# margin: at 220 dpi an equal hairline straddling two pixel columns can read
+# ~1.6x the ink of one seated on a column (set1 0002: minors 110..220 vs
+# majors 135..390 -- NOT separable, stays refused). set1 0105 (solid majors
+# 89..510 vs dotted minors 4..11) is the kind of evidence this admits.
+_MAJOR_RULE_MASS_RATIO = 2.0
 # Dotted/dashed rules (opt-in evidence level, see ``line_evidence_attempts``):
 # a column is a broken rule when its ink covers at least this fraction of the
 # plot span ...
@@ -118,6 +126,7 @@ class AnchoredAxis:
     anchors: tuple[TickAnchor, ...]
     tolerance_px: float
     unlined: tuple[AxisTick, ...] = ()
+    registration_evidence: str = "label_offset"
 
     @property
     def max_served_error_px(self) -> float:
@@ -128,6 +137,7 @@ class AnchoredAxis:
             "pixel_source": "observed_gridline_or_tick_mark",
             "label_role": "value_identity_only",
             "residual_basis": "observed_lines",
+            "registration_evidence": self.registration_evidence,
             "tolerance_px": round(self.tolerance_px, 3),
             "max_served_error_px": round(self.max_served_error_px, 3),
             "identity_only_labels": [
@@ -166,6 +176,7 @@ def anchor_axis_on_grid(
     ink_threshold: int = _INK_THRESHOLD,
     unlined_labels: UnlinedPolicy = "refuse",
     broken_rules: bool = False,
+    major_rule_weight: bool = False,
 ) -> AnchoredAxis:
     """Re-seat *label_axis*'s ticks on observed lines, re-fit, and assert.
 
@@ -194,6 +205,7 @@ def anchor_axis_on_grid(
         ink_threshold=ink_threshold,
         unlined_labels=unlined_labels,
         broken_rules=broken_rules,
+        major_rule_weight=major_rule_weight,
     )
     anchored_ticks = [
         AxisTick(tick.text, tick.value, line_px, tick.normalized_text)
@@ -211,7 +223,9 @@ def anchor_axis_on_grid(
         )
         for tick, line_px, source in zip(match.ticks, match.line_px, match.sources)
     )
-    result = AnchoredAxis(axis, anchors, match.tolerance_px, match.unlined)
+    result = AnchoredAxis(
+        axis, anchors, match.tolerance_px, match.unlined, match.registration_evidence
+    )
     if result.max_served_error_px > match.tolerance_px:
         worst = max(anchors, key=lambda anchor: abs(anchor.served_error_px))
         raise RuntimeError(
@@ -230,6 +244,7 @@ class TickLineMatch:
     sources: tuple[str, ...]
     tolerance_px: float
     unlined: tuple[AxisTick, ...]  # identity-only labels with no line under them
+    registration_evidence: str = "label_offset"
 
 
 def identify_tick_lines(
@@ -243,6 +258,7 @@ def identify_tick_lines(
     ink_threshold: int = _INK_THRESHOLD,
     unlined_labels: UnlinedPolicy = "refuse",
     broken_rules: bool = False,
+    major_rule_weight: bool = False,
 ) -> TickLineMatch:
     """Bind each labelled tick to the observed gridline or tick mark it names.
 
@@ -253,6 +269,13 @@ def identify_tick_lines(
     label with no line near it (unless *unlined_labels* admits it as
     identity-only), no registration that seats every tick, two equally good
     registrations, or line order disagreeing with label order.
+
+    *major_rule_weight* (opt-in) lets POSITIVE evidence settle a tie that the
+    label offset cannot: if every rule one tied registration binds is heavier
+    (ink per unit length, ``_MAJOR_RULE_MASS_RATIO``) than every rule each
+    rival binds, the labels name that registration's major rules. The
+    ambiguity threshold itself is unchanged; without such a margin, or with a
+    tick mark among the disputed lines, the tie still refuses.
     """
     ticks = sorted(label_ticks, key=lambda tick: tick.pixel)
     if len(ticks) < 2:
@@ -306,13 +329,27 @@ def identify_tick_lines(
     hypotheses.sort(key=lambda h: (-h[0], h[1]))
     best = hypotheses[0]
     ambiguity = max(2.0, 0.1 * pitch)
-    for other in hypotheses[1:]:
-        if other[2] != best[2] and other[0] == best[0] and other[1] - best[1] < ambiguity:
+    tied = [
+        other for other in hypotheses[1:]
+        if other[2] != best[2] and other[0] == best[0] and other[1] - best[1] < ambiguity
+    ]
+    evidence = "label_offset"
+    if tied:
+        heavier = (
+            _heavier_rule_registration(
+                gray, lines, [best, *tied], orientation, cross_span
+            )
+            if major_rule_weight
+            else None
+        )
+        if heavier is None:
+            other = tied[0]
             raise AmbiguousRegistration(
                 f"{name}: two grid registrations explain the labels equally well "
                 f"(mean label offset {best[1]:.1f}px vs {other[1]:.1f}px); refusing "
                 "to pick a gridline by proximity alone"
             )
+        best, evidence = heavier, "major_rule_weight"
     kept = [tick for tick, i in zip(ticks, best[2]) if i >= 0]
     unlined = [tick for tick, i in zip(ticks, best[2]) if i < 0]
     matched = [i for i in best[2] if i >= 0]
@@ -328,6 +365,7 @@ def identify_tick_lines(
         tuple(lines[i].source for i in matched),
         match_tol,
         tuple(unlined),
+        evidence,
     )
 
 
@@ -447,6 +485,63 @@ def check_served_on_grid(
         match.tolerance_px,
         tuple(rows),
     )
+
+
+def _rule_mass(
+    gray: np.ndarray,
+    line: ObservedLine,
+    orientation: Orientation,
+    cross_span: tuple[float, float],
+) -> float:
+    """Typical ink (255 - grey) per unit length along one rule's run.
+
+    Summed across the rule's width, so an anti-aliased rule split over two
+    pixel columns weighs the same as one seated on a single column.
+    """
+    image = gray if orientation == "x" else gray.T
+    c0 = max(0, int(math.floor(cross_span[0])))
+    c1 = min(image.shape[0], int(math.ceil(cross_span[1])) + 1)
+    half = int(math.ceil(line.width_px / 2.0)) + 1
+    a0 = max(0, int(round(line.center_px)) - half)
+    a1 = min(image.shape[1], int(round(line.center_px)) + half + 1)
+    band = 255.0 - image[c0:c1, a0:a1].astype(float)
+    # median over the run: a curve, label or crossing rule that overlaps a
+    # few rows must not make a minor rule look like a major one
+    return float(np.median(band.sum(axis=1))) if band.size else 0.0
+
+
+def _heavier_rule_registration(gray, lines, tied, orientation, cross_span):
+    """The one tied registration whose disputed rules all outweigh every rival's.
+
+    Only lines a registration binds and its rival does not are compared, and
+    only solid gridlines (a tick mark or dotted rule is not comparable ink);
+    each side needs at least two such rules. Returns None (the tie stands)
+    unless exactly one registration wins against every other by
+    ``_MAJOR_RULE_MASS_RATIO``.
+    """
+
+    def masses(indices):
+        rules = [i for i in indices if lines[i].source == "gridline"]
+        if len(rules) < 2:
+            return None
+        return [_rule_mass(gray, lines[i], orientation, cross_span) for i in rules]
+
+    winners = []
+    for candidate in tied:
+        wins = True
+        for rival in tied:
+            if rival is candidate:
+                continue
+            own_lines = {i for i in candidate[2] if i >= 0}
+            rival_lines = {i for i in rival[2] if i >= 0}
+            mine = masses(sorted(own_lines - rival_lines))
+            theirs = masses(sorted(rival_lines - own_lines))
+            if not mine or not theirs or min(mine) < _MAJOR_RULE_MASS_RATIO * max(theirs):
+                wins = False
+                break
+        if wins:
+            winners.append(candidate)
+    return winners[0] if len(winners) == 1 else None
 
 
 def _register(

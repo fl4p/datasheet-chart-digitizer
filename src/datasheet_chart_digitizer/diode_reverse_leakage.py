@@ -50,6 +50,8 @@ import numpy as np
 
 import pymupdf
 
+from .axis_title_identity import frame_owned_axis_titles
+from .capacitance_plot_box import find_closed_frame_plot_box
 from .capacitance_types import PlotBox
 from .crop_transform import CropTransform
 from .diode_forward_voltage import (
@@ -63,7 +65,12 @@ from .diode_forward_voltage import (
     _panel_temperatures,
 )
 from .find_charts import ChartPanel, process_pdf
-from .gridline_anchor import AnchoredAxis, anchor_axis_on_grid, served_pixel
+from .gridline_anchor import (
+    AmbiguousRegistration,
+    AnchoredAxis,
+    anchor_axis_on_grid,
+    served_pixel,
+)
 from .numeric_axis import NumericAxis, fit_numeric_axis, parse_tick_text, tick_aligned_plot
 from .overlay import draw_axis_ticks, draw_plot_frame
 
@@ -126,7 +133,7 @@ def digitize_panels_fail_closed(
 def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     """Digitize one already-owned reverse-leakage panel, or refuse."""
     crop_path = out_dir / panel.crop_png
-    calibration, anchoring, crop_words = _calibrate(panel, crop_path)
+    calibration, anchoring, y_title = _calibrate(panel, crop_path)
     _require_reverse_leakage_axes(calibration)
 
     temperatures = _panel_temperatures(panel)
@@ -142,6 +149,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         calibration.plot,
         curve_spans_x=True,
         expected_curve_count=len(temperatures),
+        split_merged_drawings=True,
     )
     curves_px = [curve.points_px for curve in extracted]
     if len(curves_px) != len(temperatures):
@@ -151,7 +159,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         )
 
     current_scale, current_unit = _current_unit_scale(
-        panel, calibration.y_axis, crop_words
+        panel, calibration.y_axis, y_title
     )
     assigned = _assign_by_monotone_order(
         curves_px, calibration, temperatures, current_scale
@@ -198,7 +206,7 @@ _SI_PREFIXES = {
 def _current_unit_scale(
     panel: ChartPanel,
     y_axis: NumericAxis | None = None,
-    crop_words: tuple[str, ...] = (),
+    owned_y_title: str = "",
 ) -> tuple[float, str]:
     """Read the current axis's SI prefix from the panel's own axis title.
 
@@ -217,7 +225,7 @@ def _current_unit_scale(
     this plugin exists to prevent, so a panel whose current unit cannot be read
     is refused rather than guessed.
     """
-    prefix = _title_current_prefix(panel.text, crop_words)
+    prefix = _title_current_prefix(panel.text, owned_y_title)
     self_dimensioned = [
         tick for tick in (y_axis.ticks if y_axis else ())
         if tick.normalized_text and tick.normalized_text.endswith("A")
@@ -246,13 +254,14 @@ def _current_unit_scale(
 _WRAPPED_CURRENT_UNIT = r"[(\[]\s*([pnum]?)\s*A\s*[)\]]"
 
 
-def _title_current_prefix(panel_text: str, crop_words: tuple[str, ...]) -> str | None:
+def _title_current_prefix(panel_text: str, owned_y_title: str) -> str | None:
     """The SI prefix of the current axis title ("" for plain A), or None.
 
-    The finder's panel text is searched first. A ROTATED axis title is not in
-    that text, only in the crop's words, so those are the fallback: a word
-    ending in a wrapped current unit ("(µA)", "IR[nA]"). The crop must name
-    exactly one such unit; two different ones refuse rather than pick.
+    The finder's panel text is searched first. A ROTATED or clipped axis
+    title is often not in that text; the fallback is the Y-axis title this
+    panel's plot frame geometrically OWNS (``axis_title_identity``), which
+    never takes a neighbour's title. It must name exactly one wrapped current
+    unit ("(µA)", "IR[nA]"); two different ones refuse rather than pick.
     """
     text = panel_text.replace("μ", "u").replace("µ", "u")
     match = re.search(
@@ -262,14 +271,13 @@ def _title_current_prefix(panel_text: str, crop_words: tuple[str, ...]) -> str |
         return match.group(1)
     units = {
         found.group(1)
-        for word in crop_words
-        if (found := re.search(
-            _WRAPPED_CURRENT_UNIT + "$", word.replace("μ", "u").replace("µ", "u")
-        ))
+        for found in re.finditer(
+            _WRAPPED_CURRENT_UNIT, owned_y_title.replace("μ", "u").replace("µ", "u")
+        )
     }
     if len(units) > 1:
         raise ValueError(
-            f"the panel crop names {len(units)} different current units "
+            f"the owned Y-axis title names {len(units)} different current units "
             f"({', '.join(sorted(u + 'A' for u in units))}); refusing to pick one"
         )
     return units.pop() if units else None
@@ -277,7 +285,7 @@ def _title_current_prefix(panel_text: str, crop_words: tuple[str, ...]) -> str |
 
 def _calibrate(
     panel: ChartPanel, crop_path: Path
-) -> tuple[PanelCalibration, dict[str, AnchoredAxis], tuple[str, ...]]:
+) -> tuple[PanelCalibration, dict[str, AnchoredAxis], str]:
     """Identify ticks from LABEL GEOMETRY, then anchor them on the GRIDLINES.
 
     ``diode_forward_voltage.calibrate_panel`` selects tick ladders from bands
@@ -374,14 +382,14 @@ def _calibrate(
     # the gridlines under them. Each axis's lines are measured across the span
     # the OTHER axis's labels cover, which is the plot's extent on that axis.
     x_label_px = [tick.pixel for tick in x_axis.ticks]
-    anchored_x = anchor_axis_on_grid(
+    anchored_x = _anchor_solid_then_broken(
         image,
         x_axis,
         orientation="x",
         cross_span=(min(y_positions), max(y_positions)),
         name="X axis",
     )
-    anchored_y = anchor_axis_on_grid(
+    anchored_y = _anchor_solid_then_broken(
         image,
         y_axis,
         orientation="y",
@@ -395,12 +403,75 @@ def _calibrate(
         int(round(max(tick.pixel for tick in x_axis.ticks))),
         int(round(max(tick.pixel for tick in y_axis.ticks))),
     )
-    plot = tick_aligned_plot(x_axis, y_axis, hint)
+    frame = _frame_around_ticks(image, x_axis, y_axis)
+    plot = frame if frame is not None else tick_aligned_plot(x_axis, y_axis, hint)
     calibration = PanelCalibration(
-        plot, x_axis, y_axis, hint, "label_identity_gridline_anchored"
+        plot,
+        x_axis,
+        y_axis,
+        hint,
+        "label_identity_gridline_anchored"
+        + ("/closed_frame_extent" if frame is not None else ""),
     )
-    crop_words = tuple(label.text for label in in_rows if 0 <= label.cx <= width)
-    return calibration, {"x": anchored_x, "y": anchored_y}, crop_words
+    with pymupdf.open(panel.pdf) as doc:
+        y_title = frame_owned_axis_titles(doc[panel.page - 1], transform, lambda: plot)[1]
+    return calibration, {"x": anchored_x, "y": anchored_y}, y_title
+
+
+# A dropped edge label plus a partial last interval can put the frame up to
+# this many label steps beyond the outermost labelled tick (set1 0163: labels
+# 0..80 V, frame at 104 V = 1.2 steps). Farther than that, the "frame" is not
+# this axis's frame.
+_FRAME_BEYOND_TICK_MAX_STEPS = 1.5
+
+
+def _frame_around_ticks(image, x_axis: NumericAxis, y_axis: NumericAxis) -> PlotBox | None:
+    """The closed plot frame, if it encloses every anchored tick closely.
+
+    Curves run to the FRAME, not to the last labelled tick; bounding the
+    extraction at the tick extent cuts off a curve whose top decade or last
+    volts carry no label, and the family then counts one curve short. The
+    frame only BOUNDS extraction -- calibration stays on the anchored ticks --
+    and is accepted only when it contains every tick and lies within
+    ``_FRAME_BEYOND_TICK_MAX_STEPS`` label steps of the outermost ones on
+    every side; otherwise the tick extent is used as before.
+    """
+    try:
+        frame = find_closed_frame_plot_box(image)
+    except (RuntimeError, ValueError):
+        return None
+    for axis, low, high in ((x_axis, frame.x0, frame.x1), (y_axis, frame.y0, frame.y1)):
+        pixels = sorted(tick.pixel for tick in axis.ticks)
+        step = float(np.median(np.diff(pixels)))
+        limit = _FRAME_BEYOND_TICK_MAX_STEPS * step + 2.0
+        if not (0.0 <= pixels[0] - low + 2.0 and pixels[0] - low <= limit):
+            return None
+        if not (0.0 <= high - pixels[-1] + 2.0 and high - pixels[-1] <= limit):
+            return None
+    return frame
+
+
+def _anchor_solid_then_broken(image, axis: NumericAxis, **kwargs) -> AnchoredAxis:
+    """Anchor on solid rules; only if NONE seat the labels, on dotted/dashed ones.
+
+    Same contract at both levels: every labelled tick must sit on an observed
+    line and the served mapping is asserted at each. Dotted rules
+    (``line_source == "broken_rule"``) are evidence only after the solid level
+    failed to bind, so a chart that binds today is decided exactly as before;
+    an AMBIGUOUS solid binding is final and never retried on weaker evidence.
+    A tie may be settled only by positive major-rule weight evidence
+    (``major_rule_weight``), never by a looser ambiguity threshold.
+    """
+    kwargs["major_rule_weight"] = True
+    try:
+        return anchor_axis_on_grid(image, axis, **kwargs)
+    except AmbiguousRegistration:
+        raise
+    except RuntimeError as solid:
+        try:
+            return anchor_axis_on_grid(image, axis, broken_rules=True, **kwargs)
+        except RuntimeError as broken:
+            raise RuntimeError(f"{solid}; with dotted/dashed rules: {broken}") from broken
 
 
 def _fit_ladder(
