@@ -64,6 +64,7 @@ from .finder_caption_geometry import (
 from .numeric_axis import NumericAxis, axis_to_json, tick_aligned_plot
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .rds_source_labels import VGS_RE as _VGS_RE
+from .rds_source_labels import count_only_binding_refusal as _count_only_binding_refusal
 from .rds_source_labels import vgs_label_rows as _vgs_label_rows
 
 REFERENCE_TEMPERATURE_C = 25.0
@@ -1145,6 +1146,9 @@ def _legend_entries(
             DIAG_LEGEND_VGS_MISSING, "legend: no local VGS labels"
         )
     if len(rows) == 1 and len(traces) == 1:
+        refusal = _count_only_binding_refusal(panel, rows[0][0])
+        if refusal:
+            raise CurveBindingError(DIAG_CURVE_BINDING, refusal)
         gate_voltage, _label_x0, row_y = rows[0]
         return [LegendEntry(gate_voltage, traces[0].style_key, row_y)]
 
