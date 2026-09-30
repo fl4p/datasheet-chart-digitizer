@@ -65,8 +65,8 @@ _RDS_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 _KIND_BY_CONDITION = {"TJ": "Tj", "TC": "Tc", "TA": "Ta"}
-# "(Ta = 25°C unless ...)", "@ TJ = 25°C", "Electrical Characteristics(Ta=25℃)"
-_HEADING_TEMPERATURE_RE = re.compile(r"\bT\s*([JjCcAa])\s*=\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)")
+# "(Ta = 25°C unless ...)", "@ TJ = 25°C", "Electrical Characteristics(Ta=25℃)", "(at Tamb = 25°C ...)"
+_HEADING_TEMPERATURE_RE = re.compile(r"\bT\s*([JjCcAa])(?:mb)?\s*=\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)")
 _EXCLUDED_CONDITIONS = {"VDS", "VDD", "RG", "RGEN", "IS", "ISD", "IF", "F", "RL"}
 _HEADER_TOKENS = {
     "min": re.compile(r"^min(?:imum)?\.?$", re.I),
@@ -444,7 +444,9 @@ def _headers(lines: list[_Line]) -> list[tuple[float, dict[str, float]]]:
             for name, pattern in _HEADER_TOKENS.items():
                 if pattern.match(word.text.strip()) and name not in columns:
                     columns[name] = 0.5 * (word.x0 + word.x1)
-        if "typ" in columns and ("max" in columns or "min" in columns):
+        # Min/Typ/Max, Typ/Max, Min/Typ -- or Min/Max with no typical column
+        # (Zetex ZVNL120A: "MIN. MAX.")
+        if ("typ" in columns and ("max" in columns or "min" in columns)) or {"min", "max"} <= set(columns):
             headers.append((_cy(line), columns))
     return headers
 
