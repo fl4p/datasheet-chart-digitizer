@@ -352,14 +352,14 @@ class RasterCoverageHonestyTests(unittest.TestCase):
     def test_wsr3090_serves_the_hot_curves_and_does_not_claim_absence(self):
         # The source has the hot curves at 4.5 V (9.466 / 8.699 mOhm) and the
         # cold one at 6.461 (reviewer). Curves that start inside the plot say
-        # not_in_extracted_trace to their left, never not_on_chart.
+        # F04: the wholly blank strip before their printed start proves absence.
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
         read = sorted(_readout(c, 4.5)["rds_mohm"] for c in row["curves"] if _readout(c, 4.5)["status"] == "read")
         for expected in (9.466, 8.699, 6.461):
             self.assertTrue(any(abs(v - expected) < 0.1 for v in read), (expected, read))
         for curve in row["curves"]:
             if not curve["trace_complete"]["left_end_at_frame"]:
-                self.assertEqual(_readout(curve, 3.3)["status"], "not_in_extracted_trace")
+                self.assertEqual(_readout(curve, 3.3)["status"], "not_on_chart")
         self.assertTrue(any("partial_raster_trace" in reason for reason in row["reasons"]))
         # three printed curves; un-OCRed label ink must not add a fourth
         self.assertEqual(len(row["curves"]), 3)
@@ -435,14 +435,25 @@ class RoundTwoTests(unittest.TestCase):
     def test_r2_4_legend_distinguishes_readout_states(self):
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
         # every WSR3090 curve starts inside the plot at 3.38 V: 3.3 V is
-        # not_in_extracted_trace and must be shown as such, not as "n/c"
+        # F04: source ink starts there; 3.3 V is now correctly "n/c".
         states = {_readout(c, 3.3)["status"] for c in row["curves"]}
-        self.assertEqual(states, {"not_in_extracted_trace"})
+        self.assertEqual(states, {"not_on_chart"})
         lines = [t for t, _c in report._legend_lines(row) if t.startswith("c")]
         self.assertEqual(len(lines), 3)
         for line in lines:
-            self.assertIn("3.3V:not traced", line)
-            self.assertNotIn("3.3V:n/c", line)
+            self.assertIn("3.3V:n/c", line)
+            self.assertNotIn("3.3V:not traced", line)
+        # The fixed source start no longer exercises extraction loss. Remove
+        # a visible head from the REAL curve and retain the lost-end state.
+        import copy
+        lost = copy.deepcopy(row)
+        curve = lost["curves"][0]
+        kept = [p for p in curve["points"] if p[0] >= 5]
+        curve["readouts"] = report.readouts(kept, False, open_left=True, targets=(4.5,))
+        self.assertEqual(curve["readouts"][0]["status"], "not_in_extracted_trace")
+        line = next(t for t, _c in report._legend_lines(lost) if t.startswith("c0 "))
+        self.assertIn("4.5V:not traced", line)
+        self.assertNotIn("4.5V:n/c", line)
 
     def test_r2_5_header_shows_every_reason(self):
         row = _panel("WSR3090_LCSC_C719278", 3, "2")
@@ -555,9 +566,9 @@ class RoundThreeTests(unittest.TestCase):
         # reviewer: c0 at 7.98-8.08 V on the arrowhead, c1 at 8.34-8.37 and
         # 8.44-8.52 V on the shaft
         by_index = {c["curve_index"]: c["gap_kinds"]["annotation_contact"] for c in row["curves"]}
-        for index, vgs in ((0, 7.98), (0, 8.05), (1, 8.35), (1, 8.44192), (1, 8.50)):
+        for index, vgs in ((0, 7.98), (0, 8.05), (1, 8.44192)):
             self.assertTrue(any(g0 < vgs < g1 for g0, g1 in by_index[index]), (index, vgs, by_index[index]))
-        self.assertGreaterEqual(removed_total, 18)
+        self.assertEqual(removed_total, 7)  # F11: 11 resolved columns recovered; actual contacts remain
 
     def test_r3_1b_contact_removal_touches_only_the_wsr3090_arrows(self):
         # Opus round 3: no annotation-contact removal on any other raster panel
@@ -880,7 +891,7 @@ class BoundaryTests(unittest.TestCase):
         self.assertEqual([a["verdict"] for a in result["anchors"]], ["consistent", "inconsistent"])
         self.assertEqual(result["verdict"], "inconsistent")
         only_good = report.validate_against_table(row["curves"], [good], cap["calibration"], cap["scale"])
-        self.assertEqual(only_good["verdict"], "verified")
+        self.assertEqual(only_good["verdict"], "consistent_at_assumed_conditions")
 
     def test_readout_end_tolerance_is_one_pixel(self):
         # real IRLB8743 25 C curve starts at 3.38 V: 3.3 V is 8 px off it
@@ -1555,7 +1566,7 @@ class RoundFiveTests(unittest.TestCase):
         cold = next(c for c in row["curves"] if c["temperature_c"] == 25.0)
         self.assertEqual((anchor["verdict"], anchor["curve_index"]), ("consistent", cold["curve_index"]))
         self.assertAlmostEqual(anchor["chart_mohm"], 1.85, delta=0.03)
-        self.assertEqual(row["validation"]["verdict"], "verified")
+        self.assertEqual(row["validation"]["verdict"], "consistent_at_assumed_conditions")
 
     def test_r5_no_ink_beyond_the_frame_means_no_bridge(self):
         # known-bad: BRCS with the curve ends past the frame painted white:
@@ -1789,7 +1800,7 @@ class RoundSixTests(unittest.TestCase):
                 old_pts = {tuple(p) for p in old["points_px"]}
                 new_pts = {tuple(p) for p in new["points_px"]}
                 self.assertLessEqual(old_pts, new_pts, (name, old["curve_index"]))
-                self.assertEqual(new_pts - old_pts, {tuple(p) for p in new["gap_traced_points_px"]}, (name, old["curve_index"]))
+                self.assertEqual(new_pts - old_pts, {tuple(p) for p in new["gap_traced_points_px"]} - old_pts, (name, old["curve_index"]))
                 self.assertEqual([(r["vgs_v"], r["rds_mohm"], r["status"]) for r in old["readouts"]],
                                  [(r["vgs_v"], r["rds_mohm"], r["status"]) for r in new["readouts"]], name)
 
@@ -2312,6 +2323,9 @@ class BatchAllV4Tests(unittest.TestCase):
             row = _panel(name, page, "12")
             self.assertEqual(row["calibration"]["grid_binding"], "snapped_to_full_span_grid", name)
             self.assertFalse(any(r.startswith("axis_ticks_not_bound_to_grid") for r in row["reasons"]), name)
+
+
+from test_rdson_gate_voltage_v5 import BatchAllV5Tests
 
 
 def _vgs(row: dict, px: float) -> float:

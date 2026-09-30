@@ -32,6 +32,7 @@ import pymupdf
 from .capacitance_types import PlotBox
 from .rdson_gate_voltage_traces import Label, parse_label_params
 from .region_ocr import _tesseract_words
+from .rdson_gate_voltage_axes import _text_blobs
 
 BOX_MIN_W_PX, BOX_MIN_H_PX = 60, 25       # at 300 dpi: two short text lines
 BOX_MAX_FRACTION = 0.6                    # of the plot, per side: larger is not a legend box
@@ -41,6 +42,77 @@ BOX_RULE_TOLERANCE_PX = 4.0               # an edge this close to a verified rul
 BOX_OCR_SCALE = 4.0
 RULE_ERASE_HALF_PX = 2                    # a verified rule is painted white +-2 px for the rule-free OCR
 SUBSCRIPT_KINDS = {"a": "Ta", "j": "Tj", "c": "Tc"}
+
+
+def isolated_condition_labels(gray, plot, out_dir, panel, stem):
+    """Read isolated text components after tracking, so OCR never moves ink.
+
+    Large connected strokes (curves/grid) are excluded before grouping glyphs.
+    Both line and word OCR must independently parse the same current. No part
+    names, expected current values or temperature defaults enter this reader.
+    """
+    if shutil.which("tesseract") is None:
+        return []
+    ink = (gray < 150).astype(np.uint8)
+    count, components, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+    keep = np.zeros(count, np.uint8)
+    for i, (x, y, w, h, area) in enumerate(stats[1:], 1):
+        if 4 <= h <= 60 and 2 <= w <= 100 and area >= 4 and plot.x0 < x and x + w < plot.x1 and plot.y0 < y and y + h < plot.y1:
+            keep[i] = 1
+    labels = []
+    for n, (x0, y0, x1, y1) in enumerate(_text_blobs(keep[components])):
+        if x1 - x0 < 30 or y1 - y0 < 8:
+            continue
+        pad = 4
+        region = gray[max(0, y0-pad):y1+pad, max(0, x0-pad):x1+pad]
+        up = cv2.resize(region, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        up = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+        target = out_dir / "work" / "condition_ocr" / panel.part / f"{stem}_{n}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), cv2.copyMakeBorder(up, 24, 24, 24, 24, cv2.BORDER_CONSTANT, value=255))
+        votes = []
+        for psm in (7, 8):
+            words = _tesseract_words(target, clip=pymupdf.Rect(0, 0, up.shape[1]+48, up.shape[0]+48),
+                                     scale_x=1, scale_y=1, psm=psm, timeout=30, whitelist=None, min_confidence=0)
+            text = " ".join(t for *_box, t in words).rstrip("_")
+            votes.append((text, parse_label_params(text)))
+        if votes[0][1].get("id_a") is not None and votes[0][1] == votes[1][1]:
+            labels.append(Label(votes[0][0] + " [isolated glyph OCR agreement]", x0, y0, x1, y1, votes[0][1]))
+    return labels
+
+
+def refine_temperature_subscripts(gray, labels, out_dir, panel, stem):
+    """Resolve an unread T subscript from its own glyph, never from another T."""
+    out = []
+    for n, label in enumerate(labels):
+        if label.params.get("temperature_kind") != "T (subscript unread)":
+            out.append(label)
+            continue
+        x0, y0 = max(0, int(label.x0)-4), max(0, int(label.y0)-4)
+        region = gray[y0:int(label.y1)+12, x0:int(label.x1)+4]
+        up = cv2.resize(region, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+        # The thin lowered J can be much paler than the full-size T; an
+        # Otsu threshold removes its vertical stem on WSR3090.
+        binary = cv2.threshold(up, 220, 255, cv2.THRESH_BINARY)[1]
+        target = out_dir / "work" / "subscript_ocr" / panel.part / f"{stem}_{n}.png"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(target), binary)
+        # OCR boxes can include a leader prefix. Look for the T among the
+        # first three components; the existing geometric subscript test and
+        # single-glyph OCR still have to agree, and ambiguity leaves it unread.
+        count, _, stats, _ = cv2.connectedComponentsWithStats((binary < 128).astype(np.uint8), 8)
+        comps = sorted((s for s in stats[1:] if s[4] >= 12), key=lambda s: s[0])
+        readings = []
+        for x, y, w, h, area in comps[:3]:
+            kind, evidence = _read_subscript(binary, (x, y, binary.shape[1]-1, min(binary.shape[0]-4, y + 1.4*h)), target)
+            if kind:
+                readings.append((kind, evidence))
+        if len({k for k, _ in readings}) == 1:
+            kind, evidence = readings[0]
+            label = Label(label.text + f" [subscript read alone: {evidence!r}]", label.x0, label.y0, label.x1, label.y1,
+                          dict(label.params, temperature_kind=kind))
+        out.append(label)
+    return out
 
 
 def _ink(gray) -> np.ndarray:

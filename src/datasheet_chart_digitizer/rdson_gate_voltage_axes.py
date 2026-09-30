@@ -67,6 +67,8 @@ class Calibration:
     tick_scatter_px: float = 0.0
     grid_x: tuple[float, ...] = ()   # full-span vertical rules found (crop px)
     grid_y: tuple[float, ...] = ()   # full-span horizontal rules found (crop px)
+    vector_grid_x: tuple[float, ...] = ()
+    vector_grid_y: tuple[float, ...] = ()
 
 
 def _text_labels(words: PageText, transform: CropTransform, shape) -> list[TextLabel]:
@@ -99,7 +101,7 @@ def _ocr_crop_labels(out_dir: Path, panel: LocatedPanel, stem: str, shape) -> li
     return labels
 
 
-def _ocr_axis_band_labels(gray, plot: PlotBox, out_dir: Path, panel, stem: str) -> list[TextLabel]:
+def _ocr_axis_band_labels(gray, plot: PlotBox, out_dir: Path, panel, stem: str, *, tight=False) -> list[TextLabel]:
     """OCR tick labels blob by blob in the bands left of and below the frame.
 
     Small raster tick labels (a 150 dpi embedded chart) defeat sparse OCR of
@@ -127,10 +129,15 @@ def _ocr_axis_band_labels(gray, plot: PlotBox, out_dir: Path, panel, stem: str) 
         if sub.size == 0:
             continue
         ink = (sub < 150).astype(np.uint8)
-        for index, (bx0, by0, bx1, by1) in enumerate(_text_blobs(ink)):
+        blobs = _text_blobs(ink)
+        if tight:
+            _, _, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
+            blobs += [(int(x), int(y), int(x+w), int(y+h)) for x, y, w, h, area in stats[1:]
+                      if 6 <= h <= 60 and 0.3*h <= w <= 0.8*h and area >= 8]
+        for index, (bx0, by0, bx1, by1) in enumerate(dict.fromkeys(blobs)):
             if not 6 <= by1 - by0 <= 60 or bx1 - bx0 > 8 * (by1 - by0):
                 continue
-            text = _vote_blob_digits(sub, (bx0, by0, bx1, by1), folder / f"{name}_{index:02d}")
+            text = _vote_blob_digits(sub, (bx0, by0, bx1, by1), folder / f"{name}_{index:02d}", pale=tight)
             if text is None:
                 continue
             ax0, ay0, ax1, ay1 = x0 + bx0, y0 + by0, x0 + bx1, y0 + by1
@@ -138,7 +145,7 @@ def _ocr_axis_band_labels(gray, plot: PlotBox, out_dir: Path, panel, stem: str) 
     return labels
 
 
-def _vote_blob_digits(sub, box, stem_path: Path) -> str | None:
+def _vote_blob_digits(sub, box, stem_path: Path, *, pale=False) -> str | None:
     """Read one tick-label blob six ways; keep a reading only if at least half agree."""
     bx0, by0, bx1, by1 = box
     pad = 4
@@ -151,7 +158,10 @@ def _vote_blob_digits(sub, box, stem_path: Path) -> str | None:
         variants.append(up)
         _thr, binary = cv2.threshold(up, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         variants.append(binary)
+        if pale:
+            variants.extend(cv2.threshold(up, level, 255, cv2.THRESH_BINARY)[1] for level in (200, 220, 235))
     readings: list[str] = []
+    word_readings: list[str] = []
     for v_index, variant in enumerate(variants):
         framed = cv2.copyMakeBorder(variant, 24, 24, 24, 24, cv2.BORDER_CONSTANT, value=255)
         target = stem_path.with_name(f"{stem_path.name}_v{v_index}.png")
@@ -164,13 +174,47 @@ def _vote_blob_digits(sub, box, stem_path: Path) -> str | None:
             text = proc.stdout.strip()
             if proc.returncode == 0 and re.fullmatch(r"-?\d+(?:\.\d+)?", text):
                 readings.append(text)
+                if psm == "8":
+                    word_readings.append(text)
     if not readings:
         return None
+    if pale and word_readings:
+        word = max(set(word_readings), key=word_readings.count)
+        if word_readings.count(word) >= 4:
+            restored = _printed_decimal(piece, word)
+            if restored is not None:
+                return restored
     best = max(set(readings), key=readings.count)
     return best if readings.count(best) >= 4 else None
 
 
-def _text_blobs(ink: np.ndarray) -> list[tuple[int, int, int, int]]:
+def _printed_decimal(piece, digits):
+    """Restore a dropped dot only from an isolated baseline dot in the ink.
+
+    Requires one full-height component per voted digit, exactly one small
+    component between them at baseline, and no inferred lattice/value.
+    """
+    if not re.fullmatch(r"\d{2,4}", digits):
+        return None
+    _, _, stats, _ = cv2.connectedComponentsWithStats((piece < 210).astype(np.uint8), 8)
+    comps = [s for s in stats[1:] if s[4] >= 2]
+    if not comps:
+        return None
+    height = max(s[3] for s in comps)
+    glyphs = sorted((s for s in comps if s[3] >= .65*height),key=lambda s:s[0])
+    if len(glyphs) != len(digits):
+        return None
+    baseline = float(np.median([s[1]+s[3] for s in glyphs]))
+    dots = [s for s in comps if s[2] <= .35*height and s[3] <= .35*height
+            and baseline-.35*height <= s[1]+s[3] <= baseline+2
+            and glyphs[0][0]+glyphs[0][2] < s[0] < glyphs[-1][0]]
+    if len(dots) != 1:
+        return None
+    before = sum(s[0]+s[2] < dots[0][0] for s in glyphs)
+    return digits[:before] + "." + digits[before:]
+
+
+def _text_blobs(ink: np.ndarray, gap_fraction=0.6) -> list[tuple[int, int, int, int]]:
     """Bounding boxes of text-line blobs: components merged along a baseline."""
     count, _labels, stats, _ = cv2.connectedComponentsWithStats(ink, 8)
     boxes = [
@@ -185,7 +229,7 @@ def _text_blobs(ink: np.ndarray) -> list[tuple[int, int, int, int]]:
             height = max(box[3] - box[1], other[3] - other[1])
             overlap = min(box[3], other[3]) - max(box[1], other[1])
             gap = box[0] - other[2]
-            if overlap >= 0.5 * min(box[3] - box[1], other[3] - other[1]) and gap <= 0.6 * height:
+            if overlap >= 0.5 * min(box[3] - box[1], other[3] - other[1]) and gap <= gap_fraction * height:
                 other[0], other[1] = min(other[0], box[0]), min(other[1], box[1])
                 other[2], other[3] = max(other[2], box[2]), max(other[3], box[3])
                 break
@@ -349,7 +393,7 @@ def _calibrate(
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
     return Calibration(plot, x_axis, y_axis, source, binding, MAX_AXIS_RESIDUAL_PT * transform.scale_x, scatter,
-                       tuple(float(v) for v in vertical), tuple(float(v) for v in horizontal))
+                       tuple(float(v) for v in vertical), tuple(float(v) for v in horizontal), vector_x, vector_y)
 
 
 def _label_straddles_edge(tick, labels: list[TextLabel], lo: float, hi: float, name: str = "x") -> bool:

@@ -161,8 +161,25 @@ class GoldenTests(unittest.TestCase):
         full unless "curves" is named, and every panel field it does not name.
         A named field must still hold its frozen value in the fixture (else
         the entry is stale) and must now serve exactly the entry's new value."""
+        for name, delta in changed.get("served_metadata", {}).items():
+            value = row
+            for component in name.split("."):
+                value = value.get(component) if isinstance(value, dict) else None
+            self.assertEqual(json.loads(json.dumps(value)), delta["now"], f"{part}: unexpected {name}")
         if "curves" not in changed:
             self._check_served(part, row, golden)
+        elif changed["curves"].get("kind") == "fields_and_points_added":
+            # Explicit metadata changes are pinned in both directions; every
+            # other curve field remains checked. _check_ink_only above still
+            # requires every frozen point and provenance for every addition.
+            import copy
+            restored = copy.deepcopy(row)
+            for field in changed["curves"]["fields"]:
+                i, key = field["curve_index"], field["field"]
+                self.assertEqual(golden["curves"][i][key], field["frozen"], f"{part}: stale frozen {key}")
+                self.assertEqual(row["curves"][i][key], field["now"], f"{part}: unexpected new {key}")
+                restored["curves"][i][key] = field["frozen"]
+            self._check_curves_except_points(part, restored, golden)
         elif changed["curves"].get("kind") == "points_added":
             # only served points were ADDED (F-v2-1 heads): everything else about
             # the curves stays pinned -- count, labels, flags and every readout
@@ -191,6 +208,18 @@ class GoldenTests(unittest.TestCase):
                                          f"{where}: {read['vgs_v']} V")
 
     def _check_calibration(self, part: str, row: dict, golden: dict) -> None:
+        pending = pending_entries().get(part, {}).get("changed_fields", {}).get("calibration")
+        if pending is not None:
+            for axis in ("x_axis", "y_axis"):
+                new = {k: row["calibration"][axis][k] for k in ("model", "m", "b", "ticks")}
+                old = golden["calibration"][axis]
+                self.assertEqual(old, pending["frozen"][axis], f"{part}: stale calibration")
+                self.assertEqual(new, pending["now"][axis], f"{part}: unexpected calibration")
+                for key in ("model", "m", "b"):
+                    self.assertEqual(new[key], old[key], f"{part}: tick inventory must not move the mapping")
+                old_values = {t["value"] for t in old["ticks"]}
+                self.assertTrue(old_values <= {t["value"] for t in new["ticks"]}, f"{part}: consumed tick lost")
+            return
         for axis in ("x_axis", "y_axis"):
             new, old = row["calibration"][axis], golden["calibration"][axis]
             self.assertEqual(new["model"], old["model"], f"{part}: {axis} model")
