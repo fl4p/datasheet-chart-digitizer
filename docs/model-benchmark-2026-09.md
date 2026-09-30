@@ -13,6 +13,7 @@ This compares how well models, and dsdig, read datasheet curves as numbers. The 
 | `cases_vendor.json` | 146 / 436 | **Vendor data**: Infineon IPS JSON (65, OptiMOS/StrongIRFET), Taiyo Yuden web data (51), Murata data (30). Each chart is admitted only if its PDF vertices match the vendor data within 0.1 % of span (Murata raster 0.35 %) | median 0.04 % (Murata 0.23 %) |
 | `cases_rdsvgs.json` | 15 / 31 | The RDS(on)-vs-VGS goldens (Fab-verified through round 7), read from the rds-vgs fixtures | ≈0.5–1 px |
 | `cases_synth_hard.json` | 60 / 174 | `tools/synth_charts` hard/adversarial tier, exact by construction | ≤0.0002 % (vector) |
+| `cases_themes.json` | 37 / 82 | Vector drawing paths of 19 chart styles not covered before: Siemens 1999–2002, IR, IXYS, Philips/NXP, ST closed-outline, CoolMOS C3, CoolSiC, Vishay Si, Littelfuse SiC, EPC and more. Admitted only if every labelled tick lands on its rule within 0.5 px | tick residual median 0.12 px; ≈0.03 % of span (max 0.11 %) |
 
 Infineon IPS covers 285 devices in total, and the benchmark uses 50. Transfer, gate charge, body
 diode and Zth do not match their IPS data within 0.2–5 %, and CoolSiC Coss/Crss is off by
@@ -69,25 +70,43 @@ The following are weak or incomplete; see the frontier README: GPT-6 Luna, Qwen3
 K3 Fast, Step 3.7 Flash, MiniMax-M3, GLM-4.5V, Qwen3-VL 235B and Gemma 4 31B. Python mode is
 what makes most models accurate. The top nine are within the GT noise on this set.
 
-### Python mode across the four sets
+### All five sets, image only → Python
 
-Each cell: curves ≤1 % of span, then the median per-curve p95 (% of span).
+Each cell: curves ≤1 % of span, image only → Python mode. Failed, capped, timed-out and
+disqualified charts count as failures.
 
-| Model | Human-verified 37 | Vendor data 146 | RDS(on)-VGS 15 | Synthetic hard 60 |
+| Model | Human-verified 37 (85) | Vendor data 146 (436) | RDS(on)-VGS 15 (31) | Synthetic hard 60 (174) | New themes 37 (82) |
+|---|---:|---:|---:|---:|---:|
+| **Claude Fable 5.1** | 33 → 74 | 231 → **436** | 22 → 30 | 10 → **126** | 47 → 80 |
+| **GPT-6 Astra** | **69** → 73 | **377** → 426 | **30** → 31 | **43** → 91 | **71** → **82** |
+| Claude Opus 5.5 | 47 → 71 | 338 → 390 | 26 → 29 | 18 → 86 | 66 → 80 |
+| Qwen3.8 Max | 28 → 75 | 158 → 393 | 7 → 31 | 2 → 74 | 26 → **82** |
+| DeepSeek V4.1 Flash | 14 → 75 | 40 → 402 | 9 → 29 | 0 → 25† | 7 → **82** |
+| Gemini 3.1 Pro | 30 → 73 | 207 → 363 | 13 → 31 | 13 → 21 | 36 → 70 |
+
+† DeepSeek's Python run on the hard synthetic set was still running (26/60 charts) when this was
+written; unfinished charts count as failures.
+
+Median per-curve p95 in Python mode (% of span):
+
+| Model | Vendor data | RDS(on)-VGS | Synthetic hard | New themes |
 |---|---:|---:|---:|---:|
-| **Claude Fable 5.1** | 74/85 · 0.31 | **436/436** · 0.19 | 30/31 · 0.26 | **126/174** · 0.52 |
-| GPT-6 Astra | 73/85 · 0.34 | 426/436 · 0.17 | 31/31 · 0.23 | 91/174 · 0.80 |
-| Claude Opus 5.5 | 71/85 · 0.36 | 390/436 · 0.27 | 29/31 · 0.23 | 86/174 · 0.86 |
-| Qwen3.8 Max | 75/85 · 0.28 | 393/436 · 0.14 | 31/31 · 0.18 | 74/174 · 0.94 |
-| DeepSeek V4.1 Flash | 75/85 · 0.29 | 402/436 · 0.13 | 29/31 · 0.21 | incomplete |
-| Gemini 3.1 Pro | 73/85 · 0.43 | 363/436 · 0.21 | 31/31 · 0.27 | incomplete (21/174) |
+| Fable 5.1 | 0.19 | 0.26 | 0.52 | 0.21 |
+| Astra | 0.17 | 0.23 | 0.80 | 0.17 |
+| Opus 5.5 | 0.27 | 0.23 | 0.86 | 0.28 |
+| Qwen3.8 Max | 0.14 | 0.18 | 0.94 | 0.15 |
+| DeepSeek V4.1 Flash | 0.13 | 0.21 | — | 0.14 |
+| Gemini 3.1 Pro | 0.21 | 0.27 | 3.09 | 0.20 |
 
-- **Fable 5.1** is the most reliable: every vendor curve is within 1 %, and it clearly leads on
-  the adversarial synthetic charts.
-- **Qwen3.8 Max and DeepSeek** are the most precise when they finish (median 0.13–0.14 % on
-  vendor data), but they time out or exhaust caps more often.
-- **Image-only runs** on the vendor, rds-vgs and synthetic sets were still running when this
-  was written.
+- **Astra is by far the best without tools** on every set. It is the model to ask when no code
+  may run: identity questions, and a quick cross-check.
+- **With Python, Fable is the most robust** (all 436 vendor curves; clearly ahead on the
+  adversarial synthetic set). Astra is close, and ahead on the new styles.
+- **Qwen3.8 Max and DeepSeek are the most precise when they finish** (median 0.13–0.15 %), but
+  they time out or hit caps more often, and DeepSeek is slow (≈6 min per chart).
+- **Gemini 3.1 Pro gains little from Python on the adversarial set.** It was also the model that
+  tried package installs.
+- Everyone but Astra depends on Python mode; image-only reading is 1–3 % of span for most.
 
 ### dsdig on the synthetic set (set1, 400 charts)
 
