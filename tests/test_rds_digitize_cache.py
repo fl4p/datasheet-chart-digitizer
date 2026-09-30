@@ -95,6 +95,60 @@ class RuntimeCheckTests(unittest.TestCase):
         self.assertEqual(dcache.runtime_deviations(), [])
 
 
+class ModuleLevelInstanceTests(unittest.TestCase):
+    """transfer_anchor_batch.ANCHORS holds instances of a dataclass the module
+    defines; the reference execution builds its own class, so the instances are
+    compared field by field (seen 2026-09-30 on the merge with main: every
+    lookup refused). A changed field, an extra attribute or a lookalike class
+    must still differ."""
+
+    def setUp(self):
+        from datasheet_chart_digitizer import transfer_anchor_batch
+        self.module = transfer_anchor_batch
+
+    def test_every_package_module_is_pristine_when_imported(self):
+        import importlib
+        import pkgutil
+        import datasheet_chart_digitizer as package
+        for info in pkgutil.iter_modules(package.__path__):
+            importlib.import_module(f"{package.__name__}.{info.name}")
+        self.assertEqual(dcache.runtime_deviations(), [])
+
+    def _with_anchors(self, anchors):
+        with patch.object(self.module, "ANCHORS", anchors):
+            return dcache.runtime_deviations()
+
+    def test_an_equal_copy_is_pristine(self):
+        import copy
+        self.assertEqual(self._with_anchors(copy.deepcopy(self.module.ANCHORS)), [])
+
+    def test_a_changed_field_differs(self):
+        import dataclasses
+        first, *rest = self.module.ANCHORS
+        for field, value in (("vpl_v", first.vpl_v + 0.1), ("part", first.part + "X"),
+                             ("qg_th_nc", 1.0 if first.qg_th_nc is None else None)):
+            changed = dataclasses.replace(first, **{field: value})
+            self.assertTrue(self._with_anchors((changed, *rest)), field)
+        self.assertTrue(self._with_anchors(tuple(rest)))                       # one dropped
+        self.assertTrue(self._with_anchors((*rest, first)))                    # reordered
+
+    def test_an_extra_attribute_or_a_lookalike_differs(self):
+        import copy
+        import dataclasses
+        import types as types_mod
+        first, *rest = self.module.ANCHORS
+        extra = copy.copy(first)
+        object.__setattr__(extra, "note", "forged")
+        self.assertTrue(self._with_anchors((extra, *rest)))
+        lookalike = types_mod.SimpleNamespace(**dataclasses.asdict(first))
+        self.assertTrue(self._with_anchors((lookalike, *rest)))
+        fields = [(f.name, f.type, f) for f in dataclasses.fields(first)]
+        Clone = dataclasses.make_dataclass("AnchorEvidence", fields, frozen=True)
+        Clone.__module__ = self.module.__name__
+        self.assertTrue(self._with_anchors((Clone(**dataclasses.asdict(first)), *rest)))
+        self.assertEqual(dcache.runtime_deviations(), [])
+
+
 class PicklingTests(unittest.TestCase):
     """Capture entries pickle Trace/Calibration/PlotBox/...; copyreg then writes
     __slotnames__ onto those classes. Seen 2026-09-29: once a worker had pickled a

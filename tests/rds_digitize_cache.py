@@ -172,12 +172,21 @@ def _same(live, ref, module_name: str, live_globals: dict, ref_globals: dict, as
     """
     if live is ref:
         return True
-    if type(live) is not type(ref):
-        return False
     assumed = set() if assumed is None else assumed
 
     def same(a, b):
         return _same(a, b, module_name, live_globals, ref_globals, assumed)
+
+    if type(live) is not type(ref):
+        # An instance of a class this module defines (transfer_anchor_batch.ANCHORS:
+        # AnchorEvidence records): the reference run made its own class, so compare
+        # the classes member by member and then the instances field by field. Any
+        # other type difference (a lookalike class, a plain object) still differs.
+        live_cls, ref_cls = type(live), type(ref)
+        if (live_cls.__module__ == module_name == ref_cls.__module__
+                and live_cls.__qualname__ == ref_cls.__qualname__ and same(live_cls, ref_cls)):
+            return _same_state(live, ref, same)
+        return False
 
     if isinstance(live, types.FunctionType):
         if not _same_code(live.__code__, ref.__code__):
@@ -248,6 +257,19 @@ def _same(live, ref, module_name: str, live_globals: dict, ref_globals: dict, as
             return False
     text = repr(live)
     return " at 0x" not in text and text == repr(ref)
+
+
+def _same_state(live, ref, same) -> bool:
+    """Instance state, field by field: every __slots__ value and the whole __dict__."""
+    names = _expected_slotnames(type(live))
+    for name in names:
+        a, b = getattr(live, name, _UNSET), getattr(ref, name, _UNSET)
+        if (a is _UNSET) != (b is _UNSET) or (a is not _UNSET and not same(a, b)):
+            return False
+    live_dict, ref_dict = getattr(live, "__dict__", None), getattr(ref, "__dict__", None)
+    if (live_dict is None) != (ref_dict is None):
+        return False
+    return live_dict is None or same(dict(live_dict), dict(ref_dict))
 
 
 def _expected_slotnames(cls: type) -> list[str]:
