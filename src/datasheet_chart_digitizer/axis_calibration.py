@@ -28,9 +28,12 @@ from dataclasses import dataclass
 import numpy as np
 
 _X_TICK_RE = re.compile(r"[−-]?\d+(?:\.\d+)?")
+# Group 4 is spreadsheet scientific notation ("1E+3", "1.0E+02", "1E-01"),
+# which Excel-drawn datasheets print on their log axes (HYG292N60NP1D,
+# NCE30H12). It is a decade label written differently, not a new unit.
 _NUMBER_TOKEN_RE = re.compile(
     r"(?<![\w.])([-+]?\d+(?:\.\d+)?)([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)?"
-    r"([KMG])?(?![\w.])"
+    r"([KMG])?(?:[eE]([-+]?\d{1,2}))?(?![\w.])"
 )
 _SUPERSCRIPT_DIGITS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _ENGINEERING_MULTIPLIERS = {"K": 1e3, "M": 1e6, "G": 1e9}
@@ -144,6 +147,11 @@ def _number_value(match: re.Match[str]) -> float:
     multiplier = match.group(3)
     if multiplier:
         base *= _ENGINEERING_MULTIPLIERS[multiplier]
+    scientific = match.group(4)
+    if scientific:
+        if superscript or multiplier:
+            return float("nan")  # "10²E+3" / "1KE+3" are not labels
+        base *= 10.0 ** int(scientific)
     return base
 
 
