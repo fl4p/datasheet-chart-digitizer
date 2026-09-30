@@ -283,13 +283,16 @@ def _frame_offsets(img, c, pcs=None):
         else:
             along = np.linspace(x0 + 0.2 * (x1 - x0), x1 - 0.2 * (x1 - x0), 60)
             P = _bilinear(dark[..., None], along[:, None], pos + t[None, :])[..., 0]
-        if pcs:  # a curve running along this spine (0 A rail) makes the side unevaluable
-            allp = np.vstack(list(pcs.values()))
-            near = np.abs(allp[:, 0 if o == "v" else 1] - pos) < 4
+        if pcs:  # ONE curve running along this spine (0 A rail) makes the side unevaluable
             span = along.max() - along.min()
-            inside = (allp[:, 1 if o == "v" else 0] >= along.min()) & (allp[:, 1 if o == "v" else 0] <= along.max())
-            q = allp[near & inside][:, 1 if o == "v" else 0]
-            if len(q) and np.ptp(q) > 0.2 * span:
+            ride = False
+            for p in pcs.values():
+                p = _samples(p)[0]
+                near = np.abs(p[:, 0 if o == "v" else 1] - pos) < 4
+                inside = (p[:, 1 if o == "v" else 0] >= along.min()) & (p[:, 1 if o == "v" else 0] <= along.max())
+                q = p[near & inside][:, 1 if o == "v" else 0]
+                ride |= bool(len(q) and np.ptp(q) > 0.2 * span)
+            if ride:
                 out[name] = None
                 continue
         prof = np.median(P, axis=0)  # median over the spine length: crossing curves / labels drop out
