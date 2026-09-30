@@ -320,6 +320,13 @@ Result on set1 (400 charts) after the fixes merged with it: dsdig serves 50 of t
 charts in its classes, 1 of them wrong. Served charts are accurate: capacitance p95 0.11 %,
 body diode 0.22 %, gate charge 0.31 % of span. Most unserved charts are explicit refusals.
 
+## Agent skill
+
+`skills/chart-digitization/` is the agent skill for reading values off datasheet charts:
+dsdig first, what its statuses mean, the hand-then-multi-model fallback, and review rules.
+`IMPROVING.md` there covers changing and benchmarking dsdig. It is symlinked into
+`~/.claude/skills/chart-digitization`, so it versions with the code.
+
 ## Benchmark and model comparison
 
 `docs/model-benchmark-2026-09.md` compares dsdig with vision-language models on four sets:
