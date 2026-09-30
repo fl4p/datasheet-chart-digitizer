@@ -31,6 +31,7 @@ from .gate_charge_estimation import (
     _non_gate_plot_reason,
     _text_near_rect,
 )
+from .gate_charge_branch import BRANCH_HOP_DIAGNOSTIC, cut_at_branch_hop
 from .gate_charge_trace import (
     _curve_clipped_by_plot_box,
     _curve_score,
@@ -725,6 +726,7 @@ def _digitize_panel(
     curve = _trim_terminal_flat_grid_capture(curve, plot_box)
     curve = _trim_after_upper_axis_reach(curve, plot_box)
     curve = _trim_terminal_branch_hop(curve, plot_box)
+    curve, branch_cut_short = cut_at_branch_hop(curve, plot_box)
     vpl, vpl_y_px = _estimate_vpl_from_curve(
         curve, panel, crop_rect, scale, plot_box, local_y_ticks
     )
@@ -763,6 +765,8 @@ def _digitize_panel(
         diagnostics.append("non_monotone_gate_curve")
     if clipped_curve:
         diagnostics.append(CURVE_CLIPPED_DIAGNOSTIC)
+    if branch_cut_short:
+        diagnostics.append(BRANCH_HOP_DIAGNOSTIC)
     if axis_assumed:
         diagnostics.append("axis_assumed_0_10")
     elif axis_grid_inferred:
@@ -811,6 +815,7 @@ def _digitize_panel(
         or missing_axis_origin
         or non_monotone_gate_curve
         or clipped_curve
+        or branch_cut_short
         # A value the digitizer itself calls implausible, or one it had to extrapolate
         # off the end of its ticks, must not be reported as "ok". These two diagnostics
         # were computed and then dropped on the floor by the status: SUP90140E returned
