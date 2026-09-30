@@ -34,8 +34,6 @@ import cv2
 import numpy as np
 
 from .breakdown_voltage import (
-    NUM_RE,
-    _fit_axis,
     _vector_plot_frame,
     _words_in_crop_px,
 )
@@ -45,7 +43,7 @@ from .diode_forward_voltage import _full_span_grid_lines, _snap_axis_to_grid
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .capacitance_types import PlotBox, VectorEdge
 from . import served_axis_guard
-from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
+from .numeric_axis import NumericAxis
 from .capacitance_vector import (
     _is_curve_stroke_color,
     _is_neutral_gray_stroke,
@@ -59,6 +57,10 @@ from .crop_transform import CropTransform
 from .chart_classifier import compact_formula_chart_kind
 from . import axis_title_identity as titles
 from .source_color_binding import bind_two_source_color_legend
+from .axis_calibration import _explicit_power_labels
+from .transfer_axis_calibration import calibrate_transfer as _calibrate_transfer
+from .transfer_axis_calibration import require_seated_sparse_axes
+from .transfer_axis_calibration import select_horizontal_tick_row as _select_horizontal_tick_row  # noqa: F401
 from .transfer_temperature_order import inverse_vgs as _inverse_vgs
 from .transfer_temperature_order import bind_opposite_outer_labels, validate_two_curve_order
 from .transfer_temperature_labels import (
@@ -317,48 +319,6 @@ def _continues_edge_tangent(
     return False
 
 
-def _calibrate_transfer(words_px, plot: PlotBox):
-    """Fit VGS/ID axes using transfer-chart label gutters.
-
-    The generic breakdown helper assumes compact tick labels immediately below
-    the frame.  Renesas places the VGS numbers about 0.20 plot-heights below the
-    frame to leave room for curve labels.  Keep the same strict shared fitter
-    and residual gates, but use a transfer-specific evidenced gutter.
-    """
-
-    x_candidates = [
-        (float(text), cx, cy)
-        for text, cx, cy in words_px
-        if NUM_RE.fullmatch(text)
-        and plot.y1 + 0.005 * plot.height <= cy <= plot.y1 + 0.25 * plot.height
-        and plot.x0 - 0.03 * plot.width <= cx <= plot.x1 + 0.14 * plot.width
-    ]
-    x_ticks = _select_horizontal_tick_row(x_candidates, plot)
-    y_ticks = list(dict.fromkeys([
-        (float(text), cy)
-        for text, cx, cy in words_px
-        if NUM_RE.fullmatch(text)
-        and plot.x0 - 0.22 * plot.width <= cx <= plot.x0 - 2
-        and plot.y0 - 0.02 * plot.height <= cy <= plot.y1 + 0.02 * plot.height
-    ]))
-    if len(y_ticks) < 4:
-        raise RuntimeError(
-            f"Y axis (ID): only {len(y_ticks)} tick labels, need >=4"
-        )
-    y_axis = fit_axis_ticks(
-        [AxisTick(f"{value:g}", value, pixel) for value, pixel in y_ticks],
-        "Y axis (ID)",
-        model="auto",
-    )
-    strict_x = _fit_axis(x_ticks, "X axis (VGS)")
-    x_axis = fit_axis_ticks(
-        [AxisTick(f"{value:g}", value, pixel) for value, pixel in strict_x.ticks],
-        "X axis (VGS)",
-        model="linear",
-    )
-    return x_axis, y_axis
-
-
 def _axis_tick_pairs(axis) -> list[tuple[float, float]]:
     """Return selected ticks as (value, pixel) for either shared axis type."""
 
@@ -371,49 +331,6 @@ def _axis_residual(axis) -> float:
     """Expose one diagnostic residual without changing calibration semantics."""
 
     return axis.residual_px if isinstance(axis, NumericAxis) else axis.resid
-
-
-def _select_horizontal_tick_row(
-    candidates: list[tuple[float, float, float]], plot: PlotBox
-) -> list[tuple[float, float]]:
-    """Select one evidenced tick-label row below a transfer plot.
-
-    Conditions such as ``VDS = 5 V`` can sit farther below the frame inside the
-    deliberately generous transfer gutter.  A tick row has at least four
-    labels, spans most of the frame, and is monotone in pixel order; a lone
-    condition number cannot join it merely because it is numeric.
-    """
-
-    tolerance = max(3.0, 0.025 * plot.height)
-    rows: list[list[tuple[float, float, float]]] = []
-    for candidate in sorted(candidates, key=lambda item: item[2]):
-        for row in rows:
-            if abs(candidate[2] - float(np.median([item[2] for item in row]))) <= tolerance:
-                row.append(candidate)
-                break
-        else:
-            rows.append([candidate])
-
-    evidenced: list[tuple[float, list[tuple[float, float]]]] = []
-    for row in rows:
-        ordered = sorted(row, key=lambda item: item[1])
-        if len(ordered) < 4:
-            continue
-        pixels = [item[1] for item in ordered]
-        values = [item[0] for item in ordered]
-        diffs = np.diff(values)
-        if not (np.all(diffs > 0) or np.all(diffs < 0)):
-            continue
-        if pixels[-1] - pixels[0] < 0.50 * plot.width:
-            continue
-        row_y = float(np.median([item[2] for item in ordered]))
-        evidenced.append(
-            (abs(row_y - plot.y1), [(value, px) for value, px, _cy in ordered])
-        )
-    if not evidenced:
-        raise RuntimeError("X axis (VGS): no monotone full-span tick-label row")
-    evidenced.sort(key=lambda item: item[0])
-    return evidenced[0][1]
 
 
 def _extract_curves(
@@ -726,6 +643,17 @@ def _extract_two_curves(page, transform: CropTransform, plot: PlotBox, fitz):
     return _extract_curves(page, transform, plot, fitz, 2)
 
 
+def _power_labels_px(page, transform: CropTransform):
+    """``10^n`` labels from base + superscript spans, in crop pixels."""
+
+    out = []
+    for value, _cx, _cy, (bx0, by0, bx1, by1) in _explicit_power_labels(page):
+        x0, y0 = transform.to_px(bx0, by0)
+        x1, y1 = transform.to_px(bx1, by1)
+        out.append((value, 0.5 * (x0 + x1), 0.5 * (y0 + y1), (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))))
+    return out
+
+
 def _extract_panel_curves(
     page,
     transform: CropTransform,
@@ -743,7 +671,7 @@ def _extract_panel_curves(
     refused valid 1/10/100/1000 A ticks.
     """
     plot = _vector_plot_frame(page, transform, gray.shape) or find_closed_frame_plot_box(gray)
-    label_x, label_y = _calibrate_transfer(words, plot)
+    label_x, label_y, sparse_axes = _calibrate_transfer(words, plot, _power_labels_px(page, transform))
     major_x, major_y = _full_span_grid_lines(gray, plot, plot)
     x_axis = _snap_axis_to_grid(label_x, major_x, "X axis (VGS)", authoritative=True)
     y_axis = _snap_axis_to_grid(label_y, major_y, "Y axis (ID)", authoritative=True)
@@ -755,6 +683,7 @@ def _extract_panel_curves(
     failed, _unverified = served_axis_guard.problems(grid_checks)
     if failed:
         raise RuntimeError("served axis misses its gridlines: " + "; ".join(failed))
+    require_seated_sparse_axes(grid_checks, sparse_axes)
     pixel_curves = _extract_curves(page, transform, plot, fitz, expected_count)
     return plot, x_axis, y_axis, pixel_curves, grid_checks
 
