@@ -1,0 +1,4 @@
+{
+ "_doc": "Golden panels Fab found defects in on the v4 overlays (2026-09-29). Their labels and curve grouping are being changed by the named findings; only the ink is still pinned (see test_rdson_gate_voltage_golden.py). Fab re-blesses them after he has seen the fix; nobody else removes an entry here.",
+ "entries": []
+}

@@ -24,6 +24,8 @@ families:
 6. Body-diode forward-voltage plots (`Is` versus `Vsd`).
 7. On-resistance plots: absolute `RDS(on)` versus drain current and normalized
    `RDS(on)` versus junction temperature.
+8. On-resistance versus gate-source voltage, `RDS(on)(VGS)` at one or more Tj/ID
+   (unvalidated class: samples await human overlay review before batch use).
 
 The core pieces are kept generic so other datasheet chart types can be added
 as plugins.
@@ -66,6 +68,8 @@ dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
 dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 dsdig digitize-transfer work/charts/charts.json --out work/transfer
+dsdig digitize-rds-vgs work/charts/charts.json --out work/rds-vgs
+dsdig digitize-rds-vgs --pdf /path/to/datasheet.pdf --out work/rds-vgs
 dsdig annotate /path/to/datasheet.pdf --out /path/to/datasheet-with-curves.pdf
 datasheet-layout-cluster /path/to/datasheets --out work/layouts
 ```
@@ -106,6 +110,85 @@ across series or vendors. Files named like `PART.pdf.r600.pdf`,
 `PART.pdf.gs.pdf`, `PART.pdf.cups.pdf`, or `PART.pdf.sips.pdf` are excluded from
 clustering and recorded separately in `generated-pdf-variants.json`. Layout
 clusters are never runtime detector authority.
+
+`digitize-rds-vgs` scans the PDFs named in a `charts.json` (or given with `--pdf`) with its
+own caption/frame locator, because the shared finder misses most RDS(on)-versus-VGS panels.
+A panel is owned only when its x-axis title names VGS and not a drain current. It serves
+per-curve `(VGS [V], RDS(on) [mOhm])` points with the curve's temperature *as printed*
+(`temperature_c` plus `temperature_kind`: Tj, Tc, Ta, or unspecified) and ID when a label
+binds to it (legend swatch, leader line, proximity, or elimination -- otherwise `None`).
+Readouts at 2.5/3.3/4.5 V are interpolated along the curve and always labelled "typical
+curve, not a guaranteed value". Outputs: `rdson_gate_voltage.json`, `crops/`,
+`overlays/PART/*.rds_vgs_overlay.png`, `points/PART/*.rds_vgs_points.csv`, OCR scratch
+under `work/`.
+
+Status rules (RDS(on)-vs-VGS):
+
+- `refused`: nothing is served -- axes not calibrated, RDS unit unreadable, no curve
+  traced, a curve rising with VGS, a non-linear x axis, or tick scatter too large.
+- `ok`: every gate passed with no reason at all, and the table check is `verified`. In
+  particular an `ok` panel has no curve with a gap, no partial raster trace, no curve
+  marked `usable: false`, no unbound curve parameter, and no readout in the states below
+  other than `read` / `not_on_chart`.
+- `review_required`: anything else; every cause is listed in `reasons`.
+
+Readout states: `read`; `not_on_chart` (outside the source curve's plotted span -- only
+claimed where the trace is known to be complete there: vector paths, or raster ends on the
+frame); `not_in_extracted_trace` (outside or inside a gap of a raster trace that stopped
+inside the plot -- the source may have the curve there); `curve_not_usable`. Nothing is
+extrapolated and nothing is interpolated across an unread stretch. Unread stretches are
+listed per curve (`gaps`, with their kind in `gap_kinds`) and drawn as breaks in the
+overlay: `gap` (no curve ink traced there), `untraced_section` (the ink is continuous but
+the column tracker did not sample it, e.g. a near-vertical stretch), `annotation_contact`
+(points pulled off the curve by a touching arrow or label were removed; a removed point
+always opens an interval between its surviving neighbours, however close they are, and
+its VGS is listed in `annotation_contact_removed_vgs_v`). Readouts and the overlay use the
+same list of intervals. Only columns hidden under a vertical grid rule the tracker itself
+erased are bridged (`columns_interpolated_across_erased_grid_rules`); a projection peak
+is erased as a rule only if it is dark over >= 90 % of the plot height, or >= 75 % and on
+the tick lattice (`raster_grid_rules_px` lists erased and refused peaks). A 1-2 point end
+cut off from a raster track by a real gap is dropped before the track is admitted as a
+curve, and every dropped point is listed (`dropped_end_stub_points`, with a reason). `temperature_kind` is null only when
+`temperature_c` is null, and every curve without a temperature carries a
+`curve_N_temperature_c_unknown` reason. The overlay header lists every reason, word-wrapped
+to the image width and never clipped; the legend shows each readout's state (`n/c`,
+`not traced`, `unusable`). A raster fragment spanning under 30 % of the VGS axis whose
+ink, followed from BOTH ends, does not run on to the frame (`trace_complete.*_ink_reaches_frame`)
+is `usable: false` with a `not_usable_reason`, gets no readouts, and is never validated.
+
+Calibration provenance: `tick_source` names where the used tick labels came from
+(`text_layer`, `page_ocr` for an image-only page, `panel_ocr` for a raster panel on a text
+page, `crop_ocr`, `axis_band_ocr`), and `tick_origins` gives it per tick. When the used
+ticks stop more than half a step short of a frame edge, crop and axis-band OCR are added
+and the axes refitted (`tick_completion` says what happened). `used_tick_span` records
+each axis's used range. A served reading beyond it carries `calibration_span:
+outside_anchored` if the frame edge sits within 1 px of the fitted tick lattice, and
+otherwise `outside_unanchored` plus a `curve_N_readout_outside_calibrated_span` reason,
+which keeps the panel off `ok`. Two curves drawn on top of each other are listed in
+`coincident_with` on both, with a reason. A usable curve read above a table maximum at the
+table's VGS, which no anchor judged, is recorded in `validation.diagnostics` together with
+what is unknown about its bindings, without a verdict. The overlay marks every used tick
+with blue "+" markers and values on the plot (the v3 style), draws traces in an Okabe-Ito
+palette (no dark colours) on white halos with nested widths (c0 widest, each later curve
+narrower on top, all solid), labels each curve directly, and gives each curve a legend
+row with a swatch.
+
+Raster curve structure: a steep head is traced row by row up to the frame across grid
+rules (`row_traced_points_px`); a head still short of the frame while its ink runs on
+gets `curve_N_head_not_traced_to_frame`. Exactly the printed curves are served: a branch
+that merges into a tail takes the tail over (`shared_tail`), the tail is never a curve of
+its own, and two lines printed side by side as one band are split into their halves;
+shared stretches are `coincident_with`. Label arrows and leader lines are followed
+straight to their tip, across the curves they cross (`raster_leaders_px`); a label the
+plot OCR missed is read at the arrow's tail; a tip in ink shared by two touching lines
+names neither (`leader_tip_between_touching_curves`).
+
+Table check: `verified` needs a consistent anchor at the table's own drain current (within
+2 %); consistent anchors only at a nearby current (within the 0.75-1.34 ratio used for
+evaluation) give `consistent_at_approximate_conditions`; any inconsistent anchor gives
+`inconsistent`; otherwise `not_evaluable`. Each anchor states the temperature kind on
+both sides and any equivalence it assumed (e.g. chart Tc taken as table Ta), and an
+unreadable table cell (e.g. a max printed "12..8") is reported and not checked.
 
 Key capacitance-pipeline outputs:
 

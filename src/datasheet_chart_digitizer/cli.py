@@ -19,6 +19,7 @@ _DISPATCH: dict[str, tuple[str, bool]] = {
     "digitize-reverse-recovery": ("reverse_recovery", False),
     "digitize-breakdown-voltage": ("breakdown_voltage", False),
     "digitize-reverse-leakage": ("diode_reverse_leakage", False),
+    "digitize-rds-vgs": ("rdson_gate_voltage", True),
     "digitize-transfer": ("transfer_characteristics", False),
     "digitize-core-loss": ("powder_core_loss", True),
     "annotate": ("annotate_pdf", False),
@@ -33,6 +34,7 @@ _COMMANDS = {
     "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
     "digitize-breakdown-voltage": "digitize V(BR)DSS vs Tj charts (Infineon Diagram 15 style)",
     "digitize-reverse-leakage": "digitize diode Ir(Vr) leakage families at several Tj",
+    "digitize-rds-vgs": "digitize MOSFET RDS(on) vs VGS, checked against the RDS(on) table",
     "digitize-transfer": "digitize Id(Vgs,Tj) saturation transfer curves and fit temp-co",
     "digitize-core-loss": "digitize powder-core loss panels and check them against the printed law",
     "annotate": "detect supported charts and write an annotated PDF copy",
@@ -78,7 +80,7 @@ def _resolve_out_dir(command: str, rest: list[str]) -> Path | None:
         return Path(explicit)
     if command == "find":
         return Path("out/datasheet_charts")
-    if command in {"digitize-capacitance", "digitize-breakdown-voltage"}:
+    if command in {"digitize-capacitance", "digitize-breakdown-voltage", "digitize-rds-vgs"}:
         positionals = [arg for arg in rest if not arg.startswith("-")]
         if positionals:
             return Path(positionals[0]).parent

@@ -76,3 +76,11 @@ def pytest_collection_modifyitems(config, items):
         group = rds_group(item)
         if group is not None:
             item.add_marker(pytest.mark.xdist_group(group))
+
+
+def pytest_sessionfinish(session):
+    """Per process (each xdist worker too): the digitize cache's hit/miss counts, if asked for."""
+    import sys
+    cache = sys.modules.get("rds_digitize_cache")
+    if cache is not None:
+        cache.dump_stats("pytest")

@@ -1,0 +1,204 @@
+{
+ "part": "RQ6E080AJ_Rohm",
+ "pdf_name": "RQ6E080AJ_Rohm.pdf",
+ "pdf_sha256": "bf66b42689a3f76a071299b0629a2949aaf32c391b3323ce7f901d45d195eca4",
+ "page": 7,
+ "diagram": "12",
+ "title": "Static Drain - Source On - State Resistance vs. Gate Source Voltage",
+ "status": "review_required",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 4.5,
+   "id_a": 8.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 12.3338
+  },
+  {
+   "vgs_v": 2.5,
+   "id_a": 4.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 15.6454
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_coincident_with_curve_1 (1.95..10.00 V, median separation 0.00 px, max 0.00 px: drawn on top of each other there, so both serve the same values; not separable in that range)"
+ ],
+ "trace_method": "raster",
+ "plot_box_px": {
+  "x0": 245,
+  "y0": 51,
+  "x1": 969,
+  "y1": 818
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.013812154696132596,
+   "b": -3.383977900552486,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 245.0
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 317.4
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 389.79999999999995
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 462.2
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 534.6
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 607.0
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 679.4
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 751.8
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 824.2
+    },
+    {
+     "text": "9",
+     "value": 9.0,
+     "pixel": 896.6
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 969.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.05215123859191656,
+   "b": 42.65971316818774,
+   "ticks": [
+    {
+     "text": "40",
+     "value": 40.0,
+     "pixel": 50.999999999999964
+    },
+    {
+     "text": "35",
+     "value": 35.0,
+     "pixel": 146.87499999999997
+    },
+    {
+     "text": "30",
+     "value": 30.0,
+     "pixel": 242.74999999999997
+    },
+    {
+     "text": "25",
+     "value": 25.0,
+     "pixel": 338.62499999999994
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 434.49999999999994
+    },
+    {
+     "text": "15",
+     "value": 15.0,
+     "pixel": 530.375
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 626.25
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 817.9999999999999
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Ta=25C, ID=4A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Ta",
+   "id_a": 4.0,
+   "usable": true,
+   "n_points": 625,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 15.6454,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 13.1442,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 12.3338,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Ta=25C, ID=8A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Ta",
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 598,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 15.6454,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 13.1442,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 12.3338,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}
