@@ -1947,6 +1947,12 @@ class BatchAllV2Tests(unittest.TestCase):
         clip = (128.0 - 0.3, 488.7 - 0.3, 289.2 + 0.3, 615.4 + 0.3)
         aon = runs("AON7524_AOS", 3, 1.78, clip)
         self.assertEqual(len(tm._chain(aon, clip)), 2)
+        # each guard on its own: the clip-point rule with the fold rule off, and
+        # the fold rule with no clip rectangle known
+        with patch.object(tm, "CHAIN_FOLD_PT", 1e9):
+            self.assertEqual(len(tm._chain(aon, clip)), 2)
+            self.assertEqual(len(tm._chain(aon, None)), 1)      # both off: the F-all-1 hop
+        self.assertEqual(len(tm._chain(aon, None)), 2)
         # the hazard: their clipped top ends ARE within the join distance
         tops = sorted((r for r in aon), key=lambda r: min(p[1] for p in r))[:2]
         ends = [min(r, key=lambda p: p[1]) for r in tops]
@@ -1964,6 +1970,21 @@ class BatchAllV2Tests(unittest.TestCase):
         rejoined = tm._chain([whole[:half + 1], list(reversed(whole[half:]))], clip)
         self.assertEqual(len(rejoined), 1)
         self.assertEqual(len(rejoined[0]), len(whole))
+
+    def test_c1_a_qualified_row_never_anchors_a_chart(self):
+        # IPP100N06S2L05 prints its rows twice, the second set "SMD version". Checked on
+        # IRLB8314's real panel: its own rows anchor; the same rows qualified do not.
+        from dataclasses import replace as _replace
+        row = _panel("IRLB8314_IFX", 5, "12")
+        cap = _captured("IRLB8314_IFX")[(5, "12")]
+        rows = parse_rdson_spec_rows(DS / "IRLB8314_IFX.pdf")
+        plain = report.validate_against_table(row["curves"], rows, cap["calibration"], cap["scale"])
+        self.assertEqual({a["verdict"] for a in plain["anchors"]}, {"consistent"})
+        qualified = report.validate_against_table(
+            row["curves"], [_replace(r, qualifier="SMD version") for r in rows], cap["calibration"], cap["scale"])
+        self.assertEqual({a["verdict"] for a in qualified["anchors"]}, {"not_evaluable"})
+        self.assertTrue(all("qualified 'SMD version'" in a["reason"] for a in qualified["anchors"]))
+        self.assertEqual(qualified["verdict"], "not_evaluable")
 
     def test_f_all_2_tick_label_centred_on_the_frame_edge_is_inside(self):
         # ME95N03T p3: "10" is printed centred under the right frame line; its ink

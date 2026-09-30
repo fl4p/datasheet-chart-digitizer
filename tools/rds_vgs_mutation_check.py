@@ -36,6 +36,7 @@ import numpy as np
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes
 from datasheet_chart_digitizer import rdson_gate_voltage_labels as labels
+from datasheet_chart_digitizer import rdson_gate_voltage_locate as loc
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces
 from datasheet_chart_digitizer import rdson_spec_table as spec
@@ -119,7 +120,7 @@ class _source_mutant:
             source = source.replace(old, new)
         scope = dict(vars(module))
         exec(compile(source, f"<mutant {name}>", "exec"), scope)
-        holders = [m for m in (rgv, report, traces, axes, spec, labels) if getattr(m, name, None) is original]
+        holders = [m for m in (rgv, report, traces, axes, spec, labels, loc) if getattr(m, name, None) is original]
         self._patches = [patch.object(m, name, scope[name]) for m in holders]
         self._stack = None
 
@@ -169,6 +170,9 @@ F4 = "RoundFourTests."
 B = "BoundaryTests."
 F5 = "RoundFiveTests."
 F6 = "RoundSixTests."
+V2 = "BatchAllV2Tests."
+SPEC = "test_rdson_gate_voltage.SpecTableTests."
+LOC = "test_rdson_gate_voltage.LocatorTests."
 
 
 MUTANTS = {
@@ -670,6 +674,90 @@ MUTANTS = {
     "tube_core_whole_width (F5-2 opposite: legibility)": (
         [_source_mutant(report, "_draw_curves", ("_stroke(core, curve, 255, TRACE_CORE_PX)", "_stroke(core, curve, 255, widths[curve['curve_index']])"))],
         [F5 + "test_f5_2_traces_stay_colourful_beside_the_print"]),
+    # ---- batch_all v2 (Fab's F-all-1/F-all-2 and the batch agent's A/C list) ---------
+    "symbol_space_not_split (C1 IRLB8314)": (
+        [_source_mutant(spec, "page_words", (r'if "\uf020" in text else [(text, box)]', "if False else [(text, box)]"))],
+        [SPEC + "test_c1_unit_glued_to_the_next_rows_vgs_by_symbol_spaces",
+         SPEC + "test_c1_symbol_omega_padded_with_symbol_spaces"]),
+    "undecoded_glyph_not_marked (C1 FDP5800)": (
+        [_source_mutant(spec, "page_words", (r'piece += "\ufffd"', "pass"))],
+        [SPEC + "test_c1_undecodable_omega_and_a_unit_printed_once_per_block"]),
+    "bare_m_is_mohm (C1 opposite)": (
+        [patch.object(spec, "_UNIT_TOKENS", {**spec._UNIT_TOKENS, "m": ("mohm", 1.0)})],
+        [SPEC + "test_c1_known_bad_bare_m_or_conflicting_block_units_stay_unreadable"]),
+    "no_block_unit (C1 FDP5800/IPP)": (
+        [patch.object(spec, "_BLOCK_GAP_PT", 0.0)],
+        [SPEC + "test_c1_undecodable_omega_and_a_unit_printed_once_per_block",
+         SPEC + "test_c1_smd_version_rows_are_read_and_qualified"]),
+    "block_units_may_disagree (C1 opposite)": (
+        [_source_mutant(spec, "_resolve_units", ('if not read or len({s["unit"][1] for s in read}) != 1:', "if not read:"))],
+        [SPEC + "test_c1_known_bad_bare_m_or_conflicting_block_units_stay_unreadable"]),
+    "no_qualifier (C1 SMD version)": (
+        [patch.object(spec, "_qualifier", lambda *a: "")],
+        [SPEC + "test_c1_smd_version_rows_are_read_and_qualified"]),
+    "qualifier_from_the_whole_line (C1 opposite)": (
+        [_source_mutant(spec, "_qualifier", ("x0, x1 = min(w.x0 for w in cell) - 5.0, max(w.x1 for w in cell) + 5.0",
+                                              "x0, x1 = condition.bbox[0] - 5.0, condition.bbox[2] + 5.0"))],
+        [SPEC + "test_c1_symbol_omega_padded_with_symbol_spaces"]),
+    "qualified_row_anchors (C1 validation)": (
+        [_source_mutant(report, "validate_against_table", ('if getattr(row, "qualifier", ""):', "if False:"))],
+        [V2 + "test_c1_a_qualified_row_never_anchors_a_chart"]),
+    "heading_from_a_row_condition (C1 FDP5800 Tc)": (
+        [_source_mutant(spec, "_page_rows", ('if match\n        and _condition_names(line) <= {"TJ", "TC", "TA"}\n    ]', "if match\n    ]"))],
+        [SPEC + "test_c1_undecodable_omega_and_a_unit_printed_once_per_block"]),
+    "milliamps_read_as_amps (C2)": (
+        [_source_mutant(spec, "_row", ('(1000.0 if current[1] == "mA" else 1.0)', "1.0"))],
+        [SPEC + "test_c2_drain_current_in_milliamps"]),
+    "no_foreign_row_filter (C3)": (
+        [patch.object(spec, "_foreign_parameter", lambda line: False)],
+        [SPEC + "test_c3_rows_of_other_parameters_are_not_rdson_rows"]),
+    "straddling_label_outside (F-all-2)": (
+        [patch.object(axes, "_label_straddles_edge", lambda *a: False)],
+        [V2 + "test_f_all_2_tick_label_centred_on_the_frame_edge_is_inside"]),
+    "any_label_straddles (F-all-2 opposite)": (
+        [patch.object(axes, "_label_straddles_edge", lambda *a: True)],
+        [V2 + "test_f_all_2_known_bad_label_wholly_beyond_the_edge_is_refused"]),
+    "chain_joins_at_clip_points (F-all-1)": (
+        [patch.object(traces, "_on_clip_edge", lambda *a: False)],
+        [V2 + "test_f_all_1_known_bad_chain_joins_on_real_paths"]),
+    "chain_may_fold_back (F-all-1)": (
+        [patch.object(traces, "CHAIN_FOLD_PT", 1e9)],
+        [V2 + "test_f_all_1_two_curves_ending_together_on_the_right_frame_stay_two",
+         V2 + "test_f_all_1_known_bad_chain_joins_on_real_paths"]),
+    "no_reversed_joins (F-all-1 opposite)": (
+        [_source_mutant(traces, "_chain", ("elif math.dist(a[-1], b[-1]) <= CHAIN_JOIN_PT:", "elif False:"))],
+        [V2 + "test_f_all_1_known_bad_chain_joins_on_real_paths"]),
+    "no_axis_title_override (A1)": (
+        [patch.object(loc, "_other_numbered_captions", lambda *a: [])],
+        [LOC + "test_a1_axis_titles_overrule_a_transfer_caption"]),
+    "override_without_rds_y_title (A1 opposite)": (
+        [_source_mutant(loc, "_axis_titled_frame", (
+            "if y_title is None or not re.search(_RDS_TOKEN, y_title, re.IGNORECASE) or DRAIN_CURRENT_AXIS_RE.search(y_title):",
+            "if False:"))],
+        [LOC + "test_a1_known_bad_real_transfer_and_rds_vs_id_charts_are_not_taken"]),
+    "no_caption_side (A1/A3)": (
+        [patch.object(loc, "_caption_side", lambda *a: None)],
+        [LOC + "test_a1_known_bad_real_transfer_and_rds_vs_id_charts_are_not_taken",
+         LOC + "test_a3_caption_naming_both_axes_stands_in_for_an_unreadable_x_title"]),
+    "x_band_trusts_caption_lines (A1 AON7524 fig 3)": (
+        [_source_mutant(loc, "_axis_titled_frame", ("boxes = [c.bbox_pt for c in captions_on_page]", "boxes = []"),
+                        ("            _require_gate_voltage_x_axis(_x_band_text(titles, frame))\n", ""))],
+        [LOC + "test_a1_known_bad_real_transfer_and_rds_vs_id_charts_are_not_taken"]),
+    "no_upright_copy (A2)": (
+        [patch.object(loc, "upright_pdf", lambda pdf, work_dir: pdf), patch.object(rgv, "upright_pdf", lambda pdf, work_dir: pdf)],
+        [LOC + "test_a2_rotated_page_is_located_on_an_upright_copy"]),
+    "no_relative_gap_split (A2)": (
+        [_source_mutant(loc, "_caption_segments", ("(gaps[i - 1] > 12.0 and gaps[i - 1] > 5.0 * max(typical, 0.5))", "False"))],
+        [LOC + "test_a2_rotated_page_is_located_on_an_upright_copy"]),
+    "no_hairline_frames (A2)": (
+        [patch.object(loc, "_hairline_grid_frames", lambda *a: [])],
+        [LOC + "test_a2_rotated_page_is_located_on_an_upright_copy"]),
+    "caption_never_stands_in (A3)": (
+        [patch.object(loc, "caption_names_both_axes", lambda title: False)],
+        [LOC + "test_a3_caption_naming_both_axes_stands_in_for_an_unreadable_x_title"]),
+    "any_caption_stands_in (A3 opposite)": (
+        [patch.object(loc, "caption_names_both_axes", lambda title: True)],
+        [LOC + "test_a3_caption_naming_both_axes_stands_in_for_an_unreadable_x_title"]),
 }
 
 
@@ -699,7 +787,9 @@ def run(names: list[str]) -> unittest.TestResult:
     review._CACHE.clear()
     review._CAPTURE.clear()
     golden._CACHE.clear()
-    suite = unittest.defaultTestLoader.loadTestsFromNames([T + n for n in names])
+    # a name starting with "test_" is module-qualified (the spec-table and locator
+    # tests live in test_rdson_gate_voltage); the rest are review tests
+    suite = unittest.defaultTestLoader.loadTestsFromNames([n if n.startswith("test_") else T + n for n in names])
     suite.addTests(unittest.defaultTestLoader.loadTestsFromTestCase(golden.GoldenTests))
     stream = io.StringIO()
     return unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)

@@ -17,6 +17,7 @@ import unittest
 from pathlib import Path
 
 import numpy as np
+from unittest.mock import patch
 
 import rds_digitize_cache as dcache
 
@@ -269,6 +270,27 @@ class RefreezeTests(unittest.TestCase):
                     load_golden(part)
             finally:
                 GOLDEN = saved
+
+
+class PendingFieldsTests(unittest.TestCase):
+    """A PENDING entry that names its changed fields must pin them, and pin the rest."""
+
+    def test_named_fields_must_serve_the_new_value_and_the_rest_stay(self) -> None:
+        golden = {"status": "review_required", "validation_verdict": "not_evaluable",
+                  "anchor_verdicts": [{"vgs_v": 4.5, "verdict": "not_evaluable"}]}
+        changed = {"validation_verdict": {"frozen": "not_evaluable", "now": "consistent"}}
+        served = {"status": "review_required",
+                  "validation": {"verdict": "consistent", "anchors": [{"row": {"vgs_v": 4.5}, "verdict": "not_evaluable"}]}}
+        case = GoldenTests()
+        with patch.object(GoldenTests, "_check_served", lambda *a: None):
+            case._check_pending_fields("X", served, golden, {**changed, "curves": {}})        # passes
+            for bad in ({"validation": {**served["validation"], "verdict": "inconsistent"}},    # not the "now" value
+                        {"status": "ok"}):                                                         # an unnamed field moved
+                with self.assertRaises(AssertionError):
+                    case._check_pending_fields("X", {**served, **bad}, golden, {**changed, "curves": {}})
+            with self.assertRaises(AssertionError):                                                # stale "frozen"
+                case._check_pending_fields("X", served, golden,
+                                           {"validation_verdict": {"frozen": "verified", "now": "consistent"}, "curves": {}})
 
 
 def _plain(base: Path, like: dict) -> dict:
