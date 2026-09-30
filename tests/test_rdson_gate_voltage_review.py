@@ -1887,6 +1887,45 @@ class RoundSixTests(unittest.TestCase):
         self.assertTrue(decision["served"], decision)
 
 
+
+def _shift_x_label(text: str, dx: float):
+    """A `_calibrate` whose x-axis label `text` is moved `dx` px right (a known-bad input)."""
+    def shifted(gray, plot, labels, source, transform, page=None):
+        from dataclasses import replace as _replace
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as _axes
+        moved = [_replace(l, cx=l.cx + dx, x0=l.x0 + dx, x1=l.x1 + dx) if l.text == text and l.cy > plot.y1 else l
+                 for l in labels]
+        return _axes._calibrate(gray, plot, moved, source, transform, page)
+    return shifted
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class BatchAllV2Tests(unittest.TestCase):
+    """Fab's batch_all findings (FAB-FINDINGS-batch_all.md, 2026-09-30) and the batch agent's A-list."""
+
+    def test_f_all_2_tick_label_centred_on_the_frame_edge_is_inside(self):
+        # ME95N03T p3: "10" is printed centred under the right frame line; its ink
+        # centroid sits 8.5 px right of it. It was refused ("lies outside the plot frame").
+        row = _panel("ME95N03T_LCSC_C709730", 3, "t344")
+        self.assertNotEqual(row["status"], "refused", row.get("reasons"))
+        x = row["calibration"]["x_axis"]
+        self.assertIn(10.0, [t["value"] for t in x["ticks"]])
+        self.assertIn("centred on a frame edge", row["calibration"]["tick_source"])
+        self.assertAlmostEqual(_px_at(row, 10.0), row["plot_box_px"]["x1"], delta=1.0)
+
+    def test_f_all_2_known_bad_label_wholly_beyond_the_edge_is_refused(self):
+        # the same real labels with the "10" moved right until its ink box clears
+        # the frame edge (x0 1009 -> 1034 > x1 1014): no longer the edge's tick.
+        for dx in (25.0, 200.0):
+            results, _ = dcache.digitize_pdf(DS / "ME95N03T_LCSC_C709730.pdf",
+                                             patches=[(rgv, "_calibrate", _shift_x_label("10", dx))])
+            row = next(r for r in results if r["page"] == 3 and r["diagram"] == "t344")
+            # monotonic: farther out stays refused (at 200 px the label leaves the
+            # axis band and the remaining ladder fails on its own scatter)
+            self.assertEqual(row["status"], "refused", dx)
+            if dx == 25.0:
+                self.assertIn("consumed tick '10' lies outside the plot frame", " ".join(row.get("reasons", [])))
+
 def _vgs(row: dict, px: float) -> float:
     axis = row["calibration"]["x_axis"]
     return axis["m"] * px + axis["b"]

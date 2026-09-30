@@ -273,6 +273,15 @@ def _calibrate(
         raise RuntimeError("an OCR-read axis needs >= 3 consistent tick labels")
     for axis, name, lo, hi in ((raw_x, "x", plot.x0, plot.x1), (raw_y, "y", plot.y0, plot.y1)):
         outside = [t for t in axis.ticks if not lo - 6 <= t.pixel <= hi + 6]
+        straddling = [t for t in outside if name == "x" and _label_straddles_edge(t, numeric, lo, hi)]
+        if straddling:
+            # ME95N03T: the "10" is printed centred under the right frame line,
+            # but its ink centroid sits 8.5 px right of it (a "1" carries its
+            # ink right of its advance centre). A label whose own ink box spans
+            # the frame edge IS that edge's tick; one wholly beyond it is not.
+            source = (f"{source} (x tick(s) {[t.text for t in straddling]} centred on a frame edge: "
+                      "the label's ink box spans the edge)")
+            outside = [t for t in outside if t not in straddling]
         if outside:
             raise RuntimeError(f"{name} axis: consumed tick {outside[0].text!r} lies outside the plot frame")
     search = PlotBox(max(0, plot.x0 - 6), max(0, plot.y0 - 6), min(gray.shape[1] - 1, plot.x1 + 6), min(gray.shape[0] - 1, plot.y1 + 6))
@@ -295,6 +304,13 @@ def _calibrate(
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
     return Calibration(plot, x_axis, y_axis, source, binding, MAX_AXIS_RESIDUAL_PT * transform.scale_x, scatter,
                        tuple(float(v) for v in vertical), tuple(float(v) for v in horizontal))
+
+
+def _label_straddles_edge(tick, labels: list[TextLabel], lo: float, hi: float) -> bool:
+    """True when the x-axis label that produced ``tick`` has ink on both sides of a frame edge."""
+    owner = next((l for l in labels if abs(l.cx - tick.pixel) <= 0.5 and l.text == tick.text), None)
+    edge = lo if tick.pixel < lo else hi
+    return owner is not None and owner.x0 < edge < owner.x1
 
 
 def _seat_on_outer_tick_rules(plot: PlotBox, vertical, horizontal, x_axis, y_axis) -> PlotBox:
