@@ -289,15 +289,20 @@ class EndToEndTests(unittest.TestCase):
         self.assertAlmostEqual(rows[10.0]["chart_mohm"], 4.20, delta=0.08)
 
     def test_filled_outline_curves_with_leaderless_id_labels_go_to_review(self):
-        # "ID = 35A" / "ID = 1A" have no leaders; since F5-1 the IDs are bound
-        # by the ID order rule (35 A to the higher curve) and say so; the
-        # coincident tails keep the panel in review
+        # "ID = 35A" / "ID = 1A" have no leaders; since F5-1 the IDs were bound
+        # by the ID order rule. Since F-v2-1 the steep heads are traced to the
+        # frame, and "ID = 35A" now sits nearer its own (traced) head: bound by
+        # proximity, the 1 A by elimination -- the same values, 35 A on the
+        # curve with the higher RDS(on). The coincident tails keep the panel in review.
         row = _panel(self.results["FDP8870_onsemi"], 5, "9")
         self.assertEqual(row["trace_method"], "vector")
         self.assertEqual({c["trace_method"] for c in row["curves"]}, {"vector_filled_outline"})
         self.assertEqual(len(row["curves"]), 2)
         self.assertEqual(row["status"], "review_required")
-        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]}, {"id_order_rule"})
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]},
+                         {"proximity_far_curve_behind_near_curve", "elimination_last_label_last_curve"})
+        high = max(row["curves"], key=lambda c: next(r["rds_mohm"] for r in c["readouts"] if r["vgs_v"] == 3.3))
+        self.assertEqual(high["id_a"], 35.0)
         self.assertEqual(sorted(c["id_a"] for c in row["curves"]), [1.0, 35.0])
         self.assertTrue(any("coincident_with" in r for r in row["reasons"]), row["reasons"])
         self.assertEqual(row["validation"]["verdict"], "verified")

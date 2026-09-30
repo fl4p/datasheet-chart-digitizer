@@ -9,6 +9,7 @@ were re-checked against the PDFs before the fixes.
 
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import tempfile
@@ -22,6 +23,7 @@ from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces_mod
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
+from datasheet_chart_digitizer.capacitance_types import PlotBox
 
 import rds_digitize_cache as dcache
 
@@ -1368,11 +1370,13 @@ class RoundFiveTests(unittest.TestCase):
 
     def test_f5_1_ids_bound_by_the_order_rule(self):
         # at equal VGS the higher-ID curve has the higher RDS(on)
+        # (FDP8870 was the second example until F-v2-1: its traced heads now bind
+        # "ID = 35A" by proximity; DMN4008LFG's three curves took its place)
         for name, page, diagram, vgs, ids in (("RQ3E110AJ_Rohm", 7, "12", 2.5, (11.0, 5.5)),
-                                              ("FDP8870_onsemi", 5, "9", 3.3, (35.0, 1.0))):
+                                              ("DMN4008LFG_Diodes", 3, "4", 3.3, (10.0, 8.0, 6.0))):
             row = _panel(name, page, diagram)
-            upper, lower = sorted(row["curves"], key=lambda c: -_readout(c, vgs)["rds_mohm"])
-            self.assertEqual((upper["id_a"], lower["id_a"]), ids, name)
+            ordered = sorted(row["curves"], key=lambda c: -_readout(c, vgs)["rds_mohm"])
+            self.assertEqual(tuple(c["id_a"] for c in ordered), ids, name)
             for curve in row["curves"]:
                 self.assertEqual(curve["parameter_binding"]["id_a"], "id_order_rule", name)
             self.assertTrue(any(n.startswith("id_a_bound_by_order_rule") for n in row["label_binding_notes"]), name)
@@ -2008,6 +2012,307 @@ class BatchAllV2Tests(unittest.TestCase):
             self.assertEqual(row["status"], "refused", dx)
             if dx == 25.0:
                 self.assertIn("consumed tick '10' lies outside the plot frame", " ".join(row.get("reasons", [])))
+
+_REAL_CENTERLINE = traces_mod._polygon_centerline_px
+
+
+def _without_head_rows(polygons_px, plot):
+    """`_polygon_centerline_px` with its F-v2-1 head rows withheld (the v2 state)."""
+    columns, _rows, top, _shift = _REAL_CENTERLINE(polygons_px, plot)
+    return columns, [], top, 0.0
+
+
+def _relabel(text: str, new_text: str | None = None, dy: float = 0.0, left_of_plot: bool = True):
+    """A `_calibrate` whose y label ``text`` is misread as ``new_text`` and/or moved ``dy`` px (a known-bad input)."""
+    def relabelled(gray, plot, labels, source, transform, page=None):
+        from dataclasses import replace as _replace
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as _axes
+        out = []
+        for l in labels:
+            if l.text == text and (not left_of_plot or l.x1 <= plot.x0 + 4):
+                changes = {"text": new_text or l.text, "cy": l.cy + dy}
+                if hasattr(l, "y0"):
+                    changes.update(y0=l.y0 + dy, y1=l.y1 + dy)
+                l = _replace(l, **changes)
+            out.append(l)
+        return _axes._calibrate(gray, plot, out, source, transform, page)
+    return relabelled
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class BatchAllV3Tests(unittest.TestCase):
+    """Fab's batch_all v2 findings (FAB-FINDINGS-batch_all-v2.md, 2026-09-30)."""
+
+    # ---- F-v2-1 DMN4008LFG p3 fig 4 ---------------------------------------------
+
+    def test_f_v2_1_heads_traced_to_the_frame_each_curve_on_its_own_outline(self):
+        row = _panel("DMN4008LFG_Diodes", 3, "4")
+        y0 = row["plot_box_px"]["y0"]
+        by_id = {c["id_a"]: c for c in row["curves"]}
+        # three curves: the PDF paints three filled-outline groups (drawings 2269-2277,
+        # 2278-2286, 2287-2295 on p3), one per printed I_D
+        self.assertEqual(sorted(by_id), [6.0, 8.0, 10.0])
+        for current in (10.0, 8.0):
+            curve = by_id[current]
+            self.assertLessEqual(min(y for _x, y in curve["points_px"]), y0 + 3.5, current)
+            self.assertGreater(len(curve["row_traced_points_px"]), 400, current)
+            self.assertLessEqual(curve["row_fit_max_shift_px"], 3.0)
+        # the thinner 6 A line starts lower and keeps its own extent
+        low = by_id[6.0]
+        self.assertAlmostEqual(min(y for _x, y in low["points_px"]), low["source_path_top_px"][1], delta=1.0)
+        self.assertGreater(low["source_path_top_px"][1], y0 + 150)
+        self.assertFalse(any("head_not_traced" in r for r in row["reasons"]), row["reasons"])
+        # every added head point lies on the curve's own outline rows: none moved an old point
+        for curve in row["curves"]:
+            self.assertEqual(curve["max_rise_fraction_of_axis"], 0.0)
+
+    def test_f_v2_1_ids_bound_by_the_order_rule_after_unresolvable_arrow_tips(self):
+        row = _panel("DMN4008LFG_Diodes", 3, "4")
+        notes = row["label_binding_notes"]
+        self.assertIn("id_a=10_label_unbound_leader_tip_between_touching_curves", notes)
+        self.assertIn("id_a=8_label_unbound_leader_tip_between_touching_curves", notes)
+        self.assertTrue(any(n.startswith("id_a_bound_by_order_rule (RDS order 10 A > 8 A > 6 A") for n in notes), notes)
+        self.assertIn({"text": "Ip = 6.0A", "params": {"id_a": 6.0}}, row["labels_seen"])   # glyph-outline label, OCR
+        ordered = sorted(row["curves"], key=lambda c: -_readout(c, 3.3)["rds_mohm"])
+        self.assertEqual([c["id_a"] for c in ordered], [10.0, 8.0, 6.0])
+
+    def test_f_v2_1_known_bad_untraced_head_is_named(self):
+        # the v2 state: head rows withheld -> every steep head stops short of its
+        # source path's top (the 10 A and 8 A heads by ~220 px), and the extent check
+        # names all three
+        results, _ = dcache.digitize_pdf(DS / "DMN4008LFG_Diodes.pdf",
+                                         patches=[(traces_mod, "_polygon_centerline_px", _without_head_rows)])
+        row = next(r for r in results if r["page"] == 3 and r["diagram"] == "4")
+        heads = [r for r in row["reasons"] if "head_not_traced_to_frame (the source path continues" in r]
+        self.assertEqual(len(heads), 3, row["reasons"])
+
+    def test_f_v2_1_known_bad_rows_that_are_not_one_stroke_are_not_served(self):
+        rows = [(100.0 + 0.01 * i, float(50 + i)) for i in range(60)]
+        fitted, shift = traces_mod._monotone_rows(rows)
+        self.assertLessEqual(shift, 1e-9)
+        bent = rows[:30] + [(x - 12.0, y) for x, y in rows[30:]]   # a 12 px step back: two strokes
+        _fitted, shift = traces_mod._monotone_rows(bent)
+        self.assertGreater(shift, traces_mod.OUTLINE_ROW_MAX_FIT_PX)
+
+    def test_f_v2_1_no_glyph_ocr_on_a_vector_chart_without_glyph_outlines(self):
+        import pymupdf
+        from datasheet_chart_digitizer.crop_transform import CropTransform
+        from datasheet_chart_digitizer.capacitance_types import PlotBox as _PB
+        for name, page, diagram, expected in (("AON7524_AOS", 3, "5", False), ("DMN4008LFG_Diodes", 3, "4", True)):
+            row = _panel(name, page, diagram)
+            import cv2 as _cv2
+            shape = _cv2.imread(str(self._crop(name, page, diagram))).shape
+            transform = CropTransform.for_chart({"crop_box_pt": row["crop_box_pt"]}, shape)
+            box = row["plot_box_px"]
+            with pymupdf.open(DS / f"{name}.pdf") as document:
+                got = rgv._has_outline_glyphs(document[page - 1], transform, _PB(box["x0"], box["y0"], box["x1"], box["y1"]))
+            self.assertEqual(got, expected, name)
+
+    def _crop(self, name, page, diagram):
+        OUT_ROOT.mkdir(exist_ok=True)
+        tmp = tempfile.mkdtemp(prefix="v3crop-", dir=OUT_ROOT)
+        dcache.digitize_pdf(DS / f"{name}.pdf", out_dir=Path(tmp))
+        return Path(tmp) / "crops" / name / f"p{page:02d}_d{diagram}.png"
+
+    # ---- F-v2-2 ZVNL120A p3: log axes, detected from the printed ticks -------------
+
+    def test_f_v2_2_log_log_panel_is_calibrated_and_traced(self):
+        row = _panel("ZVNL120A_Diodes", 3, "t394")
+        self.assertEqual(row["status"], "review_required", row.get("reasons"))
+        cal = row["calibration"]
+        self.assertEqual((cal["x_axis"]["model"], cal["y_axis"]["model"]), ("log10", "log10"))
+        self.assertEqual([t["value"] for t in cal["x_axis"]["ticks"]], [1.0, 10.0, 20.0])
+        self.assertEqual(sorted(t["value"] for t in cal["y_axis"]["ticks"]), [1.0, 10.0, 100.0])
+        self.assertEqual(cal["grid_binding"], "snapped_to_full_span_grid")
+        self.assertIn("x axis bound on its log rule ladder", cal["tick_source"])
+        self.assertIn("y tick(s) ['1'] centred on a frame edge", cal["tick_source"])
+        # 1 V on the left frame, 20 V on the right frame (both are rules of the ladder)
+        box = row["plot_box_px"]
+        x = cal["x_axis"]
+        self.assertAlmostEqual((math.log10(1.0) - x["b"]) / x["m"], box["x0"], delta=1.5)
+        # the print's 20 V rule sits ~4 px past the log extrapolation of the 1-10 V
+        # decade; the ladder fit spreads that (residual ~1.4 px), so 20 V lands ~2.5 px short
+        self.assertAlmostEqual((math.log10(20.0) - x["b"]) / x["m"], box["x1"], delta=3.0)
+        self.assertLessEqual(x["residual_px"], 1.5)
+        by_id = {c["id_a"]: c for c in row["curves"]}
+        self.assertEqual(sorted(by_id), [0.1, 0.5, 1.0])
+        self.assertEqual({c["parameter_binding"]["id_a"] for c in row["curves"]}, {"id_order_rule"})
+        low = by_id[0.1]
+        # sanity only (the print: ~8-9 Ohm at 2.5 V, ~6 at 3.3 V, ~5.5 at 4.5 V)
+        for vgs, lo, hi in ((2.5, 7000, 10000), (3.3, 5500, 7200), (4.5, 5000, 6300)):
+            self.assertTrue(lo <= _readout(low, vgs)["rds_mohm"] <= hi, (vgs, low["readouts"]))
+        self.assertEqual({c["temperature_c"] for c in row["curves"]}, {None})   # none printed for this chart
+
+    def test_f_v2_2_known_bad_misread_log_label_is_refused(self):
+        # the same real labels with the y "10" read as "16": 1/16/100 is no log ladder
+        results, _ = dcache.digitize_pdf(DS / "ZVNL120A_Diodes.pdf",
+                                         patches=[(rgv, "_calibrate", _relabel("10", "16"))])
+        row = next(r for r in results if r["page"] == 3)
+        self.assertEqual(row["status"], "refused")
+        self.assertTrue(row["reasons"][0].startswith("axes_uncalibrated"), row["reasons"])
+
+    def test_f_v2_2_y_straddle_needs_the_labels_own_box_across_the_edge(self):
+        from dataclasses import replace as _replace
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes_mod
+        from datasheet_chart_digitizer.numeric_axis import AxisTick
+        row = _panel("ZVNL120A_Diodes", 3, "t394")
+        y1 = row["plot_box_px"]["y1"]
+        # the real "1" (text layer): centre 8.4 px under the bottom rail, box 25 px tall
+        real = axes_mod._LayerLabel("1", 175.6, y1 + 8.4, 169.4, 181.7, y1 - 4.0, y1 + 20.8)
+        tick = AxisTick("1", 1.0, real.cy)
+        self.assertTrue(axes_mod._label_straddles_edge(tick, [real], row["plot_box_px"]["y0"], y1, "y"))
+        clear = _replace(real, cy=real.cy + 20.0, y0=real.y0 + 20.0, y1=real.y1 + 20.0)   # its box wholly below
+        self.assertFalse(axes_mod._label_straddles_edge(AxisTick("1", 1.0, clear.cy), [clear], row["plot_box_px"]["y0"], y1, "y"))
+        # a label without a box height (crop centroid only) never qualifies on y
+        from datasheet_chart_digitizer.diode_forward_voltage import TextLabel as _TL
+        bare = _TL("1", 175.6, y1 + 8.4, 169.4, 181.7)
+        self.assertFalse(axes_mod._label_straddles_edge(tick, [bare], row["plot_box_px"]["y0"], y1, "y"))
+
+    def test_f_v2_2_known_bad_y_label_clear_of_the_frame_is_outside(self):
+        results, _ = dcache.digitize_pdf(DS / "ZVNL120A_Diodes.pdf",
+                                         patches=[(rgv, "_calibrate", _relabel("1", dy=40.0))])
+        row = next(r for r in results if r["page"] == 3)
+        self.assertNotIn("y tick(s) ['1'] centred on a frame edge", (row.get("calibration") or {}).get("tick_source", ""))
+
+    def test_f_v2_2_known_bad_ladder_that_is_not_log_spaced_does_not_bind(self):
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes_mod
+        from datasheet_chart_digitizer.numeric_axis import fit_numeric_axis
+        # the real label fit (ZVNL120A's x labels) and the real rule positions (the
+        # served, ladder-bound calibration's 1..10, 20 V)
+        raw = fit_numeric_axis([("1", 209.0), ("10", 613.9), ("20", 736.9)], "X axis")
+        self.assertEqual(raw.model, "log10")
+        served = _panel("ZVNL120A_Diodes", 3, "t394")["calibration"]["x_axis"]
+        log_rules = [(math.log10(v) - served["b"]) / served["m"] for v in list(range(1, 11)) + [20]]
+        self.assertIsNotNone(axes_mod._snap_log_ladder(raw, tuple(log_rules), "X axis"))
+        linear_rules = tuple(log_rules[0] + (log_rules[-1] - log_rules[0]) * i / 10 for i in range(11))  # linear grid, log labels
+        self.assertIsNone(axes_mod._snap_log_ladder(raw, linear_rules, "X axis"))
+        # a ladder missing most of its minor rules does not confirm log spacing
+        sparse = tuple(log_rules[i] for i in (0, 1, 2, 9, 10))
+        self.assertIsNone(axes_mod._snap_log_ladder(raw, sparse, "X axis"))
+
+    def test_f_v2_2_header_column_needs_its_header(self):
+        from datasheet_chart_digitizer.rdson_gate_voltage_locate import upright_pdf
+        from datasheet_chart_digitizer.finder_types import PageText, Word
+        from datasheet_chart_digitizer.crop_transform import CropTransform
+        from datasheet_chart_digitizer.capacitance_types import PlotBox as _PB
+        import pymupdf
+        row = _panel("ZVNL120A_Diodes", 3, "t394")
+        OUT_ROOT.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=OUT_ROOT) as tmp, pymupdf.open(upright_pdf(DS / "ZVNL120A_Diodes.pdf", Path(tmp))) as doc:
+            page = doc[2]
+            words = [Word(str(w[4]), *map(float, w[:4])) for w in page.get_text("words")]
+        crop = self._crop("ZVNL120A_Diodes", 3, "t394")
+        import cv2 as _cv2
+        transform = CropTransform.for_chart({"crop_box_pt": row["crop_box_pt"]}, _cv2.imread(str(crop)).shape)
+        box = row["plot_box_px"]
+        plot = _PB(box["x0"], box["y0"], box["x1"], box["y1"])
+        text = PageText(3, 422.0, 595.0, words, "text_layer")
+        got = rgv._header_column_labels(text, transform, plot)
+        self.assertEqual([l.text for l in got], ["ID=1A", "ID=0.5A", "ID=0.1A"])
+        headless = PageText(3, 422.0, 595.0, [w for w in words if w.text != "ID="], "text_layer")
+        self.assertEqual(rgv._header_column_labels(headless, transform, plot), [])
+
+    def test_f_v2_2_linear_panels_keep_linear_axes(self):
+        for name, page, diagram in (("CSD17306Q5A_TI", 4, "7"), ("AON7524_AOS", 3, "5"), ("ME95N03T_LCSC_C709730", 3, "t344")):
+            cal = _panel(name, page, diagram)["calibration"]
+            self.assertEqual((cal["x_axis"]["model"], cal["y_axis"]["model"]), ("linear", "linear"), name)
+
+    # ---- unit-level known-bads for the new guards ------------------------------------
+
+    def test_f_v2_1_rows_that_step_back_are_not_served(self):
+        # one curve group whose steep part steps 15 px BACK (left) half-way down:
+        # the rows are two strokes, not one; its flat tail sets the stroke width
+        top = [(115.0, 50.0), (118.0, 50.0), (118.0, 150.0), (115.0, 150.0)]
+        low = [(100.0, 150.0), (103.0, 150.0), (103.0, 248.0), (100.0, 248.0)]
+        tail = [(100.0, 248.0), (300.0, 248.0), (300.0, 251.0), (100.0, 251.0)]
+        plot = PlotBox(90, 40, 320, 260)
+        columns, rows, _top, shift = traces_mod._polygon_centerline_px([top, low, tail], plot)
+        self.assertEqual(rows, [])
+        self.assertGreater(shift, traces_mod.OUTLINE_ROW_MAX_FIT_PX)
+        # the same shape stepping FORWARD (down and right) is one stroke: served
+        mirrored = [[(215.0 - x, y) for x, y in poly] for poly in (top, low)]
+        columns, rows, _top, shift = traces_mod._polygon_centerline_px(mirrored + [tail], plot)
+        self.assertGreater(len(rows), 100)
+        self.assertLessEqual(shift, traces_mod.OUTLINE_ROW_MAX_FIT_PX)
+
+    def test_f_v2_2_robust_ladder_finds_a_log_axis_past_a_misread(self):
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes_mod
+        from datasheet_chart_digitizer.diode_forward_voltage import TextLabel as _TL
+        plot = PlotBox(200, 50, 700, 650)
+        labels = [_TL(str(v), 180.0, 650.0 - 200.0 * math.log10(v), 170.0, 190.0) for v in (1, 10, 100, 1000)]
+        labels.append(_TL("5", 180.0, 650.0 - 200.0 * math.log10(50), 170.0, 190.0))   # "50" misread "5": not monotone
+        axis = axes_mod._axis_or_robust(labels, plot, "y", [])
+        self.assertEqual(axis.model, "log10")
+        self.assertEqual(sorted(t.value for t in axis.ticks), [1.0, 10.0, 100.0, 1000.0])
+
+    def test_f_v2_2_log_readout_end_tolerance_is_one_pixel_in_volts(self):
+        from datasheet_chart_digitizer.numeric_axis import fit_numeric_axis
+        axis = fit_numeric_axis([("1", 200.0), ("10", 605.0), ("20", 726.9)], "X axis")
+        tolerance = report.vgs_per_px(axis)
+        self.assertTrue(callable(tolerance))
+        self.assertAlmostEqual(tolerance(20.0), 20.0 * math.log(10) * abs(axis.m), places=9)
+        points = [(v, 5000.0 - 10 * v) for v in np.linspace(2.0, 19.95, 200)]
+        self.assertEqual(report.readouts(points, True, [], tolerance, targets=(20.0,))[0]["status"], "read")
+        # 19.95 -> 20 V is 0.45 px here; a 20 px-short end is still off the chart
+        short = [(v, r) for v, r in points if v <= 19.0]
+        self.assertEqual(report.readouts(short, True, [], tolerance, targets=(20.0,))[0]["status"], "not_on_chart")
+
+
+_DMN_Y_LABELS = [("0.04", 59.6), ("0.035", 152.0), ("0.03", 243.1), ("0.025", 335.2), ("0.02", 426.5),
+                 ("0.015", 517.7), ("0.01", 610.0), ("0.005", 701.1), ("0", 792.2)]
+# DMN4008LFG p3's own vector rules (crop px), plus the two flat curve tails the raster
+# detector reports as rules beside the 0.005 rule (698 / 700 px)
+_DMN_Y_RULES = (50.1, 144.2, 238.5, 332.7, 426.0, 520.1, 614.5, 698.0, 700.0, 708.6, 801.7)
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class BatchAllV4Tests(unittest.TestCase):
+    """Fab's v3 finding F-v3-1 (DMN4008LFG: "y-axis ticks are off") and its sweep."""
+
+    def _raw(self):
+        from datasheet_chart_digitizer.numeric_axis import fit_numeric_axis
+        return fit_numeric_axis(_DMN_Y_LABELS, "Y axis")
+
+    def test_f_v3_1_y_binds_to_the_rules_its_labels_name(self):
+        row = _panel("DMN4008LFG_Diodes", 3, "4")
+        cal = row["calibration"]
+        self.assertEqual(cal["grid_binding"], "snapped_to_full_span_grid")
+        self.assertIn("y axis bound on the rules its labels name", cal["tick_source"])
+        y = {t["value"]: t["pixel"] for t in cal["y_axis"]["ticks"]}
+        box = row["plot_box_px"]
+        self.assertAlmostEqual(y[0.04], box["y0"], delta=0.6)
+        self.assertAlmostEqual(y[0.0], box["y1"], delta=0.6)
+        self.assertAlmostEqual(y[0.005], 708.0, delta=1.0)   # the rule, not a curve tail at 698/700
+        self.assertFalse(any(r.startswith("axis_ticks_not_bound_to_grid") for r in row["reasons"]))
+        by_id = {c["id_a"]: c for c in row["curves"]}
+        self.assertAlmostEqual(_readout(by_id[10.0], 4.5)["rds_mohm"], 6.99, delta=0.02)
+
+    def test_f_v3_1_lattice_known_bads(self):
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes_mod
+        raw = self._raw()
+        bound = axes_mod._bind_linear_lattice(raw, _DMN_Y_RULES, "Y axis")
+        self.assertIsNotNone(bound)
+        self.assertEqual(sorted(round(t.pixel, 1) for t in bound.ticks),
+                         [50.1, 144.2, 238.5, 332.7, 426.0, 520.1, 614.5, 708.6, 801.7])
+        # one rule removed: a label without its rule -> refused
+        missing = tuple(r for r in _DMN_Y_RULES if r != 426.0)
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, missing, "Y axis"))
+        # one rule shifted 8 px: the rules are no longer one lattice -> refused
+        shifted = tuple(r + 8.0 if r == 426.0 else r for r in _DMN_Y_RULES)
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, shifted, "Y axis"))
+        # a second complete lattice 4 px away: the rules do not say which -> refused
+        doubled = tuple(sorted(set(_DMN_Y_RULES) | {r + 4.0 for r in _DMN_Y_RULES}))
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, doubled, "Y axis"))
+
+    def test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules(self):
+        # IRLB8721 / IRLTS6342 (goldens) paint their rules as filled rectangles; the
+        # raster read of them wobbles +-1 px, too much for a lattice. Their labels
+        # already sat on the rules, so the served values do not move (0.0000 %).
+        for name, page in (("IRLB8721_IFX", 6), ("IRLTS6342_IFX", 5)):
+            row = _panel(name, page, "12")
+            self.assertEqual(row["calibration"]["grid_binding"], "snapped_to_full_span_grid", name)
+            self.assertFalse(any(r.startswith("axis_ticks_not_bound_to_grid") for r in row["reasons"]), name)
+
 
 def _vgs(row: dict, px: float) -> float:
     axis = row["calibration"]["x_axis"]

@@ -31,8 +31,10 @@ Guard checklist (~/.claude/CLAUDE.md), answered for this plugin:
      named reason; no path defaults to ok.
   2. Monotonicity: a larger rise, more clipping, more unbound labels, a
      larger table residual can only move a panel further from ok.
-  3. Preconditions: the x axis must be owned (title names VGS, not ID), linear;
-     the y unit must be read from the panel itself.
+  3. Preconditions: the x axis must be owned (title names VGS, not ID); each
+     axis is linear or log10 as its printed ticks say (the shared fitter picks
+     the model, never a setting; F-v2-2); the y unit must be read from the
+     panel itself.
   4./5. No cache.  6. Every result records its trace method (vector / raster),
      tick source (text layer / OCR), label-binding method per parameter and the
      table row it was checked against.
@@ -79,6 +81,7 @@ from .rdson_gate_voltage_report import (
     READOUT_NOTE,
     READOUT_VGS_V,
     readouts,
+    vgs_per_px,
     validate_against_table,
     write_overlay,
     write_points,
@@ -105,6 +108,7 @@ FRAME_CONTACT_PX = 2.5
 FRAME_RUN_FRACTION = 0.03
 MAX_BACKTRACK_PX = 3.0
 MAX_MERGED_FRACTION = 0.05
+HEAD_EXTENT_TOL_PX = 3.0         # F-v2-1: served top may stop this short of the source path's top
 MAX_PLAUSIBLE_VGS_AXIS_V = 30.0   # beyond any gate rating: a scale misread (e.g. "05" for 0.5)
 
 # --------------------------------------------------------------------------- driver
@@ -251,8 +255,6 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         "x_quantity": "VGS [V]",
     }
     reasons: list[str] = []
-    if calibration.x_axis.model != "linear":
-        raise PanelRefused("x_axis_not_linear: the VGS axis calibrated as logarithmic")
     residual = calibration.tick_scatter_px
     row["calibration"]["tick_scatter_px_before_frame_anchoring"] = round(residual, 3)
     if residual > calibration.residual_limit_px:
@@ -279,7 +281,8 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     extra = None
     if method == "raster":
         extra = (ocr_labels or []) + plot_ocr
-    plot_labels = _plot_labels(words, transform, calibration.plot, extra)
+    plot_labels = _plot_labels(words, transform, calibration.plot, extra,
+                               glyph_labels=ocr() if method == "vector" and _has_outline_glyphs(page, transform, calibration.plot) else None)
     if method == "raster":
         grid = row.get("raster_grid_rules_px", {})
         raster_lines, tail_labels = raster_leaders(
@@ -621,12 +624,19 @@ def _text_boxes_px(words: PageText, transform, plot: PlotBox):
     return boxes
 
 
-def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels) -> list[Label]:
+def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels, glyph_labels=None) -> list[Label]:
     """Label lines inside the plot (legends included) with their parameters.
 
     Words are grouped into lines in PAGE POINTS (the shared line grouper's
     tolerance is in points), and an OCR word is dropped where a word from a
     better source already covers it, so one label is never read twice.
+
+    ``glyph_labels`` (vector charts, F-v2-1): crop-OCR words for labels the
+    PDF draws as glyph OUTLINES rather than text (DMN4008LFG's "I_D = 6.0A").
+    They only fill places the text layer leaves empty, an "=" is kept only
+    between two such words on one baseline, and a line made of them alone is
+    kept only when it names a parameter -- OCR noise off the curves never
+    becomes a label.
     """
     x0p, y0p = transform.to_pt(plot.x0 - 4, plot.y0 - 4)
     x1p, y1p = transform.to_pt(plot.x1 + 4, plot.y1 + 4)
@@ -647,16 +657,122 @@ def _plot_labels(words: PageText, transform, plot: PlotBox, ocr_labels) -> list[
         word = Word(l.text, ax, ay, bx, by)
         if inside(word):
             selected.append(word)
+    glyph_words: set[int] = set()
+    if glyph_labels:
+        boxed = [l for l in glyph_labels if isinstance(l, _BoxedLabel)]
+        for l in boxed:
+            ax, ay = transform.to_pt(l.x0, l.y0)
+            bx, by = transform.to_pt(l.x1, l.y1)
+            word = Word(l.text, ax, ay, bx, by)
+            if not inside(word) or any(_boxes_overlap(word, w) for w in selected):
+                continue
+            if not any(ch.isalnum() for ch in l.text):
+                # judged by the flanking words' text height (an "=" glyph is short)
+                flanked = [o for o in boxed if o is not l and any(ch.isalnum() for ch in o.text)
+                           and abs(0.5 * (o.y0 + o.y1) - 0.5 * (l.y0 + l.y1)) <= 0.5 * (o.y1 - o.y0)
+                           and (0 <= l.x0 - o.x1 <= 1.5 * (o.y1 - o.y0) or 0 <= o.x0 - l.x1 <= 1.5 * (o.y1 - o.y0))]
+                if l.text.strip() != "=" or not (any(o.x1 <= l.x0 for o in flanked) and any(o.x0 >= l.x1 for o in flanked)):
+                    continue
+            glyph_words.add(id(word))
+            selected.append(word)
     selected = _drop_overlapping_duplicates(selected)
     out = []
     for line in group_words_into_lines(selected):
         for segment in (piece for gap_part in _split_gaps(line) for piece in _split_parameters(gap_part)):
             text = line_text(segment)
+            params = parse_label_params(text)
+            if glyph_words and not params and all(id(w) in glyph_words for w in segment):
+                continue
             ax, ay, bx, by = line_bbox(segment)
             px0, py0 = transform.to_px(ax, ay)
             px1, py1 = transform.to_px(bx, by)
-            out.append(Label(text, px0, py0, px1, py1, parse_label_params(text)))
+            out.append(Label(text, px0, py0, px1, py1, params))
+    return out + _header_column_labels(words, transform, plot)
+
+
+_COLUMN_HEADER_RE = re.compile(r"^(?:I\s*D|T\s*[JjCcAa]?)\s*=$")
+_COLUMN_VALUE_RE = re.compile(r"^\d+(?:\.\d+)?\s*(?:m?A|°\s*C|℃)$")
+COLUMN_MARGIN_PT = 20.0
+
+
+def _header_column_labels(words: PageText, transform, plot: PlotBox) -> list[Label]:
+    """Curve labels printed as a column beside the frame: "ID=" over "1A", "0.5A", "0.1A".
+
+    ZVNL120A names its three curves at their right ends, outside the frame,
+    with the parameter printed once as a header (F-v2-2). A header word that
+    is exactly a parameter name and "=" (ID=, TJ=, T=) within
+    COLUMN_MARGIN_PT right of the frame starts a column; the bare values on
+    the lines directly below it (same column, no gap over one line height)
+    each become a label "<header><value>" at the value's own box. The column
+    ends at the first line that is not a bare value.
+    """
+    x0p, y0p = transform.to_pt(plot.x0, plot.y0)
+    x1p, y1p = transform.to_pt(plot.x1, plot.y1)
+    margin = [w for w in words.words if x1p <= w.x0 <= x1p + COLUMN_MARGIN_PT and y0p - 4 <= 0.5 * (w.y0 + w.y1) <= y1p + 4]
+    out: list[Label] = []
+    for header in margin:
+        if not _COLUMN_HEADER_RE.match(header.text.strip()):
+            continue
+        height = header.y1 - header.y0
+        bottom, column = header.y1, []
+        for w in sorted(margin, key=lambda w: w.y0):
+            if w is header or w.y0 < header.y1 - 0.5 or w.x0 > header.x1 or w.x1 < header.x0:
+                continue
+            if w.y0 - bottom > height or not _COLUMN_VALUE_RE.match(w.text.strip()):
+                break
+            column.append(w)
+            bottom = w.y1
+        for w in column:
+            text = f"{header.text.strip()}{w.text.strip()}"
+            params = parse_label_params(text)
+            if not params:
+                continue
+            px0, py0 = transform.to_px(w.x0, w.y0)
+            px1, py1 = transform.to_px(w.x1, w.y1)
+            out.append(Label(text, px0, py0, px1, py1, params))
     return out
+
+
+GLYPH_MAX_PT = 12.0
+GLYPH_RUN_MIN = 4
+
+
+def _has_outline_glyphs(page, transform, plot: PlotBox) -> bool:
+    """Does the plot hold a line of text drawn as filled glyph outlines (no text layer)?
+
+    A run of >= GLYPH_RUN_MIN small non-white filled paths on one baseline,
+    none under a text-layer word: DMN4008LFG's "I_D = 6.0A" (7 glyph paths).
+    Only then is the crop OCRed for plot labels on a vector chart.
+    """
+    x0, y0 = transform.to_pt(plot.x0, plot.y0)
+    x1, y1 = transform.to_pt(plot.x1, plot.y1)
+    words = [w[:4] for w in page.get_text("words")]
+    small = []
+    for drawing in page.get_drawings():
+        fill = drawing.get("fill")
+        r = drawing["rect"]
+        if drawing.get("type") != "f" or fill is None or min(fill) >= 0.9:
+            continue
+        if not (x0 <= r.x0 and r.x1 <= x1 and y0 <= r.y0 and r.y1 <= y1) or r.width > GLYPH_MAX_PT or r.height > GLYPH_MAX_PT:
+            continue
+        if any(min(r.x1, w[2]) > max(r.x0, w[0]) and min(r.y1, w[3]) > max(r.y0, w[1]) for w in words):
+            continue
+        small.append(r)
+    small.sort(key=lambda r: r.x0)
+    for seed in small:
+        run = [seed]
+        for r in small:
+            if r is seed or abs(0.5 * (r.y0 + r.y1) - 0.5 * (seed.y0 + seed.y1)) > 4.0:
+                continue
+            if 0 <= r.x0 - run[-1].x1 <= 6.0:
+                run.append(r)
+        if len(run) >= GLYPH_RUN_MIN:
+            return True
+    return False
+
+
+def _boxes_overlap(a, b) -> bool:
+    return min(a.x1, b.x1) > max(a.x0, b.x0) and min(a.y1, b.y1) > max(a.y0, b.y0)
 
 
 def _add_condition_labels(plot_labels: list[Label], row: dict, boxes, rule_free: list[Label]) -> list[Label]:
@@ -784,6 +900,8 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
     def height(t: Trace) -> float:
         added = {tuple(p) for p in t.frame_traced.get("measured_px", []) + t.frame_traced.get("across_frame_stroke_px", [])}
         added |= {tuple(p) for n in t.gap_traced for p in n.get("measured_px", []) + n.get("bridged_on_rule_px", [])}
+        if t.method == "vector_filled_outline":
+            added |= {tuple(p) for p in t.row_traced_points}   # F-v2-1 head rows: never renumber curves
         return float(np.median([p[1] for p in t.points_px if tuple(p) not in added] or [p[1] for p in t.points_px]))
 
     ordered = sorted(traces, key=height)
@@ -839,6 +957,19 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             reasons.append(f"curve_{index}_head_not_traced_to_frame (printed ink continues to the frame; "
                            f"not traced from {here:.3g} to {top:.3g} mOhm)")
         curve["row_traced_points_px"] = [[round(x, 2), round(y, 2)] for x, y in trace.row_traced_points]
+        if trace.method.startswith("vector") and trace.source_top_px is not None:
+            # F-v2-1: a vector trace is only "the whole source path" if its
+            # served extent reaches where the path ends; say so when it does not
+            source_y = max(trace.source_top_px[1], plot.y0)
+            served_y = min(y for _x, y in trace.points_px)
+            curve["source_path_top_px"] = [round(v, 2) for v in trace.source_top_px]
+            if trace.row_fit_max_shift_px:
+                curve["row_fit_max_shift_px"] = trace.row_fit_max_shift_px
+            if served_y - source_y > HEAD_EXTENT_TOL_PX:
+                top = calibration.y_axis.value(source_y) * scale
+                here = calibration.y_axis.value(served_y) * scale
+                reasons.append(f"curve_{index}_head_not_traced_to_frame (the source path continues to y={source_y:.0f} px; "
+                               f"not traced from {here:.3g} to {top:.3g} mOhm)")
         # round 5: right end followed to the frame (measured columns, and
         # columns inside the frame stroke bridged to the ink beyond it)
         frame = trace.frame_traced
@@ -857,7 +988,24 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             reasons.append(f"curve_{index}_not_single_valued_in_vgs")
         if trace.merged_columns > MAX_MERGED_FRACTION * (plot.x1 - plot.x0):
             reasons.append(f"curve_{index}_shares_{trace.merged_columns}_columns_with_another_curve")
-        rise = _max_rise([p[1] for p in points], log_y)
+        # the rise check runs on the points the column samplers produced; the
+        # F-v2-1 head rows of a filled outline are fitted monotone on their own
+        # (their order against a tall column's mid-run point is not a rise)
+        head_rows = {(round(x, 2), round(y, 2)) for x, y in trace.row_traced_points} \
+            if trace.method == "vector_filled_outline" else set()
+        if trace.method == "vector":
+            # a stroked vector trace is the source path in the source's own
+            # order: judge the rise ALONG it. Sorted by VGS, a near-vertical
+            # head that the PDF draws leaning back by a pixel or two
+            # (ZVNL120A: 0.24 / 0.40 pt) interleaves top and bottom of the head
+            # and reads as RDS rising by the head's height (F-v2-2). A path
+            # that really climbs (F-all-1's hop: up one curve, down the next)
+            # still rises along its own order.
+            frame_set = set(at_frame)
+            sequence = [calibration.y_axis.value(y) * scale for x, y in trace.points_px if (x, y) not in frame_set]
+        else:
+            sequence = [p[1] for p in points if (round(p[2], 2), round(p[3], 2)) not in head_rows]
+        rise = _max_rise(sequence, log_y)
         curve["max_rise_fraction_of_axis"] = round(rise / y_span, 4) if y_span else None
         if y_span and rise / y_span > MAX_RISE_FRACTION:
             refusal = refusal or (
@@ -945,7 +1093,7 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
                 for v in READOUT_VGS_V
             ]
         else:
-            curve["readouts"] = readouts(points, log_y, curve["gaps"], abs(calibration.x_axis.m), open_left, open_right)
+            curve["readouts"] = readouts(points, log_y, curve["gaps"], vgs_per_px(calibration.x_axis), open_left, open_right)
         curves.append(curve)
     reasons.extend(_mark_coincident(curves, calibration))
     return curves, reasons, refusal

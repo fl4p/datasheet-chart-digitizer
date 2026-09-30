@@ -156,8 +156,26 @@ a careful reader could make the same mistake.
    `text_layer`, confirm with `pdftotext -bbox` that the labels exist in
    the text layer. *Real case:* RQ3E110AJ claimed `text_layer`, but its
    page's text layer holds 2 numbers in total; the chart is an image.
-4. Recompute the fit residual at every used tick, and where the fitted
-   axis puts the frame edges versus where the frame is printed.
+4. **[F] Ticks on their rules, measured.** Recompute the fit residual at
+   every used tick. For every labelled tick, measure the pixel distance
+   between where the fit puts that value and where its printed gridline or
+   frame edge is. Report the worst distance per axis in pixels and as a
+   value error at a typical readout.
+
+   A trace lying on the ink proves nothing here: a correct trace on a
+   shifted or squeezed axis reads wrong values, and the overlay still looks
+   right. Any calibration warning the tool emits (e.g.
+   `axis_ticks_not_bound_to_grid`, `label_centroids_only`) is rule-4
+   material. Measure it and report the number. Never file it under "needs
+   a human decision" without that measurement.
+
+   *Real case:* DMN4008LFG batch_all v2/v3. The y ticks sat on label
+   centroids, 0.04 at 59.6 px and 0 at 792.2 px, while the printed rules
+   are the frame edges at 50 and 802 px. The axis was squeezed 2.6 %, and
+   values near 7 mΩ read about 0.35 mΩ low. The tool flagged it; the batch
+   agent filed it as "possibly not a defect, the traces lie on the print";
+   Claude carried that forward unmeasured through two rounds. Fab found it
+   by eye: "y-axis ticks are off".
 
 **Curves**
 
@@ -286,7 +304,7 @@ and on the matching source crops for check 17. Do bulk comparison in code.
 1. **Access:** what you ran, what you fetched, and the image count.
 2. **Per-panel table:** panel | defects found (each with checks 1–23
    references) | readouts you confirm or dispute, with your measured value.
-3. **For each [F] check (2, 3, 7, 8, 12, 13, 14, 16, 17, 18, 19):** an
+3. **For each [F] check (2, 3, 4, 7, 8, 12, 13, 14, 16, 17, 18, 19):** an
    explicit line per panel — "checked, clean" or the finding. For check 12,
    the line is the inventory itself: each printed text item → the parameter
    it sets → what the tool served. A blank means "not done", and the review
@@ -329,5 +347,9 @@ commit `e74f698`). A competent run must report:
   BRCS020N03RA (free labels "125°  C" / "25°  C");
 - source curves hidden under the traces: WSR3090, and the same rendering on
   every panel.
+
+Then run it on batch_all v3 (`rds-vgs/batch_all_v3/rdson_gate_voltage.json`,
+repo commit `934f46a`). A competent run must report DMN4008LFG's y axis as
+off its rules by about 10 px at both ends (check 4).
 
 A setup that misses any of them is not ready for new batches.

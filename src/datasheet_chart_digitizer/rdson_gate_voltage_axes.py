@@ -34,7 +34,7 @@ from .diode_forward_voltage import (
     _snap_axis_to_grid,
 )
 from .find_charts import PageText
-from .numeric_axis import NumericAxis, fit_numeric_axis
+from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks, fit_numeric_axis
 from .rdson_gate_voltage_locate import LocatedPanel
 from .rdson_temperature import _vector_full_span_grid_lines
 from .region_ocr import _tesseract_words
@@ -77,7 +77,7 @@ def _text_labels(words: PageText, transform: CropTransform, shape) -> list[TextL
         x1, y1 = transform.to_px(word.x1, word.y1)
         if -5 <= 0.5 * (x0 + x1) <= width + 5 and -5 <= 0.5 * (y0 + y1) <= height + 5:
             text = _normalize_numeric_text(word.text.strip().replace(",", "."))
-            labels.append(TextLabel(text, 0.5 * (x0 + x1), 0.5 * (y0 + y1), x0, x1))
+            labels.append(_LayerLabel(text, 0.5 * (x0 + x1), 0.5 * (y0 + y1), x0, x1, y0, y1))
     return labels
 
 
@@ -231,6 +231,13 @@ class _BoxedLabel(TextLabel):
     y1: float = 0.0
 
 
+@dataclass(frozen=True)
+class _LayerLabel(TextLabel):
+    """A text-layer label with its word box's height (for the y-axis edge rule)."""
+    y0: float = 0.0
+    y1: float = 0.0
+
+
 def _plot_frame_px(panel: LocatedPanel, transform: CropTransform, gray) -> PlotBox:
     """The owned frame in crop pixels, refined to the crop's own frame rails."""
     if panel.frame_source == "embedded_image":
@@ -273,31 +280,70 @@ def _calibrate(
         raise RuntimeError("an OCR-read axis needs >= 3 consistent tick labels")
     for axis, name, lo, hi in ((raw_x, "x", plot.x0, plot.x1), (raw_y, "y", plot.y0, plot.y1)):
         outside = [t for t in axis.ticks if not lo - 6 <= t.pixel <= hi + 6]
-        straddling = [t for t in outside if name == "x" and _label_straddles_edge(t, numeric, lo, hi)]
+        straddling = [t for t in outside if _label_straddles_edge(t, numeric, lo, hi, name)]
         if straddling:
             # ME95N03T: the "10" is printed centred under the right frame line,
             # but its ink centroid sits 8.5 px right of it (a "1" carries its
             # ink right of its advance centre). A label whose own ink box spans
             # the frame edge IS that edge's tick; one wholly beyond it is not.
-            source = (f"{source} (x tick(s) {[t.text for t in straddling]} centred on a frame edge: "
-                      "the label's ink box spans the edge)")
+            source = (f"{source} ({name} tick(s) {[t.text for t in straddling]} centred on a frame edge: "
+                      "the label's box spans the edge)")
             outside = [t for t in outside if t not in straddling]
         if outside:
             raise RuntimeError(f"{name} axis: consumed tick {outside[0].text!r} lies outside the plot frame")
     search = PlotBox(max(0, plot.x0 - 6), max(0, plot.y0 - 6), min(gray.shape[1] - 1, plot.x1 + 6), min(gray.shape[0] - 1, plot.y1 + 6))
     vertical, horizontal = _full_span_grid_lines(gray, search, plot)
+    vector_x: tuple[float, ...] = ()
+    vector_y: tuple[float, ...] = ()
     if page is not None:
         vector_x, vector_y = _vector_full_span_grid_lines(page, transform, plot)
         vertical, horizontal = _merge_lines(vector_x, vertical), _merge_lines(vector_y, horizontal)
+        fill_x, fill_y = _vector_fill_rules(page, transform, plot)
+        vector_x, vector_y = _merge_lines(vector_x, fill_x), _merge_lines(vector_y, fill_y)
     binding = "snapped_to_full_span_grid"
-    try:
-        x_axis = _snap_axis_to_grid(raw_x, vertical, "X axis", authoritative=True)
-        y_axis = _snap_axis_to_grid(raw_y, horizontal, "Y axis", authoritative=True)
-        if x_axis is raw_x or y_axis is raw_y:
-            binding = "label_centroids_only (grid lines did not bind every tick)"
-    except RuntimeError as error:
-        x_axis, y_axis = raw_x, raw_y
-        binding = f"label_centroids_only ({error})"
+    # each axis on its own: one axis's refusal no longer throws away the other's binding
+    x_axis, x_error = _snap_or_raw(raw_x, vertical, "X axis")
+    y_axis, y_error = _snap_or_raw(raw_y, horizontal, "Y axis")
+    if x_axis is raw_x or y_axis is raw_y:
+        errors = [e for e in (x_error, y_error) if e]
+        binding = f"label_centroids_only ({errors[0]})" if errors else "label_centroids_only (grid lines did not bind every tick)"
+    # F-v3-1: a LINEAR axis the label snap could not bind (DMN4008LFG: its
+    # labels sit up to 10 px off their rules and two flat curve tails read as
+    # rules next to the 0.005 rule) is bound on the rule lattice its labels
+    # name: see _bind_linear_lattice
+    latticed = []
+    if x_axis is raw_x and raw_x.model == "linear":
+        bound = _bind_linear_lattice(raw_x, _rule_source(raw_x, vector_x, vertical), "X axis")
+        if bound is not None:
+            x_axis = bound
+            latticed.append("x")
+    if y_axis is raw_y and raw_y.model == "linear":
+        bound = _bind_linear_lattice(raw_y, _rule_source(raw_y, vector_y, horizontal), "Y axis")
+        if bound is not None:
+            y_axis = bound
+            latticed.append("y")
+    if latticed:
+        binding = ("snapped_to_full_span_grid" if x_axis is not raw_x and y_axis is not raw_y
+                   else binding)
+        source = f"{source} ({'/'.join(latticed)} axis bound on the rules its labels name)"
+    # F-v2-2: a LOG axis whose labels sit too far from their rules for the
+    # label snap (ZVNL120A's "1" and "10" print 10 / 7.5 px right of their
+    # rules) is bound on its own grid ladder instead: see _snap_log_ladder
+    laddered = []
+    if x_axis is raw_x and raw_x.model == "log10":
+        bound = _snap_log_ladder(raw_x, vertical, "X axis")
+        if bound is not None:
+            x_axis = bound
+            laddered.append("x")
+    if y_axis is raw_y and raw_y.model == "log10":
+        bound = _snap_log_ladder(raw_y, horizontal, "Y axis")
+        if bound is not None:
+            y_axis = bound
+            laddered.append("y")
+    if laddered:
+        binding = ("snapped_to_full_span_grid" if x_axis is not raw_x and y_axis is not raw_y
+                   else "label_centroids_only (grid lines did not bind every tick)")
+        source = f"{source} ({'/'.join(laddered)} axis bound on its log rule ladder)"
     scatter = max(x_axis.residual_px, y_axis.residual_px)
     plot = _seat_on_outer_tick_rules(plot, vertical, horizontal, x_axis, y_axis)
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
@@ -306,11 +352,224 @@ def _calibrate(
                        tuple(float(v) for v in vertical), tuple(float(v) for v in horizontal))
 
 
-def _label_straddles_edge(tick, labels: list[TextLabel], lo: float, hi: float) -> bool:
-    """True when the x-axis label that produced ``tick`` has ink on both sides of a frame edge."""
-    owner = next((l for l in labels if abs(l.cx - tick.pixel) <= 0.5 and l.text == tick.text), None)
+def _label_straddles_edge(tick, labels: list[TextLabel], lo: float, hi: float, name: str = "x") -> bool:
+    """True when the label that produced ``tick`` has ink on both sides of a frame edge.
+
+    x: the label's own ink box across the edge (ME95N03T "10", F-all-2).
+    y: the label's own box height across the edge (ZVNL120A's bottom "1",
+    printed 8 px below the bottom rail it labels, F-v2-2); only labels that
+    carry a box height (text layer, OCR words) can qualify.
+    """
+    if name == "x":
+        owner = next((l for l in labels if abs(l.cx - tick.pixel) <= 0.5 and l.text == tick.text), None)
+        edge = lo if tick.pixel < lo else hi
+        return owner is not None and owner.x0 < edge < owner.x1
+    owner = next((l for l in labels if abs(l.cy - tick.pixel) <= 0.5 and l.text == tick.text
+                  and getattr(l, "y1", 0.0) > getattr(l, "y0", 0.0)), None)
     edge = lo if tick.pixel < lo else hi
-    return owner is not None and owner.x0 < edge < owner.x1
+    return owner is not None and owner.y0 < edge < owner.y1
+
+
+def _vector_fill_rules(page, transform, plot: PlotBox) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Grid rules the PDF paints as thin FILLED rectangles (the shared vector reader takes strokes only).
+
+    International Rectifier draws every grid rule as a filled 're' about
+    1 pt thick (IRLB8721, IRLTS6342); rasterised, they read back at integer
+    pixels and wobble +-1 px. A non-white filled rectangle <= 2 pt thick
+    spanning >= 65 % of the plot is a rule, at its centre line.
+    """
+    vertical: list[float] = []
+    horizontal: list[float] = []
+    for drawing in page.get_drawings():
+        fill = drawing.get("fill")
+        if drawing.get("type") != "f" or fill is None or min(fill) >= 0.9:
+            continue
+        for item in drawing.get("items", []):
+            if item[0] != "re":
+                continue
+            r = item[1]
+            x0, y0 = transform.to_px(float(r.x0), float(r.y0))
+            x1, y1 = transform.to_px(float(r.x1), float(r.y1))
+            thin_pt = 2.0 * transform.scale_x
+            if abs(y1 - y0) <= thin_pt and abs(x1 - x0) >= 0.65 * (plot.x1 - plot.x0) \
+                    and plot.y0 - 10 <= 0.5 * (y0 + y1) <= plot.y1 + 10:
+                horizontal.append(0.5 * (y0 + y1))
+            elif abs(x1 - x0) <= thin_pt and abs(y1 - y0) >= 0.65 * (plot.y1 - plot.y0) \
+                    and plot.x0 - 10 <= 0.5 * (x0 + x1) <= plot.x1 + 10:
+                vertical.append(0.5 * (x0 + x1))
+    return tuple(sorted(vertical)), tuple(sorted(horizontal))
+
+
+def _rule_source(axis: NumericAxis, vector_rules, all_rules):
+    """The PDF's own vector rules when they name every used tick, else every detected rule."""
+    if vector_rules and len(axis.ticks) >= 2:
+        ticks = sorted(t.pixel for t in axis.ticks)
+        reach = LATTICE_SEARCH_FRACTION * min(b - a for a, b in zip(ticks, ticks[1:]))
+        if all(any(abs(r - t) <= reach for r in vector_rules) for t in ticks):
+            return vector_rules
+    return all_rules
+
+
+def _snap_or_raw(raw: NumericAxis, lines, name: str) -> tuple[NumericAxis, str | None]:
+    try:
+        return _snap_axis_to_grid(raw, lines, name, authoritative=True), None
+    except RuntimeError as error:
+        return raw, str(error)
+
+
+LATTICE_SEARCH_FRACTION = 0.4    # a label's rule lies within this fraction of the label spacing
+LATTICE_MAX_RESIDUAL_PX = 1.5    # the chosen rules must be one linear lattice to within this
+LATTICE_MAX_COMBINATIONS = 4096
+LATTICE_SAME_RULE_PX = 2.5
+
+
+def _bind_linear_lattice(axis: NumericAxis, lines, name: str) -> NumericAxis | None:
+    """Bind a linear axis to the rules its labels name; None when they do not agree.
+
+    Every used tick must have a rule within LATTICE_SEARCH_FRACTION of the
+    label spacing of its label; among the candidates, the one assignment is
+    chosen -- one rule per tick, no rule twice, in the ticks' order -- whose
+    rules fit value(pixel) best as ONE straight line. It is accepted only
+    when that fit's worst residual is <= LATTICE_MAX_RESIDUAL_PX and no other
+    assignment fits within it too (else the rules do not say which is which).
+    A tick without a rule, a rule missing or shifted out of the lattice, or
+    rules out of the labels' order leave the axis unbound. Rules the labels
+    do not name (minor rules, curve ink detected as a rule) are ignored.
+    Two candidates within LATTICE_SAME_RULE_PX are one rule found twice.
+    """
+    if axis.model != "linear" or len(axis.ticks) < 3:
+        return None
+    ticks = sorted(axis.ticks, key=lambda t: t.pixel)
+    spacing = min(b.pixel - a.pixel for a, b in zip(ticks, ticks[1:]))
+    if spacing <= 0:
+        return None
+    rules = sorted(float(v) for v in lines)
+    candidates = []
+    for tick in ticks:
+        near = [r for r in rules if abs(r - tick.pixel) <= LATTICE_SEARCH_FRACTION * spacing]
+        if not near:
+            return None
+        candidates.append(near)
+    total = 1
+    for near in candidates:
+        total *= len(near)
+    if total > LATTICE_MAX_COMBINATIONS:
+        return None
+    import itertools
+    values = np.asarray([t.value for t in ticks], dtype=float)
+    fits = []
+    for combo in itertools.product(*candidates):
+        pixels = np.asarray(combo, dtype=float)
+        if np.any(np.diff(pixels) <= 0):
+            continue
+        slope, intercept = np.polyfit(pixels, values, 1)
+        worst = float(np.max(np.abs((values - intercept) / slope - pixels)))
+        fits.append((worst, combo))
+    if not fits:
+        return None
+    fits.sort()
+    worst, combo = fits[0]
+    if worst > LATTICE_MAX_RESIDUAL_PX:
+        return None
+    for other_worst, other in fits[1:]:
+        if other_worst > LATTICE_MAX_RESIDUAL_PX:
+            break
+        if max(abs(a - b) for a, b in zip(combo, other)) > LATTICE_SAME_RULE_PX:
+            return None   # two assignments fit: the rules do not say which label is which
+        # (candidates within LATTICE_SAME_RULE_PX are one printed rule found twice,
+        # e.g. a frame edge seen by the vector and the raster detector)
+    try:
+        fitted = fit_axis_ticks([AxisTick(t.text, t.value, px, t.normalized_text) for t, px in zip(ticks, combo)],
+                                name, model="linear")
+    except RuntimeError:
+        return None
+    return fitted
+
+
+LOG_LADDER_MIN_MATCHED = 0.8     # of the 1..9 x 10^k positions inside the used ticks' span
+LOG_LADDER_MAX_RESIDUAL_PX = 1.5
+LOG_LADDER_MATCH_PX = 5.0      # < half the tightest minor spacing on any printed log grid seen
+
+
+def _snap_log_ladder(axis: NumericAxis, lines, name: str) -> NumericAxis | None:
+    """Bind a log10 axis to its printed rule ladder; None when the ladder does not confirm it.
+
+    The labels only say which decade is which. Every 1..9 x 10^k position
+    between the lowest and highest used tick is predicted from the label
+    fit, shifted by the one offset (within half the smallest predicted
+    spacing, the 9-to-10 gap) that puts most of them on a rule, and matched
+    to a rule within LOG_LADDER_MATCH_PX. The binding is accepted when
+    >= LOG_LADDER_MIN_MATCHED of the positions find a rule, no rule is taken
+    twice, and a log fit on the matched rules alone has a residual <=
+    LOG_LADDER_MAX_RESIDUAL_PX; the used ticks are then re-seated on the
+    rules their values name. A ladder whose rules do not follow log spacing,
+    or labels that name the wrong decades, leave the axis unbound.
+    """
+    if axis.model != "log10" or len(lines) < 4:
+        return None
+    values = sorted(t.value for t in axis.ticks)
+    lo, hi = math.log10(values[0]), math.log10(values[-1])
+    positions = []
+    for k in range(math.floor(lo) - 1, math.ceil(hi) + 1):
+        for f in range(1, 10):
+            v = f * 10.0 ** k
+            if lo - 1e-9 <= math.log10(v) <= hi + 1e-9:
+                positions.append(v)
+    if len(positions) < 4:
+        return None
+    pixel = lambda v: (math.log10(v) - axis.b) / axis.m
+    spacing = min(abs(pixel(b) - pixel(a)) for a, b in zip(positions, positions[1:]))
+    rules = np.asarray(sorted(float(v) for v in lines))
+    predicted = np.asarray([pixel(v) for v in positions])
+    # the labels may sit a few px off their rules, all the same way (ZVNL120A:
+    # 7-10 px right): find the one shift, within half the smallest spacing,
+    # that puts the most predicted positions on a rule
+    best = None
+    for shift in np.arange(-0.5 * spacing, 0.5 * spacing + 0.125, 0.25):
+        gaps = np.min(np.abs(rules[None, :] - (predicted + shift)[:, None]), axis=1)
+        hits = int(np.sum(gaps <= LOG_LADDER_MATCH_PX))
+        if best is None or hits > best[0] or (hits == best[0] and abs(shift) < abs(best[1])):
+            best = (hits, float(shift))
+    def match(expected):
+        out, used = [], set()
+        for v, px in zip(positions, expected):
+            near = float(rules[int(np.argmin(np.abs(rules - px)))])
+            if abs(near - px) <= LOG_LADDER_MATCH_PX and near not in used:
+                used.add(near)
+                out.append((v, near))
+        return out
+
+    matched = match(predicted + best[1])
+    fitted = None
+    for _round in range(3):
+        # refit on the rules matched so far and match again: the label fit's
+        # decade length can be off by a few px, which a far tick (20 V) inherits
+        if len(matched) < 3:
+            return None
+        try:
+            fitted = fit_axis_ticks([AxisTick(f"{v:g}", v, px) for v, px in matched], name, model="log10")
+        except RuntimeError:
+            return None
+        again = match([(math.log10(v) - fitted.b) / fitted.m for v in positions])
+        if again == matched:
+            break
+        matched = again
+    if len(matched) < LOG_LADDER_MIN_MATCHED * len(positions):
+        return None
+    try:
+        fitted = fit_axis_ticks([AxisTick(f"{v:g}", v, px) for v, px in matched], name, model="log10")
+    except RuntimeError:
+        return None
+    if fitted.residual_px > LOG_LADDER_MAX_RESIDUAL_PX:
+        return None
+    by_value = {round(v, 9): px for v, px in matched}
+    ticks = []
+    for tick in axis.ticks:
+        px = by_value.get(round(tick.value, 9))
+        if px is None:
+            return None
+        ticks.append(AxisTick(tick.text, tick.value, px, tick.normalized_text))
+    return NumericAxis("log10", fitted.m, fitted.b, tuple(ticks), fitted.residual_px, fitted.candidate_residuals_px)
 
 
 def _seat_on_outer_tick_rules(plot: PlotBox, vertical, horizontal, x_axis, y_axis) -> PlotBox:
@@ -340,24 +599,42 @@ def _seat_on_outer_tick_rules(plot: PlotBox, vertical, horizontal, x_axis, y_axi
 
 
 def _axis_or_robust(labels: list[TextLabel], plot: PlotBox, orientation: str, dropped: list[str]) -> NumericAxis:
-    """The shared tick selector, or -- if one misread label breaks it -- the
-    largest subset of the aligned ladder that fits one linear axis.
+    """The shared tick selector, or -- if it cannot use the labels as printed --
+    a centred y-label column, or the largest subset of the aligned ladder
+    that fits one axis, linear OR logarithmic.
 
-    OCR drops decimal points ("0.5" -> "05") and confuses digits; the shared
-    selector fits every aligned label and fails on the first misread. Here
-    every pair of aligned labels proposes a linear value(pixel) map, scored by
-    how many labels it EXPLAINS: read exactly (within max(4 px, 0.8 % of the
-    axis) of the predicted position) or read with the decimal point lost
-    ("05" where 0.5 is predicted). Scoring the decimal-dropped readings is
-    what defeats the self-consistent x10 ladder those same readings form on
-    their own (0, 5, 15, 25 ... is collinear too). Only exact readings are
-    fitted; >= 3 of them, a score >= 60 % of the ladder, and a margin of 2
-    over the best different hypothesis are required; the rest is reported.
+    Linear vs log is never a setting: the shared fitter (``fit_numeric_axis``)
+    fits both models to the printed values and positions and picks the one
+    they support, refusing when they cannot tell the two apart. What this
+    function adds is only which LABELS form the ladder:
+
+    * The shared selector groups y labels by their right edge (right-aligned
+      numbers). ZVNL120A centres its y labels ("1", "10", "100": right edges
+      182 / 192 / 192 px, centres 176 / 180 / 173 px), so its "1" fell out
+      of the group and the y axis was refused with "no trustworthy numeric
+      tick run" (F-v2-2). A y ladder grouped by label CENTRE is tried next,
+      under the same fitter and the same span rule (>= 35 % of the frame).
+    * OCR drops decimal points ("0.5" -> "05") and confuses digits; the shared
+      selector fits every aligned label and fails on the first misread. Here
+      every pair of aligned labels proposes a value(pixel) map -- linear, and
+      log10 when both values are positive -- scored by how many labels it
+      EXPLAINS: read exactly (within max(4 px, 0.8 % of the axis) of the
+      predicted position) or, on a linear ladder, read with the decimal point
+      lost ("05" where 0.5 is predicted). Scoring the decimal-dropped readings
+      is what defeats the self-consistent x10 ladder those same readings form
+      on their own (0, 5, 15, 25 ... is collinear too). Only exact readings
+      are fitted; >= 3 of them, a score >= 60 % of the ladder, and a margin of
+      2 over the best different hypothesis are required; the rest is reported.
     """
     try:
         return _select_axis(labels, plot, orientation)
     except RuntimeError as error:
         first = error
+    if orientation == "y":
+        try:
+            return _centred_y_axis(labels, plot)
+        except RuntimeError:
+            pass
     numeric = [l for l in labels if _NUMERIC_RE.fullmatch(l.text)]
     if orientation == "x":
         band = [l for l in numeric if plot.x0 - 40 <= l.cx <= plot.x1 + 40 and 0 < l.cy - plot.y1 <= 0.25 * (plot.y1 - plot.y0) + 20]
@@ -371,23 +648,26 @@ def _axis_or_robust(labels: list[TextLabel], plot: PlotBox, orientation: str, dr
     best_score, runner_up = 0, 0
     for group in _aligned_groups(band, key, 9.0):
         group = _dedupe_same_reading(sorted(group, key=pos), pos)
-        hypotheses: dict[tuple[float, float], tuple[int, list[TextLabel]]] = {}
-        for i in range(len(group)):
-            for j in range(i + 1, len(group)):
-                a, b = group[i], group[j]
-                va, vb = float(a.text), float(b.text)
-                if pos(b) - pos(a) < 5 or va == vb:
-                    continue
-                slope = (vb - va) / (pos(b) - pos(a))
-                exact, score = [], 0
-                for l in group:
-                    if abs((float(l.text) - va) / slope + pos(a) - pos(l)) <= tolerance:
-                        exact.append(l)
-                        score += 1
-                    elif _decimal_dropped(l.text, lambda v: (v - va) / slope + pos(a), pos(l), tolerance):
-                        score += 1
-                ladder = (round(slope, 9), round(va - slope * pos(a), 6))
-                hypotheses[ladder] = (score, exact)
+        hypotheses: dict[tuple, tuple[int, list[TextLabel]]] = {}
+        for model, coord in (("linear", float), ("log10", lambda v: math.log10(v))):
+            if model == "log10" and any(float(l.text) <= 0 for l in group):
+                continue
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    a, b = group[i], group[j]
+                    va, vb = coord(float(a.text)), coord(float(b.text))
+                    if pos(b) - pos(a) < 5 or va == vb:
+                        continue
+                    slope = (vb - va) / (pos(b) - pos(a))
+                    exact, score = [], 0
+                    for l in group:
+                        if abs((coord(float(l.text)) - va) / slope + pos(a) - pos(l)) <= tolerance:
+                            exact.append(l)
+                            score += 1
+                        elif model == "linear" and _decimal_dropped(l.text, lambda v: (v - va) / slope + pos(a), pos(l), tolerance):
+                            score += 1
+                    ladder = (model, round(slope, 9), round(va - slope * pos(a), 6))
+                    hypotheses[ladder] = (score, exact)
         ranked = sorted(hypotheses.values(), key=lambda item: (-item[0], -len(item[1])))
         if not ranked:
             continue
@@ -413,6 +693,32 @@ def _axis_or_robust(labels: list[TextLabel], plot: PlotBox, orientation: str, dr
     if max(p for _t, p in ticks) - min(p for _t, p in ticks) < 0.35 * span:
         raise first
     return axis
+
+
+def _centred_y_axis(labels: list[TextLabel], plot: PlotBox) -> NumericAxis:
+    """A y ladder of CENTRED labels left of the frame (ZVNL120A), fitted like any other.
+
+    Labels whose centres agree within 9 px, lying left of the frame and
+    between its rails (+-30 px); one reading per height; >= 3 labels spanning
+    >= 35 % of the frame; the shared fitter picks linear or log10 and rejects
+    a ladder its residual limit does not accept.
+    """
+    numeric = [l for l in labels if _NUMERIC_RE.fullmatch(l.text) and l.x1 <= plot.x0 + 4
+               and plot.y0 - 30 <= l.cy <= plot.y1 + 30]
+    best = None
+    for group in _aligned_groups(numeric, lambda l: l.cx, 9.0):
+        group = _dedupe_same_reading(sorted(group, key=lambda l: l.cy), lambda l: l.cy)
+        if len(group) < 3 or group[-1].cy - group[0].cy < 0.35 * (plot.y1 - plot.y0):
+            continue
+        try:
+            axis = fit_numeric_axis([(l.text, l.cy) for l in group], "Y axis")
+        except RuntimeError:
+            continue
+        if best is None or len(axis.ticks) > len(best.ticks):
+            best = axis
+    if best is None:
+        raise RuntimeError("Y axis: no centred label ladder")
+    return best
 
 
 def _decimal_dropped(text: str, position_of, position: float, tolerance: float) -> bool:

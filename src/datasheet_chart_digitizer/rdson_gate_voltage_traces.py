@@ -44,6 +44,10 @@ SWATCH_MAX_SPAN_FRACTION = 0.14
 AXIS_ALIGNED_TOLERANCE_PT = 0.25
 GRID_RULE_MIN_FRACTION = 0.45
 CHAIN_JOIN_PT = 0.8
+OUTLINE_ROW_GAP_PX = 1.5        # a row this far from every column point is sampled on its own
+OUTLINE_ROW_RUN_FACTOR = 3.0     # ... when its run is at most this many stroke widths
+OUTLINE_ROW_MIN_RUN_PX = 6.0
+OUTLINE_ROW_MAX_FIT_PX = 3.0     # a larger monotone-fit shift means the rows are not one stroke
 CHAIN_FOLD_PT = 1.5          # a join may not fold the chain back in VGS by more than this
 RASTER_INK_GRAY = 135
 RASTER_COLOR_SATURATION = 80
@@ -72,6 +76,8 @@ class Trace:
     frame_traced: dict = field(default_factory=dict)         # R5: right end traced to the frame
     gap_traced: list = field(default_factory=list)           # F6-1: unsampled stretches traced on the ink
     stub_decisions: list = field(default_factory=list)       # F6-1: each dropped end stub, served or why not
+    source_top_px: tuple | None = None                        # F-v2-1: the source path's highest point in the plot
+    row_fit_max_shift_px: float = 0.0                         # F-v2-1: largest monotone-fit shift of a row centre
 
 
 @dataclass(frozen=True)
@@ -89,6 +95,7 @@ class Leader:
     points: tuple[tuple[float, float], ...]
     raster: bool = False     # followed on the pixels (F4-3)
     ambiguous: bool = False  # its tip lies in ink shared by two touching curves: names neither
+    filled: bool = False     # a filled arrow shape (F-v2-1): an ambiguous tip names neither
 
 
 @dataclass(frozen=True)
@@ -165,7 +172,8 @@ def vector_traces(
             span = max(xs) - min(xs)
             if span >= MIN_CURVE_SPAN_FRACTION * width_pt:
                 px = [transform.to_px(x, y) for x, y in chain]
-                traces.append(Trace(densify(_as_function_of_x(px)), "vector", style))
+                top = min(px, key=lambda p: p[1])
+                traces.append(Trace(densify(_as_function_of_x(px)), "vector", style, source_top_px=tuple(top)))
             else:
                 short.append((style, chain))
     if not traces:
@@ -176,10 +184,15 @@ def vector_traces(
         for fill, _last, box, polygons, _last_box in fill_groups:
             if box[2] - box[0] < MIN_CURVE_SPAN_FRACTION * width_pt:
                 continue
+            columns, rows, top, fit_shift = _polygon_centerline_px(
+                [[transform.to_px(x, y) for x, y in poly] for poly in polygons], plot)
             traces.append(Trace(
-                _polygon_centerline_px([[transform.to_px(x, y) for x, y in poly] for poly in polygons], plot),
+                sorted(columns + rows),
                 "vector_filled_outline",
                 (fill, "fill", ""),
+                row_traced_points=rows,
+                source_top_px=top,
+                row_fit_max_shift_px=fit_shift,
             ))
     curve_styles = {trace.style for trace in traces}
     swatches: list[Swatch] = []
@@ -193,7 +206,45 @@ def vector_traces(
             swatches.append(Swatch(style, x0p, x1p, yp))
         elif style not in curve_styles:
             leaders.append(Leader(tuple(transform.to_px(x, y) for x, y in chain)))
+    if any(trace.method == "vector_filled_outline" for trace in traces):
+        leaders.extend(_filled_arrows(fill_groups, curve_styles, transform, width_pt))
     return traces, swatches, leaders
+
+
+FILLED_ARROW_MAX_FRACTION = 0.15   # an arrow is short against the plot width
+FILLED_ARROW_MIN_ELONGATION = 1.4  # and longer than wide (a head plus its short shaft)
+
+
+def _filled_arrows(fill_groups, curve_styles, transform, width_pt: float) -> list[Leader]:
+    """Arrows the PDF paints as filled shapes, as leaders from base to tip (F-v2-1).
+
+    DMN4008LFG points its "I_D = 10.0A" / "8.0A" labels at the curve band
+    with filled arrowheads, which the stroke-based leader list never saw. A
+    fill group that is not a curve, is short (<= FILLED_ARROW_MAX_FRACTION of
+    the plot width) and elongated (length >= FILLED_ARROW_MIN_ELONGATION x its
+    width across) becomes a Leader between its two farthest vertices; which
+    end is the tip is decided by the label, as for a stroked leader. Such a
+    leader is ``filled``: when its tip lies in ink shared by two curves it
+    names neither and no nearness fallback applies.
+    """
+    out: list[Leader] = []
+    for fill, _last, box, polygons, _last_box in fill_groups:
+        if (fill, "fill", "") in curve_styles:
+            continue
+        pts = np.asarray([p for poly in polygons for p in poly], dtype=float)
+        if len(pts) < 3:
+            continue
+        d = np.hypot(pts[:, None, 0] - pts[None, :, 0], pts[:, None, 1] - pts[None, :, 1])
+        i, j = np.unravel_index(int(np.argmax(d)), d.shape)
+        length = float(d[i, j])
+        if length <= 0 or length > FILLED_ARROW_MAX_FRACTION * width_pt:
+            continue
+        axis = (pts[j] - pts[i]) / length
+        across = float(np.ptp(pts @ np.array([-axis[1], axis[0]])))
+        if across <= 0 or length < FILLED_ARROW_MIN_ELONGATION * across:
+            continue
+        out.append(Leader((transform.to_px(*pts[i]), transform.to_px(*pts[j])), filled=True))
+    return out
 
 
 def densify(points: list[tuple[float, float]], step_px: float = 1.0) -> list[tuple[float, float]]:
@@ -262,21 +313,102 @@ def _boxes_touch(a, b, gap: float = 0.8) -> bool:
     return a[0] - gap <= b[2] and b[0] - gap <= a[2] and a[1] - gap <= b[3] and b[1] - gap <= a[3]
 
 
-def _polygon_centerline_px(polygons_px, plot: PlotBox) -> list[tuple[float, float]]:
-    """Column centres of ONE curve's filled outline piece(s), rasterised on their own.
+def _polygon_centerline_px(polygons_px, plot: PlotBox):
+    """Centre line of ONE curve's filled outline piece(s), rasterised on their own.
 
-    One group of pieces is one curve, so no tracking is involved: each column's
-    ink is that curve's cross-section, and its centre is the curve there.
+    Returns (column points, row points, source top, row-fit shift). One group
+    of pieces is one curve, so no tracking is involved: each column's ink is
+    that curve's cross-section, and its centre is the curve there.
+
+    A steep stretch crosses a column as one tall run, so the column centres
+    leave most of it unsampled: DMN4008LFG's heads run 220 px up to the top
+    frame and were served as a few points half-way up (F-v2-1). Every row of
+    the outline that no column point lies within ``OUTLINE_ROW_GAP_PX`` of
+    (among columns near that row's ink), whose own run is narrow (a crossing
+    of the stroke), and which lies inside a tall column run (a steep
+    stretch, not a flat one or an end cap), is ADDED at its run's
+    centre, on a 4x supersampled mask so the centres follow the outline to a
+    quarter pixel: the head row by row, as F4-1 does for raster heads, but on
+    the curve's own outline. The column points are served exactly as before
+    (never moved or dropped). The row centres are fitted monotone
+    (``_monotone_rows``); if that needs a shift larger than
+    ``OUTLINE_ROW_MAX_FIT_PX`` or one stroke width, the rows are not one
+    monotone stroke and none is served. ``source top`` is the outline's
+    highest row inside the plot, so the served extent can be checked.
     """
     mask = np.zeros((plot.y1 + 4, plot.x1 + 4), dtype=np.uint8)
+    fine = np.zeros((4 * (plot.y1 + 4), 4 * (plot.x1 + 4)), dtype=np.uint8)
     for polygon_px in polygons_px:
         cv2.fillPoly(mask, [np.round(np.asarray(polygon_px) * 4).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
-    points = []
+        cv2.fillPoly(fine, [np.round((np.asarray(polygon_px) + 0.5) * 16 - 2).astype(np.int32)], 1, lineType=cv2.LINE_8, shift=2)
+    columns: list[tuple[float, float]] = []
+    heights: list[int] = []
+    spans: list[tuple[float, int, int]] = []
     for x in range(plot.x0, plot.x1 + 1):
         rows = np.flatnonzero(mask[:, x])
         if rows.size:
-            points.append((float(x), float(0.5 * (rows[0] + rows[-1]))))
-    return points
+            columns.append((float(x), float(0.5 * (rows[0] + rows[-1]))))
+            heights.append(int(rows[-1] - rows[0] + 1))
+            spans.append((float(x), int(rows[0]), int(rows[-1])))
+    if not columns:
+        return [], [], None, 0.0
+    stroke = float(np.percentile(heights, 25))
+    narrow = max(OUTLINE_ROW_MIN_RUN_PX, OUTLINE_ROW_RUN_FACTOR * stroke)
+    # the steep stretches: columns the stroke crosses as a tall run
+    steep = [(x, top, bottom) for x, top, bottom in spans if bottom - top + 1 > narrow]
+    cxs = np.asarray([x for x, _y in columns])
+    cys = np.asarray([y for _x, y in columns])
+    rows_out: list[tuple[float, float]] = []
+    x_lo, x_hi = 4 * plot.x0, 4 * (plot.x1 + 1)
+    for y in range(plot.y0, plot.y1 + 1):
+        cols = np.flatnonzero(fine[4 * y:4 * y + 4, x_lo:x_hi].any(axis=0))
+        if not cols.size or (cols[-1] - cols[0] + 1) / 4.0 > narrow:
+            continue
+        centre = plot.x0 + (0.5 * (cols[0] + cols[-1]) + 0.5) / 4.0 - 0.5
+        if not any(abs(x - centre) <= narrow and top <= y <= bottom for x, top, bottom in steep):
+            continue   # only rows of a steep stretch; a flat stretch is the columns' job
+        near = np.abs(cxs - centre) <= narrow
+        if near.any() and np.min(np.abs(cys[near] - y)) <= OUTLINE_ROW_GAP_PX:
+            continue
+        rows_out.append((centre, float(y)))
+    fit_shift = 0.0
+    if rows_out:
+        rows_out, shift = _monotone_rows(rows_out)
+        fit_shift = round(shift, 3)
+        if shift > max(OUTLINE_ROW_MAX_FIT_PX, stroke):
+            rows_out = []   # not one monotone stroke: serve none (the extent check names the gap)
+    inside = mask[plot.y0:plot.y1 + 1, plot.x0:plot.x1 + 1]
+    top_rows = np.flatnonzero(inside.any(axis=1))
+    top = None
+    if top_rows.size:
+        cols = np.flatnonzero(inside[top_rows[0]])
+        top = (float(plot.x0 + 0.5 * (cols[0] + cols[-1])), float(plot.y0 + top_rows[0]))
+    return columns, rows_out, top, fit_shift
+
+
+def _monotone_rows(rows: list[tuple[float, float]]) -> list[tuple[float, float]]:
+    """Row centres fitted as x non-decreasing in y (least squares, pool-adjacent-violators).
+
+    An RDS(on) curve falls with VGS, so down a steep stretch x never moves
+    left. The measured row centres wobble where the PDF's outline pieces
+    overlap (DMN4008LFG: the next piece starts 0.5-0.9 pt left of the last),
+    and sorted by VGS that wobble reads as RDS rising. The fit moves a centre
+    only within that wobble; the largest shift is kept on each point's
+    trace as ``row_fit_max_shift_px`` (returned with the rows).
+    """
+    rows = sorted(rows, key=lambda p: p[1])
+    blocks: list[list[float]] = []   # [sum, count]
+    for x, _y in rows:
+        blocks.append([x, 1.0])
+        while len(blocks) > 1 and blocks[-2][0] / blocks[-2][1] > blocks[-1][0] / blocks[-1][1]:
+            total, count = blocks.pop()
+            blocks[-1][0] += total
+            blocks[-1][1] += count
+    fitted: list[float] = []
+    for total, count in blocks:
+        fitted += [total / count] * int(count)
+    shift = max((abs(fx - x) for fx, (x, _y) in zip(fitted, rows)), default=0.0)
+    return [(round(fx, 3), y) for fx, (_x, y) in zip(fitted, rows)], shift
 
 
 def _bezier(p0, p1, p2, p3, steps: int = 12) -> list[tuple[float, float]]:
@@ -1320,7 +1452,7 @@ def pair_order(a: Trace, b: Trace, key: str) -> tuple[int | None, str]:
     do not: undecided. For temperature one crossing is physics (below the
     zero-temperature-coefficient point the hot curve lies LOWER), so the run
     at the highest VGS decides, provided the order changes at most once.
-    Assumes VGS increases with crop x (a linear, left-to-right VGS axis).
+    Assumes only that VGS increases with crop x (true of a linear and a log VGS axis alike).
     """
     runs = [r for r in separated_runs(a, b) if r[3] >= ORDER_MIN_RUN]
     if not runs:
@@ -1502,6 +1634,8 @@ def _leader_target(label: Label, traces: list[Trace], leaders: list[Leader], px_
             if distances[0][0] > 4.0 * px_per_pt:
                 continue
             if len(distances) > 1 and distances[1][0] < 2.0 * distances[0][0] + 1.0:
+                if leader.filled:
+                    unreadable = True   # an arrow into a shared band: resolved by neither tip nor nearness
                 continue
             if leader.ambiguous:
                 unreadable = True

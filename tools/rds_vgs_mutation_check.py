@@ -171,6 +171,8 @@ B = "BoundaryTests."
 F5 = "RoundFiveTests."
 F6 = "RoundSixTests."
 V2 = "BatchAllV2Tests."
+V3 = "BatchAllV3Tests."
+V4 = "BatchAllV4Tests."
 SPEC = "test_rdson_gate_voltage.SpecTableTests."
 LOC = "test_rdson_gate_voltage.LocatorTests."
 
@@ -368,10 +370,10 @@ MUTANTS = {
                                                            'exact = list(evaluable)'))],
         ["ValidationScopeTests.test_approximate_current_alone_does_not_verify"]),
     "readout_end_tolerance_2px": (
-        [_source_mutant(report, "readouts", ("vgs[0] - end_tolerance_v <= target", "vgs[0] - 2 * end_tolerance_v <= target"))],
+        [_source_mutant(report, "readouts", ("vgs[0] - tol_left <= target", "vgs[0] - 2 * tol_left <= target"))],
         [B + "test_readout_end_tolerance_is_one_pixel"]),
     "readout_end_tolerance_0px": (
-        [_source_mutant(report, "readouts", ("vgs[0] - end_tolerance_v <= target", "vgs[0] <= target"))],
+        [_source_mutant(report, "readouts", ("vgs[0] - tol_left <= target", "vgs[0] <= target"))],
         [B + "test_readout_end_tolerance_is_one_pixel"]),
     "gap_bounds_inclusive": (
         [_source_mutant(report, "readouts", ("g[0] < target_read < g[1]", "g[0] <= target_read <= g[1]"))],
@@ -758,6 +760,84 @@ MUTANTS = {
     "any_caption_stands_in (A3 opposite)": (
         [patch.object(loc, "caption_names_both_axes", lambda title: True)],
         [LOC + "test_a3_caption_naming_both_axes_stands_in_for_an_unreadable_x_title"]),
+    # ---- batch_all v3 (F-v2-1 DMN4008LFG heads/labels, F-v2-2 log axes) ---------------
+    "no_head_rows (F-v2-1)": (
+        [patch.object(traces, "_polygon_centerline_px",
+                      lambda polys, plot, _real=traces._polygon_centerline_px: _real(polys, plot)[:1] + ([],) + _real(polys, plot)[2:3] + (0.0,))],
+        [V3 + "test_f_v2_1_heads_traced_to_the_frame_each_curve_on_its_own_outline"]),
+    "head_rows_not_fitted (F-v2-1)": (
+        [patch.object(traces, "_monotone_rows", lambda rows: (sorted(rows, key=lambda p: p[1]), 0.0))],
+        [V3 + "test_f_v2_1_known_bad_rows_that_are_not_one_stroke_are_not_served"]),
+    "row_fit_guard_off (F-v2-1)": (
+        [_source_mutant(traces, "_polygon_centerline_px", ("if shift > max(OUTLINE_ROW_MAX_FIT_PX, stroke):", "if False:"))],
+        [V3 + "test_f_v2_1_rows_that_step_back_are_not_served"]),
+    "no_served_extent_check (F-v2-1)": (
+        [_source_mutant(rgv, "_curves", ("if served_y - source_y > HEAD_EXTENT_TOL_PX:", "if False:"))],
+        [V3 + "test_f_v2_1_known_bad_untraced_head_is_named"]),
+    "rise_counts_head_rows (F-v2-1)": (
+        [_source_mutant(rgv, "_curves", ('''head_rows = {(round(x, 2), round(y, 2)) for x, y in trace.row_traced_points} \\
+            if trace.method == "vector_filled_outline" else set()''', "head_rows = set()"))],
+        [V3 + "test_f_v2_1_heads_traced_to_the_frame_each_curve_on_its_own_outline"]),
+    "no_filled_arrows (F-v2-1)": (
+        [patch.object(traces, "_filled_arrows", lambda *a: [])],
+        [V3 + "test_f_v2_1_ids_bound_by_the_order_rule_after_unresolvable_arrow_tips"]),
+    "filled_tip_falls_back_to_nearness (F-v2-1)": (
+        [_source_mutant(traces, "_leader_target", ("                if leader.filled:\n                    unreadable = True", "                pass"))],
+        [V3 + "test_f_v2_1_ids_bound_by_the_order_rule_after_unresolvable_arrow_tips"]),
+    "no_glyph_label_ocr (F-v2-1)": (
+        [patch.object(rgv, "_has_outline_glyphs", lambda *a: False)],
+        [V3 + "test_f_v2_1_ids_bound_by_the_order_rule_after_unresolvable_arrow_tips",
+         V3 + "test_f_v2_1_no_glyph_ocr_on_a_vector_chart_without_glyph_outlines"]),
+    "glyph_label_ocr_everywhere (F-v2-1 opposite)": (
+        [patch.object(rgv, "_has_outline_glyphs", lambda *a: True)],
+        [V3 + "test_f_v2_1_no_glyph_ocr_on_a_vector_chart_without_glyph_outlines"]),
+    "no_centred_y_ladder (F-v2-2)": (
+        [patch.object(axes, "_centred_y_axis", lambda *a: (_ for _ in ()).throw(RuntimeError("off")))],
+        [V3 + "test_f_v2_2_log_log_panel_is_calibrated_and_traced"]),
+    "robust_ladder_linear_only (F-v2-2)": (
+        [_source_mutant(axes, "_axis_or_robust", ('if model == "log10" and any(float(l.text) <= 0 for l in group):', 'if model == "log10":'))],
+        [V3 + "test_f_v2_2_robust_ladder_finds_a_log_axis_past_a_misread"]),
+    "no_y_straddle (F-v2-2)": (
+        [_source_mutant(axes, "_label_straddles_edge", ("return owner is not None and owner.y0 < edge < owner.y1", "return False"))],
+        [V3 + "test_f_v2_2_log_log_panel_is_calibrated_and_traced"]),
+    "any_y_label_straddles (F-v2-2 opposite)": (
+        [_source_mutant(axes, "_label_straddles_edge", ("return owner is not None and owner.y0 < edge < owner.y1", "return True"))],
+        [V3 + "test_f_v2_2_y_straddle_needs_the_labels_own_box_across_the_edge"]),
+    "no_log_ladder (F-v2-2)": (
+        [patch.object(axes, "_snap_log_ladder", lambda *a: None)],
+        [V3 + "test_f_v2_2_log_log_panel_is_calibrated_and_traced"]),
+    "ladder_unchecked (F-v2-2 opposite)": (
+        [_source_mutant(axes, "_snap_log_ladder", ("if len(matched) < LOG_LADDER_MIN_MATCHED * len(positions):\n        return None", "pass"),
+                        ("if fitted.residual_px > LOG_LADDER_MAX_RESIDUAL_PX:\n        return None", "pass"))],
+        [V3 + "test_f_v2_2_known_bad_ladder_that_is_not_log_spaced_does_not_bind"]),
+    "no_header_column (F-v2-2)": (
+        [patch.object(rgv, "_header_column_labels", lambda *a: [])],
+        [V3 + "test_f_v2_2_log_log_panel_is_calibrated_and_traced", V3 + "test_f_v2_2_header_column_needs_its_header"]),
+    "rise_by_vgs_on_stroked_paths (F-v2-2)": (
+        [_source_mutant(rgv, "_curves", ('        if trace.method == "vector":\n            # a stroked vector trace', '        if False:\n            # a stroked vector trace'))],
+        [V3 + "test_f_v2_2_log_log_panel_is_calibrated_and_traced"]),
+    "log_end_tolerance_linear (F-v2-2)": (
+        [patch.object(report, "vgs_per_px", lambda axis: abs(axis.m)), patch.object(rgv, "vgs_per_px", lambda axis: abs(axis.m))],
+        [V3 + "test_f_v2_2_log_readout_end_tolerance_is_one_pixel_in_volts"]),
+    # ---- batch_all v4 (F-v3-1: linear axes bound to the rules their labels name) -----------
+    "no_lattice_binding (F-v3-1)": (
+        [patch.object(axes, "_bind_linear_lattice", lambda *a: None)],
+        [V4 + "test_f_v3_1_y_binds_to_the_rules_its_labels_name"]),
+    "lattice_any_residual (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("    if worst > LATTICE_MAX_RESIDUAL_PX:\n        return None\n", ""))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "lattice_missing_rule_filled_by_label (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("        if not near:\n            return None", "        if not near:\n            near = [tick.pixel]"))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "lattice_ambiguity_ignored (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("            return None   # two assignments fit", "            pass   # two assignments fit"))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "no_filled_rules (F-v3-1)": (
+        [patch.object(axes, "_vector_fill_rules", lambda *a: ((), ()))],
+        [V4 + "test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules"]),
+    "vector_rules_not_preferred (F-v3-1)": (
+        [patch.object(axes, "_rule_source", lambda axis, vector_rules, all_rules: all_rules)],
+        [V4 + "test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules"]),
 }
 
 

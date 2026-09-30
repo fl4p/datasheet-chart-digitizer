@@ -44,9 +44,11 @@ def readouts(
         # A target within one pixel of a curve end is read AT that end (the
         # trace's last point sits a rounding error short of, e.g., the 10 V
         # frame); anything farther out is off the chart.
-        if vgs[0] - end_tolerance_v <= target < vgs[0]:
+        tol_left = end_tolerance_v(vgs[0]) if callable(end_tolerance_v) else end_tolerance_v
+        tol_right = end_tolerance_v(vgs[-1]) if callable(end_tolerance_v) else end_tolerance_v
+        if vgs[0] - tol_left <= target < vgs[0]:
             target_read = vgs[0]
-        elif vgs[-1] < target <= vgs[-1] + end_tolerance_v:
+        elif vgs[-1] < target <= vgs[-1] + tol_right:
             target_read = vgs[-1]
         else:
             target_read = target
@@ -69,6 +71,14 @@ def readouts(
             entry.update({"rds_mohm": round(value, 4), "status": "read"})
         out.append(entry)
     return out
+
+
+def vgs_per_px(axis):
+    """One pixel of the VGS axis, in volts: a constant on a linear axis; on a
+    log10 axis it grows with VGS (V * ln 10 * |m|), so a callable of VGS."""
+    if axis.model == "log10":
+        return lambda vgs: abs(vgs) * math.log(10.0) * abs(axis.m)
+    return abs(axis.m)
 
 
 def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibration: Calibration, scale: float) -> dict:
@@ -128,7 +138,7 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
             )
         reading = readouts(
             curve["points"], calibration.y_axis.model == "log10", curve.get("gaps"),
-            abs(calibration.x_axis.m), targets=(row.vgs_v,),
+            vgs_per_px(calibration.x_axis), targets=(row.vgs_v,),
         )[0]
         if reading["status"] != "read":
             anchor.update({"verdict": "not_evaluable", "reason": f"VGS={row.vgs_v:g} V: {reading['status']} ({reading.get('detail', '')})"})
@@ -211,7 +221,7 @@ def _max_diagnostics(curves, rows, anchors, calibration, per_px) -> list[dict]:
             if temperature is not None and abs(temperature - row.temperature_c) > TJ_MATCH_C:
                 continue
             reading = readouts(curve["points"], calibration.y_axis.model == "log10", curve.get("gaps"),
-                               abs(calibration.x_axis.m), targets=(row.vgs_v,))[0]
+                               vgs_per_px(calibration.x_axis), targets=(row.vgs_v,))[0]
             if reading["status"] != "read":
                 continue
             value = reading["rds_mohm"]
@@ -258,7 +268,7 @@ def condition_mismatch_notes(curves, rows, calibration, per_px) -> list[dict]:
                     or abs(temperature - row.temperature_c) <= TJ_MATCH_C):
                 continue
             reading = readouts(curve["points"], calibration.y_axis.model == "log10", curve.get("gaps"),
-                               abs(calibration.x_axis.m), targets=(row.vgs_v,))[0]
+                               vgs_per_px(calibration.x_axis), targets=(row.vgs_v,))[0]
             if reading["status"] != "read":
                 continue
             value = reading["rds_mohm"]

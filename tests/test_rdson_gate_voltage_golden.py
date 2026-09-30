@@ -163,6 +163,10 @@ class GoldenTests(unittest.TestCase):
         the entry is stale) and must now serve exactly the entry's new value."""
         if "curves" not in changed:
             self._check_served(part, row, golden)
+        elif changed["curves"].get("kind") == "points_added":
+            # only served points were ADDED (F-v2-1 heads): everything else about
+            # the curves stays pinned -- count, labels, flags and every readout
+            self._check_curves_except_points(part, row, golden)
         for name in ("status", "validation_verdict", "anchor_verdicts"):
             got = _panel_field(row, name, served=True)
             frozen = _panel_field(golden, name, served=False)
@@ -171,6 +175,20 @@ class GoldenTests(unittest.TestCase):
                 continue
             self.assertEqual(frozen, changed[name]["frozen"], f"{part}: PENDING {name} 'frozen' is stale")
             self.assertEqual(got, changed[name]["now"], f"{part}: {name} is not the PENDING 'now' value")
+
+    def _check_curves_except_points(self, part: str, row: dict, golden: dict) -> None:
+        self.assertEqual(len(row["curves"]), len(golden["curves"]), f"{part}: curve count")
+        for new, old in zip(row["curves"], golden["curves"]):
+            where = f"{part} c{old['curve_index']}"
+            for key in ("label", "temperature_c", "temperature_kind", "id_a", "usable"):
+                self.assertEqual(new.get(key, True if key == "usable" else None), old[key], f"{where}: {key}")
+            new_reads = {r["vgs_v"]: r for r in new["readouts"]}
+            for read in old["readouts"]:
+                got = new_reads[read["vgs_v"]]
+                self.assertEqual(got["status"], read["status"], f"{where}: state at {read['vgs_v']} V")
+                if read["rds_mohm"] is not None:
+                    self.assertLessEqual(abs(got["rds_mohm"] - read["rds_mohm"]) / abs(read["rds_mohm"]), READOUT_REL_TOL,
+                                         f"{where}: {read['vgs_v']} V")
 
     def _check_calibration(self, part: str, row: dict, golden: dict) -> None:
         for axis in ("x_axis", "y_axis"):
