@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 
 from .capacitance_traces import _MIN_GRID_VERTICALS, find_plot_box
+from .capacitance_frame_rails import rail_plot_box
 from .capacitance_types import PlotBox
 
 
@@ -70,7 +71,27 @@ def find_closed_frame_plot_box(gray: np.ndarray) -> PlotBox:
 
 def find_capacitance_plot_box(gray: np.ndarray) -> PlotBox:
     """Compatibility name for capacitance callers."""
-    return find_closed_frame_plot_box(gray)
+    return find_capacitance_plot_box_with_method(gray)[0]
+
+
+def find_capacitance_plot_box_with_method(gray: np.ndarray) -> tuple[PlotBox, str]:
+    """Capacitance plot box plus the detector that produced it.
+
+    The shared grid/closed-frame detectors run first, unchanged. Only when
+    they refuse for lack of solid grid verticals does the capacitance-only
+    axis-rail fallback run (dotted/dashed/absent major grids, open frames,
+    outward ticks). Its refusal re-raises the original error, so a chart
+    neither path can bound stays refused with the established message.
+    """
+    try:
+        return find_closed_frame_plot_box(gray), "grid_or_closed_frame"
+    except RuntimeError as exc:
+        if "could not find plot grid verticals" not in str(exc):
+            raise
+        recovered = rail_plot_box(gray)
+        if recovered is None:
+            raise
+        return recovered, "axis_rail_corner"
 
 
 def _orthogonal_line_boxes(

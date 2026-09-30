@@ -19,6 +19,7 @@ try:
     from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
     from .table_crossref_filter import is_ruled_spec_crossref
+    from .finder_caption_side import bound_to_caption_column, caption_owns_plot_above
     from .finder_types import PageText, Word
     from .finder_text_ocr import (
         dedupe_overprinted_words as _dedupe_overprinted_words,
@@ -54,6 +55,7 @@ except ImportError:  # pragma: no cover - direct script compatibility
     from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
     from table_crossref_filter import is_ruled_spec_crossref
+    from finder_caption_side import bound_to_caption_column, caption_owns_plot_above
     from finder_types import PageText, Word
     from finder_text_ocr import (
         dedupe_overprinted_words as _dedupe_overprinted_words,
@@ -1199,6 +1201,10 @@ def choose_caption_synthetic_bbox(page: PageText, title: DiagramTitle) -> tuple[
     ):
         y0 = max(0.0, ty0 - 215.0)
         y1 = max(0.0, ty0 - 4.0)
+    elif caption_owns_plot_above(title.bbox_pt, [(line_text(line), line_bbox(line)) for line in group_words_into_lines(page.words)], page.width_pt, caption_axis_direction(page, title, classify_chart(title.title, ""), _token_norm), lambda text: bool(FIGURE_RE.match(text) or COMPACT_FIGURE_RE.match(text) or re.match(r"(?i)^diagram\s*\d+", text))):
+        # position said "below"; own-axis/tick-row evidence puts the plot above (finder_caption_side)
+        y0, y1 = max(0.0, ty0 - 215.0), max(0.0, ty0 - 4.0)
+        x0, _, x1, _ = bound_to_caption_column((x0, y0, x1, y1), title.bbox_pt, [(w.text, (w.x0, w.y0, w.x1, w.y1)) for w in page.words], half_width, page.width_pt)
     elif ty0 < page.height_pt * 0.35:
         y0 = min(page.height_pt, ty1 + 4.0)
         y1 = min(page.height_pt, y0 + 215.0)

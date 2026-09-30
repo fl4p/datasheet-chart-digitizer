@@ -7,6 +7,8 @@ import numpy as np
 import pymupdf
 from PIL import Image, ImageDraw
 
+from .gate_charge_branch import follow_branch_through_hops
+
 
 def _pdf_to_px(rect: pymupdf.Rect, scale: float, x: float, y: float) -> tuple[float, float]:
     return (x - rect.x0) * scale, (y - rect.y0) * scale
@@ -486,6 +488,9 @@ def _trace_gate_curve(
     if not candidates:
         return []
     _score, points = max(candidates, key=lambda item: item[0])
+    # the branch's continuation past an erased label lies in the full mask,
+    # not in the connected component the tracer was confined to
+    points = follow_branch_through_hops(points, mask, _cluster_runs)
     points = _bridge_source_supported_plateau_gaps(points, gray)
     points = _prepend_source_supported_initial_ramp(points, gray)
     points = _repair_leading_axis_capture(points, gray)

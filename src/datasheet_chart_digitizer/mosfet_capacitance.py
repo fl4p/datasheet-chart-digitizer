@@ -62,7 +62,7 @@ from .capacitance_axis import (
 from .capacitance_assignment import select_trace_assignment
 from .capacitance_grid_anchor import grid_check_problems
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
-from .capacitance_plot_box import find_capacitance_plot_box
+from .capacitance_plot_box import find_capacitance_plot_box_with_method
 from .capacitance_refs import (
     _anchor_csv_path,
     _extract_reference_vint,
@@ -232,7 +232,7 @@ def process_chart(
         raise RuntimeError(f"could not read crop {crop_path}")
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    plot = find_capacitance_plot_box(gray)
+    plot, plot_box_method = find_capacitance_plot_box_with_method(gray)
     anchors = parse_capacitance_anchors(str(chart["part"]), datasheet_root)
     output_ref = parse_output_charge_reference(str(chart["part"]), datasheet_root)
     axis_text_order: AxisCalibration | None = None
@@ -623,6 +623,7 @@ def process_chart(
         "axis_debug_overlay": str(axis_debug_path.relative_to(out_dir)) if axis_debug_path is not None else None,
         "points": str(points_path.relative_to(out_dir)),
         "plot_box_px": [plot.x0, plot.y0, plot.x1, plot.y1],
+        "plot_box_method": plot_box_method,
         "extraction_method": extraction_method,
         "vector_selection_method": vector_selection_method,
         "vector_error": vector_error,

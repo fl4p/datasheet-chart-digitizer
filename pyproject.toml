@@ -16,6 +16,9 @@ dependencies = [
   "scipy",
 ]
 
+[project.optional-dependencies]
+synth = ["matplotlib>=3.8"]  # tools/synth_charts (synthetic chart generator)
+
 [project.scripts]
 dsdig = "datasheet_chart_digitizer.cli:main"
 datasheet-chart-find = "datasheet_chart_digitizer.find_charts:main"

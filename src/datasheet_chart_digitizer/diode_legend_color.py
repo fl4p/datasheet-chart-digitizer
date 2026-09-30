@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import asdict
 from pathlib import Path
 
@@ -11,6 +10,7 @@ import pymupdf
 
 from .crop_transform import CropTransform
 from .finder_types import Word
+from .transfer_temperature_labels import temperature_labels, temperature_values
 from .source_color_binding import (
     ColorPredicate,
     DrawingCandidate,
@@ -19,62 +19,14 @@ from .source_color_binding import (
 
 
 def temperatures_from_source_words(words: list[Word]) -> list[float]:
-    """Parse complete or tightly adjacent Celsius tokens without joining rows.
+    """Distinct Celsius labels owned by the panel's source words.
 
-    A generic line grouper can place a logarithmic-axis tick such as ``10`` on
-    the same visual row as a nearby ``°C`` label. Source word geometry keeps
-    that tick separate while still supporting PDFs that split ``175``, ``o``,
-    and ``C`` into individual words.
+    Delegates to the shared positioned-word parser, which joins only touching
+    words on one row: a logarithmic-axis tick such as ``10`` stays apart from a
+    nearby ``°C`` label while ``Tj`` ``=`` ``-`` ``55`` ``°C`` still parses.
     """
 
-    def normalized(text: str) -> str:
-        return (
-            text.strip()
-            .replace("−", "-")
-            .replace("º", "°")
-            .replace("˚", "°")
-            .replace("℃", "°C")
-        )
-
-    def signed_value(word: Word, value: float) -> float:
-        middle_y = 0.5 * (word.y0 + word.y1)
-        minuses = [
-            other
-            for other in words
-            if normalized(other.text) == "-"
-            and -0.75 <= word.x0 - other.x1 <= 5.0
-            and abs(0.5 * (other.y0 + other.y1) - middle_y)
-            <= 0.6 * max(word.y1 - word.y0, other.y1 - other.y0)
-        ]
-        return -abs(value) if len(minuses) == 1 else value
-
-    values: set[float] = set()
-    numeric_words: list[tuple[Word, float]] = []
-    unit_words: list[Word] = []
-    for word in words:
-        text = normalized(word.text)
-        complete = re.fullmatch(
-            r"(-?\d+(?:\.\d+)?)\s*(?:°|[oO])\s*C", text, re.I
-        )
-        if complete is not None:
-            values.add(signed_value(word, float(complete.group(1))))
-            continue
-        number = re.fullmatch(r"(-?\d+(?:\.\d+)?)", text)
-        if number is not None:
-            numeric_words.append((word, float(number.group(1))))
-        if re.fullmatch(r"(?:°|[oO])?C", text, re.I):
-            unit_words.append(word)
-
-    for number_word, value in numeric_words:
-        number_mid_y = 0.5 * (number_word.y0 + number_word.y1)
-        if any(
-            -0.75 <= unit.x0 - number_word.x1 <= 5.0
-            and abs(0.5 * (unit.y0 + unit.y1) - number_mid_y)
-            <= 0.6 * max(number_word.y1 - number_word.y0, unit.y1 - unit.y0)
-            for unit in unit_words
-        ):
-            values.add(signed_value(number_word, value))
-    return sorted(value for value in values if -100 <= value <= 250)
+    return temperature_values(words)
 
 
 def colored_temperature_bindings(
@@ -95,20 +47,13 @@ def colored_temperature_bindings(
     labels: list[tuple[float, tuple[float, float, float, float]]] = []
     with pymupdf.open(panel.pdf) as document:
         page = document[panel.page - 1]
-        for word in page.get_text("words"):
-            text = (
-                str(word[4])
-                .strip()
-                .replace("−", "-")
-                .replace("º", "°")
-                .replace("˚", "°")
-                .replace("℃", "°C")
-            )
-            match = re.fullmatch(r"(-?\d+(?:\.\d+)?)\s*°\s*C", text, re.I)
-            if match is None:
-                continue
-            x0, y0 = transform.to_px(float(word[0]), float(word[1]))
-            x1, y1 = transform.to_px(float(word[2]), float(word[3]))
+        source_words = [
+            Word(str(word[4]), *(float(value) for value in word[:4]))
+            for word in page.get_text("words")
+        ]
+        for label in temperature_labels(source_words):
+            x0, y0 = transform.to_px(label.x0, label.y0)
+            x1, y1 = transform.to_px(label.x1, label.y1)
             rect = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
             cx = 0.5 * (rect[0] + rect[2])
             cy = 0.5 * (rect[1] + rect[3])
@@ -116,7 +61,7 @@ def colored_temperature_bindings(
                 calibration.hint.x0 <= cx <= calibration.hint.x1
                 and calibration.hint.y0 <= cy <= calibration.hint.y1
             ):
-                labels.append((float(match.group(1)), rect))
+                labels.append((label.value_c, rect))
         return bind_two_source_color_legend(
             page,
             transform,
