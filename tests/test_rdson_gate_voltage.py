@@ -182,6 +182,67 @@ class LocatorTests(unittest.TestCase):
         self.assertEqual([(p.page, p.diagram) for p in located], [(6, "12")])
         self.assertIn("Gate", located[0].x_axis_title)
 
+    # --- batch_all class A (2026-09-30) -------------------------------------------
+
+    def _locate(self, name: str, upright: bool = True):
+        from datasheet_chart_digitizer.rdson_gate_voltage_locate import upright_pdf
+        with _scratch("rdsvgs-loc-") as tmp:
+            pdf = upright_pdf(_pdf(name), Path(tmp)) if upright else _pdf(name)
+            return locate_panels(pdf, Path(tmp))
+
+    def test_a1_axis_titles_overrule_a_transfer_caption(self):
+        # Diodes Inc. captions its RDS(on)-vs-VGS Figure 4 "Typical Transfer Characteristic(s)"
+        for name in ("DMN3023L_Diodes", "DMN4008LFG_Diodes", "DMT6009LCT_Diodes"):
+            located, _refused, _ = self._locate(name)
+            self.assertEqual([(p.page, p.diagram) for p in located], [(3, "4")], name)
+            self.assertTrue(located[0].identity.startswith("axis_titles:"), located[0].identity)
+            self.assertIn("Transfer", located[0].identity)
+
+    def test_a1_known_bad_real_transfer_and_rds_vs_id_charts_are_not_taken(self):
+        import pymupdf
+        from datasheet_chart_digitizer import rdson_gate_voltage_locate as loc
+        from datasheet_chart_digitizer.find_charts import run_text_bbox
+        pdf = _pdf("DMN3023L_Diodes")
+        page = run_text_bbox(pdf)[2]
+        with _scratch("rdsvgs-loc-") as tmp, pymupdf.open(pdf) as document:
+            frames = loc._page_frames(pdf, page, document[2], Path(tmp))
+            captions = {c.number: c for c in loc._numbered_captions(page, [])}
+            everything = list(captions.values())
+            side = loc._caption_side(everything, frames)
+            self.assertEqual(side, "below")
+            # Figure 2 is a real transfer chart (y "I D, DRAIN CURRENT"): never RDS(VGS)
+            self.assertIsNone(loc._axis_titled_frame(captions["2"], frames, page, document[2], side, everything))
+            # without the page's caption side, Figure 2's caption grabs the Figure 4
+            # frame 24 pt below it: the side rule is what keeps the number right
+            hazard = loc._axis_titled_frame(captions["2"], frames, page, document[2], None, everything)
+            self.assertIsNotNone(hazard)
+            self.assertAlmostEqual(hazard[0][1], 305.8, delta=1.0)
+        # AON7524 Figure 3 (RDS vs ID; caption continues "Gate Voltage (Note E)" under the frame)
+        located, _refused, _ = self._locate("AON7524_AOS")
+        self.assertEqual([(p.page, p.diagram) for p in located], [(3, "5")])
+
+    def test_a2_rotated_page_is_located_on_an_upright_copy(self):
+        located, _refused, _ = self._locate("ZVNL120A_Diodes")
+        self.assertEqual([(p.page, p.title) for p in located], [(3, "On-resistance vs gate-source voltage")])
+        self.assertEqual(located[0].frame_source, "vector_hairline_grid")
+        # known-bad: the stored (sideways) PDF itself yields nothing
+        located, _refused, _ = self._locate("ZVNL120A_Diodes", upright=False)
+        self.assertEqual(located, [])
+
+    def test_a3_caption_naming_both_axes_stands_in_for_an_unreadable_x_title(self):
+        located, refused, _ = self._locate("HSP4048_LCSC_C701029")
+        self.assertEqual([(p.page, p.diagram) for p in located], [(3, "2")])
+        self.assertTrue(located[0].identity.startswith("caption_names_both_axes:"), located[0].identity)
+        # the frame ABOVE the caption (captions sit under their charts on this
+        # page), not the Fig.4 gate-charge frame 13 pt below it
+        self.assertLess(located[0].frame_pt[3], located[0].caption_bbox_pt[1])
+        from datasheet_chart_digitizer.rdson_gate_voltage_locate import caption_names_both_axes
+        self.assertTrue(caption_names_both_axes("On-Resistance vs G-S Voltage"))
+        for title in ("On-Resistance Variation with Gate Voltage and Drain Current",
+                      "Normalized R DSON vs T J", "On-Resistance vs. Drain Current and Gate Voltage",
+                      "On-Resistance vs Gate-Source Voltage and Temperature"):
+            self.assertFalse(caption_names_both_axes(title), title)
+
 
 @unittest.skipUnless(HAVE_DS, f"datasheet folder not present: {DS}")
 class EndToEndTests(unittest.TestCase):

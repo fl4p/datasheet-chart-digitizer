@@ -74,7 +74,7 @@ from .rdson_gate_voltage_axes import (
     ocr_plot_labels,
 )
 from .rdson_gate_voltage_labels import ocr_plot_labels_rules_erased, read_legend_boxes
-from .rdson_gate_voltage_locate import KIND, LocatedPanel, locate_panels
+from .rdson_gate_voltage_locate import KIND, LocatedPanel, locate_panels, upright_pdf
 from .rdson_gate_voltage_report import (
     READOUT_NOTE,
     READOUT_VGS_V,
@@ -117,12 +117,18 @@ def digitize_pdf(pdf: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
     # one thread makes every OCR-dependent result reproducible.
     os.environ.setdefault("OMP_THREAD_LIMIT", "1")
     work = out_dir / "work"
-    located, refusals, panel_text = locate_panels(pdf, work)
-    spec_rows = parse_rdson_spec_rows(pdf)
+    source = upright_pdf(pdf, work)
+    located, refusals, panel_text = locate_panels(source, work)
+    spec_rows = parse_rdson_spec_rows(source)
     results = []
     for panel in located:
-        results.append(digitize_panel(panel, panel_text[(panel.page, panel.diagram)], spec_rows, out_dir))
-    return results, [r.to_json() for r in refusals]
+        row = digitize_panel(panel, panel_text[(panel.page, panel.diagram)], spec_rows, out_dir)
+        if source != pdf:
+            row["pdf"] = str(pdf)
+            row["rendered_from"] = (f"{source} (upright copy: the PDF stores rotated pages, see "
+                                    "rdson_gate_voltage_locate.upright_pdf)")
+        results.append(row)
+    return results, [r.to_json() | ({"pdf": str(pdf)} if source != pdf else {}) for r in refusals]
 
 
 def digitize_panel(

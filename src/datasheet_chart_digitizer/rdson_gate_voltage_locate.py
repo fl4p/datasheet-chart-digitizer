@@ -104,6 +104,7 @@ class LocatedPanel:
     bbox_pt: BBox
     text_source: str
     x_axis_title: str
+    identity: str = "caption"
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -152,9 +153,11 @@ def locate_panels(
             if not captions and _needs_ocr(text_page, pdf_page):
                 text_page = ocr_page_text(pdf, pdf_page, page.page_num, work_dir)
                 captions = find_rds_vgs_captions(text_page)
-            if not captions:
+            others = _other_numbered_captions(text_page, captions) if text_page.text_source == "pdftotext" else []
+            if not captions and not others:
                 continue
             frames = _page_frames(pdf, page, pdf_page, work_dir)
+            side = _caption_side([*captions, *_numbered_captions(text_page, captions)], frames)
             ocr_cache: list[PageText] = []
 
             def ocr() -> PageText:
@@ -163,8 +166,10 @@ def locate_panels(
                 return ocr_cache[0]
 
             for caption in captions:
+                if not _frame_candidates(caption, frames) and not any(s == "vector_hairline_grid" for _f, s in frames):
+                    frames = frames + _hairline_grid_frames(pdf, page, frames)
                 try:
-                    frame, source, words, x_title = _owned_frame(caption, frames, text_page, ocr)
+                    frame, source, words, x_title, identity = _owned_frame(caption, frames, text_page, ocr, side)
                 except LocateError as error:
                     refusals.append(Refusal(str(pdf), page.page_num, caption.number, caption.title, str(error)))
                     continue
@@ -180,21 +185,207 @@ def locate_panels(
                     bbox_pt=_panel_bbox(frame, source, caption, frames, text_page),
                     text_source=words.text_source,
                     x_axis_title=x_title,
+                    identity=identity,
                 )
                 if any(o.page == panel.page and bbox_iou(o.frame_pt, panel.frame_pt) > 0.6 for o in located):
                     continue
                 located.append(panel)
                 panel_text[(panel.page, panel.diagram)] = words
+            for caption in others:
+                owned = _axis_titled_frame(caption, frames, text_page, pdf_page, side,
+                                           [*captions, *_numbered_captions(text_page, captions)])
+                if owned is None:
+                    continue
+                frame, source, x_title, y_title = owned
+                if any(o.page == page.page_num and bbox_iou(o.frame_pt, frame) > 0.6 for o in located):
+                    continue
+                panel = LocatedPanel(
+                    pdf=str(pdf), part=pdf.stem, page=page.page_num, diagram=caption.number, title=caption.title,
+                    caption_bbox_pt=caption.bbox_pt, frame_pt=frame, frame_source=source,
+                    bbox_pt=_panel_bbox(frame, source, caption, frames, text_page),
+                    text_source=text_page.text_source, x_axis_title=x_title,
+                    identity=(f"axis_titles: y {y_title!r}, x {x_title!r} name RDS(on) versus VGS; the caption "
+                              f"{caption.title!r} names another chart and is overruled"),
+                )
+                located.append(panel)
+                panel_text[(panel.page, panel.diagram)] = PageText(
+                    text_page.page_num, text_page.width_pt, text_page.height_pt, [], "text_layer_only")
     return located, refusals, panel_text
 
 
-def _owned_frame(caption, frames, text_page: PageText, ocr) -> tuple[BBox, str, PageText, str]:
-    """The nearest caption-adjacent frame whose own x-axis title names VGS."""
+def _other_numbered_captions(page: PageText, rds_captions: list[Caption]) -> list[Caption]:
+    """Numbered captions that do NOT name RDS(VGS), on a page whose text names both RDS(on) and VGS.
+
+    Diodes Inc. (DMN3023L, DMN4008LFG, DMT6009LCT) captions its RDS(on)-vs-VGS
+    Figure 4 "Typical Transfer Characteristic". Such a caption is only a
+    candidate: ``_axis_titled_frame`` owns its frame only when the frame's own
+    axis titles say RDS(on) (y) versus VGS (x).
+    """
+    joined = normalize_dashes(" ".join(w.text for w in page.words))
+    if not re.search(_RDS_TOKEN, joined, re.IGNORECASE) or not VGS_AXIS_RE.search(joined):
+        return []
+    return [c for c in _numbered_captions(page, rds_captions) if not RDS_VGS_TITLE_RE.search(c.title)]
+
+
+def _numbered_captions(page: PageText, rds_captions: list[Caption]) -> list[Caption]:
+    """Every numbered caption ("Figure 3 ...", "Fig.2 ...") on the page other than ``rds_captions``."""
+    out: list[Caption] = []
+    lines = group_words_into_lines(page.words)
+    for index, line in enumerate(lines):
+        for segment in _caption_segments(line):
+            text = normalize_dashes(line_text(segment))
+            if not (_CAPTION_START_RE.match(text) and re.match(r"(?i)^fig", text)):
+                continue
+            continuation = _continuation(lines, index, line_bbox(segment))
+            full = normalize_dashes(f"{text} {line_text(continuation)}" if continuation else text)
+            match = _NUMBERED_CAPTION_RE.match(full)
+            if match is None or not match.group(2).strip():
+                continue
+            bbox = line_bbox(segment + continuation)
+            if any(bbox_iou(bbox, c.bbox_pt) > 0.3 for c in [*rds_captions, *out]):
+                continue
+            out.append(Caption(match.group(1), match.group(2).strip(), bbox, page.text_source))
+    return out
+
+
+Y_TITLE_STRIP_PT = 60.0
+
+
+def owned_y_axis_title(pdf_page, frame: BBox) -> str | None:
+    """The vertical text lines in the strip left of the frame (the y-axis title), text layer only."""
+    texts: list[tuple[float, str]] = []
+    for block in pdf_page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            dx, _dy = line["dir"]
+            if abs(dx) > 0.2:
+                continue
+            x0, y0, x1, y1 = line["bbox"]
+            if not frame[0] - Y_TITLE_STRIP_PT <= 0.5 * (x0 + x1) <= frame[0] or y1 < frame[1] - 5 or y0 > frame[3] + 5:
+                continue
+            text = " ".join(span["text"].strip() for span in line["spans"] if span["text"].strip())
+            if re.search(r"[A-Za-z]{2,}", text):
+                texts.append((0.5 * (x0 + x1), normalize_dashes(text)))
+    return " | ".join(text for _x, text in sorted(texts)) or None
+
+
+def _frame_side_candidates(caption: Caption, frames, side: str | None) -> list[tuple[float, BBox, str]]:
+    """_frame_candidates, restricted to frames above the caption ("below") or below it ("above")."""
+    out = []
+    for score, frame, source in _frame_candidates(caption, frames):
+        is_above = -2.0 <= caption.bbox_pt[1] - frame[3] <= MAX_CAPTION_GAP_ABOVE_PT
+        if side is None or (side == "below" and is_above) or (side == "above" and not is_above):
+            out.append((score, frame, source))
+    return out
+
+
+def _caption_side(captions: list[Caption], frames) -> str | None:
+    """Which side of its frame this page prints captions on: "below", "above", or None (undecided).
+
+    DMN3023L prints every caption under its chart, 35 pt below; the NEXT
+    row's chart starts only 24 pt under the caption, so "nearest frame"
+    hands Figure 2's caption the Figure 4 chart. The page's side is the one
+    under which the most captions get a frame of their own (a one-to-one
+    match); a tie decides nothing.
+    """
+    counts = {}
+    for side in ("below", "above"):
+        taken: set[tuple[float, ...]] = set()
+        for caption in sorted(captions, key=lambda c: c.bbox_pt[1]):
+            for _score, frame, _source in _frame_side_candidates(caption, frames, side):
+                if tuple(frame) not in taken:
+                    taken.add(tuple(frame))
+                    break
+        counts[side] = len(taken)
+    if counts["below"] == counts["above"]:
+        return None
+    return max(counts, key=counts.get)
+
+
+def _x_band_text(page: PageText, frame: BBox) -> str:
+    """All words in the x-title band under the frame, tick labels included."""
+    band = (frame[0] - 10.0, frame[3] + 1.0, frame[2] + 10.0, frame[3] + MARGIN_BOTTOM_PT)
+    words = [w for w in page.words
+             if band[0] <= 0.5 * (w.x0 + w.x1) <= band[2] and band[1] <= 0.5 * (w.y0 + w.y1) <= band[3]]
+    return " | ".join(normalize_dashes(line_text(line)) for line in group_words_into_lines(words))
+
+
+def _axis_titled_frame(caption: Caption, frames, text_page: PageText, pdf_page, side: str | None = None,
+                       captions_on_page: list[Caption] = ()):
+    """(frame, source, x title, y title) when the caption-adjacent frame's own titles say RDS(on) vs VGS.
+
+    The y title (vertical text left of the frame) must name RDS(on) and no
+    drain current; the x title must pass the same gate-voltage test as every
+    located panel. A transfer chart (y "I D, DRAIN CURRENT", x VGS) fails
+    the first test; an RDS(on)-vs-ID chart fails the second.
+    """
+    # captions (with their continuation lines) are not axis titles: AON7524's
+    # "Figure 3: On-Resistance vs. Drain Current and / Gate Voltage (Note E)"
+    # puts "Gate Voltage" in the band under its RDS-versus-ID frame.
+    boxes = [c.bbox_pt for c in captions_on_page]
+    titles = PageText(text_page.page_num, text_page.width_pt, text_page.height_pt, [
+        w for w in text_page.words
+        if not any(b[0] - 1 <= 0.5 * (w.x0 + w.x1) <= b[2] + 1 and b[1] - 1 <= 0.5 * (w.y0 + w.y1) <= b[3] + 1 for b in boxes)
+    ], text_page.text_source)
+    evidenced = []
+    for score, frame, source in _frame_side_candidates(caption, frames, side):
+        y_title = owned_y_axis_title(pdf_page, frame)
+        if y_title is None or not re.search(_RDS_TOKEN, y_title, re.IGNORECASE) or DRAIN_CURRENT_AXIS_RE.search(y_title):
+            continue
+        x_title = owned_x_axis_title(titles, frame)
+        try:
+            _require_gate_voltage_x_axis(x_title)
+            # every word of the band, also those without two letters ("I D (A)")
+            _require_gate_voltage_x_axis(_x_band_text(titles, frame))
+        except LocateError:
+            continue
+        evidenced.append((score, frame, source, x_title or "", y_title))
+    if not evidenced or (len(evidenced) > 1 and evidenced[1][0] - evidenced[0][0] < CAPTION_AMBIGUITY_PT):
+        return None
+    _score, frame, source, x_title, y_title = evidenced[0]
+    return frame, source, x_title, y_title
+
+
+def upright_pdf(pdf: Path, work_dir: Path) -> Path:
+    """``pdf`` itself, or an upright copy when any page carries a /Rotate.
+
+    ZVNL120A's pages are stored landscape with /Rotate 90: pdftotext reports
+    the words upright, but PyMuPDF's words and vector drawings stay in the
+    stored (sideways) frame, so the caption, the frames and the crop never
+    agree. The copy shows every page as displayed (``show_pdf_page`` with the
+    rotation undone), so all readers see one upright coordinate system. It is
+    written under the run's own work directory, never /tmp; a PDF without a
+    rotated page is used as is.
+    """
+    with pymupdf.open(pdf) as source:
+        rotations = [page.rotation for page in source]
+        if not any(rotations):
+            return pdf
+        target = work_dir / "upright" / pdf.name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        out = pymupdf.open()
+        for index, page in enumerate(source):
+            rect, rotation = page.rect, page.rotation
+            page.set_rotation(0)
+            new = out.new_page(width=rect.width, height=rect.height)
+            new.show_pdf_page(new.rect, source, index, rotate=-rotation)
+        out.save(target)
+        out.close()
+    return target
+
+
+def _owned_frame(caption, frames, text_page: PageText, ocr, side: str | None = None) -> tuple[BBox, str, PageText, str, str]:
+    """The nearest caption-adjacent frame whose own x-axis title names VGS.
+
+    Returns (frame, source, words, x title, identity). When no candidate's
+    x-axis title can be read at all (text layer and OCR both empty), the
+    caption itself may stand in -- see ``caption_names_both_axes``.
+    """
     candidates = _frame_candidates(caption, frames)
     if not candidates:
         raise LocateError("no plot frame directly above or below the caption in its column")
     reasons: list[str] = []
     evidenced: list[tuple[float, BBox, str, PageText, str]] = []
+    unreadable: list[tuple[float, BBox, str, PageText]] = []
     for score, frame, source in candidates:
         words = text_page if text_page.text_source != "pdftotext" else PageText(
             text_page.page_num, text_page.width_pt, text_page.height_pt, [], "text_layer_only"
@@ -205,19 +396,54 @@ def _owned_frame(caption, frames, text_page: PageText, ocr) -> tuple[BBox, str, 
             ocr_title = owned_x_axis_title(ocr_page, frame)
             if ocr_title is not None:
                 x_title = ocr_title if x_title is None else f"{x_title} | {ocr_title}"
-                words = _merge_page_text(text_page, ocr_page, frame)
+            words = _merge_page_text(text_page, ocr_page, frame)
         try:
             _require_gate_voltage_x_axis(x_title)
         except LocateError as error:
             reasons.append(f"frame {[round(v) for v in frame]}: {error}")
+            if x_title is None:
+                unreadable.append((score, frame, source, words))
             continue
         evidenced.append((score, frame, source, words, x_title or ""))
     if not evidenced:
+        # HSP4048 "Fig.2 On-Resistance vs G-S Voltage": an image chart whose
+        # x-axis title neither the text layer nor OCR reads. The caption names
+        # BOTH axes and nothing else; it stands in for the unreadable title
+        # only for the nearest frame, when no other frame competes for the
+        # caption and that frame's title was unreadable (not contradicting).
+        # The frame must be on the side of the caption where this page prints
+        # its captions (HSP4048 captions sit under their charts; the next
+        # row's Fig.4 gate-charge chart starts 13 pt under the Fig.2 caption).
+        sided = _frame_side_candidates(caption, frames, side)
+        near = sided[0] if sided else None
+        alone = len(sided) == 1 or (len(sided) > 1 and sided[1][0] - sided[0][0] >= CAPTION_AMBIGUITY_PT)
+        match = [u for u in unreadable if near is not None and u[1] == near[1]]
+        if caption_names_both_axes(caption.title) and alone and match:
+            _score, frame, source, words = match[0]
+            return frame, source, words, "", (
+                f"caption_names_both_axes: {caption.title!r}; the x-axis title below the frame is unreadable "
+                "(text layer and OCR), so the caption is the only axis-identity evidence")
         raise LocateError("; ".join(reasons))
     if len(evidenced) > 1 and evidenced[1][0] - evidenced[0][0] < CAPTION_AMBIGUITY_PT:
         raise LocateError("two caption-adjacent frames both carry a VGS x axis; ownership ambiguous")
     _score, frame, source, words, x_title = evidenced[0]
-    return frame, source, words, x_title
+    return frame, source, words, x_title, "caption"
+
+
+_BOTH_AXES_CAPTION_RE = re.compile(
+    r"^\s*(?:typical\s+)?(?:static\s+)?" + _RDS_TOKEN + r"\s*(?:\bvs\.?|\bversus\b|\bv\b)\s*" + _GATE_TOKEN + r"\s*\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def caption_names_both_axes(title: str) -> bool:
+    """A caption that is exactly "<RDS(on)> vs <gate voltage>": both axes named, nothing else.
+
+    "On-Resistance Variation with Gate Voltage and Drain Current" (an
+    RDS-versus-ID chart) does not qualify, nor does any caption naming a
+    temperature, a current or a second quantity.
+    """
+    return _BOTH_AXES_CAPTION_RE.match(normalize_dashes(title)) is not None
 
 
 def normalize_dashes(text: str) -> str:
@@ -257,13 +483,22 @@ def find_rds_vgs_captions(page: PageText) -> list[Caption]:
 
 
 def _caption_segments(line: list[Word]) -> list[list[Word]]:
-    """Split a merged two-column text line at caption starts and wide gaps."""
+    """Split a merged two-column text line at caption starts and wide gaps.
+
+    A gap is wide at > 28 pt, or at > 12 pt when it is also over five times
+    the line's median word gap: ZVNL120A sets its two bare titles 24 pt apart
+    ("On-resistance vs gate-source voltage   Normalised R DS(on) ...") with
+    2 pt word spacing, and the merged 12-word line was no bare title.
+    """
     starts = [
         i for i, word in enumerate(line)
         if re.match(r"(?i)^(?:figure|fig)\.?(?:\d|$)", word.text.strip())
     ]
+    gaps = [line[i].x0 - line[i - 1].x1 for i in range(1, len(line))]
+    typical = sorted(gaps)[len(gaps) // 2] if gaps else 0.0
     cuts = sorted(set(starts) | {
-        i for i in range(1, len(line)) if line[i].x0 - line[i - 1].x1 > 28.0
+        i for i in range(1, len(line))
+        if gaps[i - 1] > 28.0 or (gaps[i - 1] > 12.0 and gaps[i - 1] > 5.0 * max(typical, 0.5))
     } | {0})
     cuts.append(len(line))
     return [line[a:b] for a, b in zip(cuts, cuts[1:]) if b > a]
@@ -368,6 +603,75 @@ def _page_frames(pdf: Path, page: PageText, pdf_page, work_dir: Path) -> list[tu
             continue
         frames.append((box, "embedded_image"))
     return frames
+
+
+HAIRLINE_MIN_STROKE_PT = 0.05
+GRID_EXTENT_TOL_PT = 2.5
+
+
+def _hairline_grid_frames(pdf: Path, page: PageText, frames: list[tuple[BBox, str]]) -> list[tuple[BBox, str]]:
+    """Line grids drawn in hairlines, tried only for a caption with no frame beside it.
+
+    ZVNL120A draws its axes as open L-shapes (0.4 pt) and its grid at 0.08 pt,
+    under the finder's 0.20 pt stroke minimum, and its rules' end points
+    differ by a few tenths of a point, so the finder's exact (left, right)
+    buckets never collect three of them: the page yields no frame at all.
+    Here rules of any stroke >= HAIRLINE_MIN_STROKE_PT are grouped by their
+    extent to within GRID_EXTENT_TOL_PT. A frame needs >= 3 horizontal rules
+    sharing one x extent and >= 3 vertical rules sharing one y extent, whose
+    outermost rules close the rectangle to within GRID_EXTENT_TOL_PT: the
+    grid's extent is then the plot area.
+    """
+    with pymupdf.open(pdf) as document:
+        drawings = document[page.page_num - 1].get_drawings()
+    min_w, max_w = page.width_pt * 0.14, page.width_pt * 0.48
+    min_h, max_h = page.height_pt * 0.08, page.height_pt * 0.40
+    horizontal: list[tuple[float, float, float]] = []   # (left, right, y)
+    vertical: list[tuple[float, float, float]] = []     # (top, bottom, x)
+    for drawing in drawings:
+        if drawing.get("type") not in {"s", "fs"} or not HAIRLINE_MIN_STROKE_PT <= float(drawing.get("width") or 0.0) <= 2.5:
+            continue
+        for item in drawing.get("items", []):
+            if item[0] != "l":
+                continue
+            (x0, y0), (x1, y1) = (item[1].x, item[1].y), (item[2].x, item[2].y)
+            if abs(y1 - y0) <= 0.75 and min_w <= abs(x1 - x0) <= max_w:
+                horizontal.append((min(x0, x1), max(x0, x1), 0.5 * (y0 + y1)))
+            elif abs(x1 - x0) <= 0.75 and min_h <= abs(y1 - y0) <= max_h:
+                vertical.append((min(y0, y1), max(y0, y1), 0.5 * (x0 + x1)))
+
+    def groups(rules):
+        out: list[list[tuple[float, float, float]]] = []
+        for rule in sorted(rules):
+            for group in out:
+                if abs(group[0][0] - rule[0]) <= GRID_EXTENT_TOL_PT and abs(group[0][1] - rule[1]) <= GRID_EXTENT_TOL_PT:
+                    group.append(rule)
+                    break
+            else:
+                out.append([rule])
+        return out
+
+    tol = GRID_EXTENT_TOL_PT
+    found: list[tuple[BBox, str]] = []
+    for h_all in groups(horizontal):
+        for v_all in groups(vertical):
+            # rules of one extent may belong to two charts (stacked, or side by
+            # side): keep only those inside the other family's extent
+            h = [r for r in h_all if min(q[0] for q in v_all) - tol <= r[2] <= max(q[1] for q in v_all) + tol]
+            v = [r for r in v_all if min(q[0] for q in h_all) - tol <= r[2] <= max(q[1] for q in h_all) + tol]
+            if len({round(r[2]) for r in h}) < 3 or len({round(r[2]) for r in v}) < 3:
+                continue
+            left, right = min(r[0] for r in h), max(r[1] for r in h)
+            top, bottom = min(r[2] for r in h), max(r[2] for r in h)
+            vtop, vbottom = min(r[0] for r in v), max(r[1] for r in v)
+            xs = sorted(r[2] for r in v)
+            if max(abs(vtop - top), abs(vbottom - bottom), abs(xs[0] - left), abs(xs[-1] - right)) > tol:
+                continue
+            box = (left, top, right, bottom)
+            if not (min_h <= bottom - top <= max_h) or any(bbox_iou(box, e) >= 0.6 for e, _ in [*frames, *found]):
+                continue
+            found.append((box, "vector_hairline_grid"))
+    return found
 
 
 def _inside(inner: BBox, outer: BBox) -> bool:
