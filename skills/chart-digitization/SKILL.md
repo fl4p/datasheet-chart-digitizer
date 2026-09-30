@@ -127,8 +127,8 @@ climb this ladder in order and stop at the first rung that gives a definite answ
 
    | model | command (each run 2026-09-30; each read the test crop correctly) |
    |---|---|
-   | GPT Astra | `codex exec -m gpt-6-astra -s read-only --skip-git-repo-check -i crop.png - < question.txt`. `-i` is variadic: keep the `-` (prompt from stdin) or another flag after it. It works from a normal shell, but not from inside another Codex sandbox. |
-   | Fable 5.1 / Opus 5.5 | `claude -p --model claude-fable-5-1 --allowedTools Read -- "<question naming the absolute image path>"`. **The `--` is required:** `--allowedTools` is variadic and otherwise swallows the question. |
+   | GPT Astra | `codex exec -m gpt-6-astra -s read-only --skip-git-repo-check -i crop.png - < question.txt`. `-i` is variadic: keep the `-` (prompt from stdin) or another flag after it. It works from a normal shell, but not from inside another Codex sandbox (`failed to initialize in-process app-server client`). |
+   | Fable 5.1 / Opus 5.5 | `claude -p --model claude-fable-5-1 --allowedTools Read -- "<question naming the absolute image path>"`. **The `--` is required:** `--allowedTools` is variadic and otherwise swallows the question ("Input must be provided …"). pi's Anthropic provider fails its OAuth refresh (HTTP 400 `invalid_grant`, 2026-09-30), so Claude models go through the `claude` CLI. |
    | Qwen 3.8 Max | `pi -p --no-session --no-tools --model fireworks/accounts/fireworks/models/qwen3p8-max @crop.png "<question>"` |
    | DeepSeek V4.1 Flash | `pi -p --no-session --no-tools --model fireworks/accounts/fireworks/models/deepseek-v4p1-flash @crop.png "<question>"` |
    | Gemini 3.8 Flash | `pi -p --no-session --no-tools --model antigravity/gemini-3.8-flash @crop.png "<question>"` |
