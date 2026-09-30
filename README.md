@@ -276,6 +276,62 @@ dslib reference-corpus gate passes all 63 entries: 63 estimates within ±0.5 V,
 0 outside tolerance, 0 unresolved, and 0 missing PDFs. Downstream cutover from
 the legacy estimator remains a separate consumer change.
 
+## Axis calibration anchoring
+
+Every class serves the value→pixel mapping from the rules the tick labels name: gridlines,
+or tick marks where a chart has no solid grid. It never uses the label glyph centres, which sit
+up to several pixels off their rule. Measured before the fix: 6.9 px (0.9 % of span) on
+reverse leakage, and up to 0.46 % on capacitance, gate charge and reverse recovery.
+
+`gridline_anchor.check_served_on_grid` checks the served mapping at every labelled tick. It
+returns verified, failed or unverified. An axis it cannot evaluate is `unverified`, never OK.
+It was calibrated on known-bad fits: a label-centre fit fails, and a shift of any size up to
+three grid pitches never flips back to verified.
+
+Known open issue: on 7 Infineon IPS-verified charts, the y axis registers one grid pitch off
+(see `docs/model-benchmark-2026-09.md`).
+
+## A/B regression over human-verified charts
+
+`tools/review_ab/` re-runs a branch and its base over the human-verified sets and compares
+served status, served curve values and Vpl. A part or chart present on only one side is
+reported as INCOMPLETE and exits 2; missing evidence is never a pass. Run it before merging
+any trace or calibration change. The acceptance rule used so far: no status regressions,
+and no served value moving by more than 0.5 % of span without a PDF-render review.
+
+```bash
+python tools/review_ab/hv_ab.py <src-tree> <label> capacitance <hv-key> 8   # one side
+python tools/review_ab/hv_cmp.py <tree-A> <tree-B> out.json                # compare
+```
+
+See `tools/review_ab/README.md`.
+
+## Synthetic chart generator
+
+`tools/synth_charts/` renders seeded datasheet-style charts: vector PDF pages plus PNG
+crops, 12 chart classes, and four difficulty tiers. The ground truth is exact: vector p95
+≤ 0.0002 % of span. Style and degradation factors are recorded per case (grid density, tick
+formats, label offsets, stroke width, legends vs leaders, raster damage, path structure), so
+dsdig accuracy can be broken down by factor. `python -m tools.synth_charts.baseline` runs
+dsdig on every page and writes a per-class and per-factor report. See
+`tools/synth_charts/README.md`.
+
+Result on set1 (400 charts) after the fixes merged with it: dsdig serves 50 of the 295
+charts in its classes, 1 of them wrong. Served charts are accurate: capacitance p95 0.11 %,
+body diode 0.22 %, gate charge 0.31 % of span. Most unserved charts are explicit refusals.
+
+## Benchmark and model comparison
+
+`docs/model-benchmark-2026-09.md` compares dsdig with vision-language models on four sets:
+- human-verified charts
+- vendor-data ground truth (Infineon IPS, Taiyo Yuden, Murata)
+- the RDS(on)-vs-VGS goldens
+- the synthetic hard subset
+
+The harness lives in `out/vlm-chart2table/` (gitignored, local).
+`docs/chart-digitisation-landscape-2026-09.md` and `docs/chart-digitisation-benchmarks-2026-09.md`
+survey the literature, tools, benchmarks and reference-data sources.
+
 ## Scope
 
 The repository name is intentionally generic. Planned plugins include Qoss(VDS),
