@@ -145,6 +145,8 @@ def collect(root: Path, cases, normalize):
                 # curves whose physical values dsdig withheld (None) are not an answer
                 has = any(sum(a is not None and b is not None for a, b in (k.get("data") or [])) >= 2
                           for k in ch.get("curves", []))
+                why = ch.get("status_reasons") or ch.get("reason") or ch.get("diagnostics")
+                rec["refusal_reason"] = (" ".join(map(str, why)) if isinstance(why, list) else str(why))[:200] if why else None
                 rec.update(dsdig_class=ch["class"], dsdig_status=st, overlap=round(ov, 3),
                            status="served" if (st in ACCEPTED and has) else ("flagged" if has else "refused"),
                            chart=ch)
@@ -242,6 +244,7 @@ def score(root: Path, vlm: Path, tag: str):
         g = got.get(c["id"], {"status": "no_run"})
         rec = {"id": c["id"], "cls": c["class"], "tier": c["tier"], "supported": c["class"] in SUPPORTED,
                "status": g["status"], "dsdig_status": g.get("dsdig_status"), "error": g.get("error"),
+               "refusal_reason": g.get("refusal_reason"),
                "candidates": g.get("dsdig_candidates")}
         if g["status"] in ("served", "flagged"):
             rows = score_case(S, c, g["chart"], raw_dir)

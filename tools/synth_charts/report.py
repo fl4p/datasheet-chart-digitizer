@@ -13,7 +13,8 @@ FACTORS = [
     "axis_title_pos", "caption", "identity", "legend_opaque", "color_mode", "distinguish", "stroke_bin", "markers",
     "vector_structure_drawn", "pdf_clip", "raster_embed", "embed_degraded", "annotation_cross", "reference_line",
     "curve_on_gridline", "signed_axis", "panels_on_page", "tight_page", "n_curves", "crossings", "shallow_angle",
-    "near_merged", "hug_rail", "curve_ends_mid_plot", "font_serif", "font_bin", "model_trap",
+    "near_merged", "hug_rail", "curve_ends_mid_plot", "font_serif", "font_bin", "model_trap", "label_fmt",
+    "cell_rules",
 ]
 
 
@@ -33,6 +34,11 @@ def case_factors(c):
     f["model_trap"] = ",".join(t for t in f["model_traps"] if t not in ("lin_y_rail", "signed_axis", "clip_top",
                                                                          "resonance_dip", "shared_segment")) or "none"
     f["n_curves"] = str(f["n_curves"])
+    import re
+    pr = [k["printed"] for k in c["curves"] if k.get("printed")]
+    f["label_fmt"] = re.sub(r"[−-]?\d+(?:\.\d+)?", "N", pr[0]) if pr else "none"
+    if pr and any("−" in p for p in pr):
+        f["label_fmt"] += " (U+2212 minus)"
     return f
 
 
@@ -78,6 +84,19 @@ def report(root: Path, per_case, per_curve, cases=None):
         L.append(f"| {k} | {st} | {len(rs)} | {len(m)} | {sum(r['swap'] for r in m)} | "
                  f"{_fmt(float(np.median(p)) if len(p) else None)} | {_fmt(float(np.percentile(p, 90)) if len(p) else None)} | "
                  f"{int((p <= 0.25).sum())} | {int((p <= 0.5).sum())} | {int((p <= 1).sum())} |")
+    # refusal / error causes
+    import re
+    L += ["", "## Why charts were not served (supported classes, top causes)", "",
+          "| class | status | n | cause (numbers masked) |", "|---|---|---|---|"]
+    causes = defaultdict(Counter)
+    for r in sup:
+        if r["status"] in ("error", "refused", "not_detected", "wrong_class"):
+            msg = r.get("error") or (f"dsdig status {r.get('dsdig_status')}: {r.get('refusal_reason') or '-'}"
+                                     if r["status"] == "refused" else r["status"])
+            causes[(r["cls"], r["status"])][re.sub(r"[-+]?\d+(?:\.\d+)?", "N", msg)[:110]] += 1
+    for (k, st), cnt in sorted(causes.items()):
+        for msg, n in cnt.most_common(4):
+            L.append(f"| {k} | {st} | {n} | {msg.replace('|', '/')} |")
     # factor breakdown: per supported case, outcome = served & worst curve p95 <= 1 % & no swap & all matched
     L += ["", "## Breakdown by factor (supported classes)", "",
           "`good` = served, every GT curve matched, no swap, worst in-range p95 <= 1 % of span. "
@@ -86,12 +105,25 @@ def report(root: Path, per_case, per_curve, cases=None):
     for r in sup:
         c = cases[r["id"]]
         f = case_factors(c)
-        good = r["status"] == "served" and r.get("n_matched") == r.get("n_gt") and not r.get("swaps") and \
+        # gate charge: dsdig serves one VGS(Qg) curve per chart by design (no VDD identity)
+        need = 1 if r["cls"] == "gate_charge" else r.get("n_gt")
+        good = r["status"] == "served" and (r.get("n_matched") or 0) >= (need or 1) and not r.get("swaps") and \
             (r.get("worst_p95_inrange") or 99) <= 1.0
         rows.append((f, r, good))
     base = np.mean([g for _, _, g in rows]) if rows else 0
+    # class-adjusted: compare each case with its own class's base rate (class mix confounds raw rates)
+    cls_served = defaultdict(list)
+    cls_good = defaultdict(list)
+    for f, r, g in rows:
+        cls_served[r["cls"]].append(r["status"] == "served")
+        cls_good[r["cls"]].append(g)
+    bs = {k: np.mean(v) for k, v in cls_served.items()}
+    bg = {k: np.mean(v) for k, v in cls_good.items()}
     L.append(f"Overall good rate {base:.2f} over {len(rows)} charts.")
-    L += ["", "| factor | level | n | served | good | Δgood vs all | p95 med (served) |", "|---|---|---|---|---|---|---|"]
+    L += ["", "`adj` columns: mean over the level's charts of (outcome - that chart's class base rate), so a factor "
+          "is not credited or blamed for the classes it happens to co-occur with.", "",
+          "| factor | level | n | served | good | adj served | adj good | p95 med (served) |",
+          "|---|---|---|---|---|---|---|---|"]
     worst = []
     for fac in FACTORS:
         lv = defaultdict(list)
@@ -106,13 +138,15 @@ def report(root: Path, per_case, per_curve, cases=None):
             served = [r for r, _ in items if r["status"] == "served"]
             gr = np.mean([g for _, g in items])
             p = [r["worst_p95_inrange"] for r in served if r.get("worst_p95_inrange") is not None]
-            L.append(f"| {fac} | {v} | {len(items)} | {len(served) / len(items):.2f} | {gr:.2f} | {gr - base:+.2f} | "
-                     f"{_fmt(float(np.median(p)) if p else None)} |")
-            worst.append((gr - base, fac, v, len(items)))
+            adj_s = np.mean([(r["status"] == "served") - bs[r["cls"]] for r, _ in items])
+            adj_g = np.mean([g - bg[r["cls"]] for r, g in items])
+            L.append(f"| {fac} | {v} | {len(items)} | {len(served) / len(items):.2f} | {gr:.2f} | {adj_s:+.2f} | "
+                     f"{adj_g:+.2f} | {_fmt(float(np.median(p)) if p else None)} |")
+            worst.append((adj_s, adj_g, fac, v, len(items), len(served) / len(items)))
     worst.sort()
-    L += ["", "## Weakest factor levels (good-rate deficit, n >= 8)", ""]
-    for d, fac, v, n in [w for w in worst if w[3] >= 8][:15]:
-        L.append(f"- `{fac}={v}`: good rate {base + d:.2f} ({d:+.2f}), n={n}")
+    L += ["", "## Weakest factor levels (class-adjusted served-rate deficit, n >= 10)", ""]
+    for a_s, a_g, fac, v, n, sr in [w for w in worst if w[4] >= 10][:20]:
+        L.append(f"- `{fac}={v}`: served {sr:.2f}, class-adjusted {a_s:+.2f} (good {a_g:+.2f}), n={n}")
     txt = "\n".join(L) + "\n"
     (root / "dsdig_baseline" / "REPORT.md").write_text(txt)
     return f"-> {root / 'dsdig_baseline' / 'REPORT.md'}\n" + "\n".join(L[:30])

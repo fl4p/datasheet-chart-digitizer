@@ -127,7 +127,11 @@ def vector_check(root: Path, cases):
                         dd = np.min([np.abs(G.seg_dist(q * S, gpt[lab]) - halfs[lab]) for lab in labs], axis=0)
                         ends = np.min([np.linalg.norm(q * S - e, axis=1) for lab in labs for e in (gpt[lab][0], gpt[lab][-1])],
                                       axis=0)
-                        dd = dd[ends > 2 * half + 0.5]
+                        # a stroke leaving the frame at a shallow angle has outline inside the frame
+                        # beyond the clipped centre line's end: skip outline within w of the frame
+                        qp = q * S
+                        edge = np.minimum.reduce([qp[:, 0], S[0] - qp[:, 0], qp[:, 1], S[1] - qp[:, 1]])
+                        dd = dd[(ends > 2 * half + 0.5) & (edge > 2 * half + 0.5)]
                         fwd.append(dd / S.min() * 100)
                         for lab in labs:
                             owned[lab].append(q * S)

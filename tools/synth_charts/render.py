@@ -195,7 +195,7 @@ def draw_chart(fig, cell, sp, style, number, rng, *, probe=False, caption_only=F
     """Draw one chart. Returns geometry/record dict. ``rng`` drives label placement only."""
     renderer = fig.canvas.get_renderer()
     fs, tfs = style["font_pt"], style["tick_font_pt"]
-    fam = style["font"]
+    fam = font_family(style)
     rect = axes_rect(cell, sp, style)
     rec = {"number": number, "cell_pt": list(cell), "plot_box_pt": list(rect), "texts": {}, "probe_colors": {}}
     cap = _caption_text(sp, style, number)
@@ -388,6 +388,12 @@ def _markers(ax, sp, drawn, stys, probe):
 
 
 # ----------------------------------------------------------------------------- texts
+def font_family(style):
+    """Sampled font first, DejaVu as per-glyph fallback (Arial/Times lack superscript digits and
+    U+207B, which otherwise render as missing-glyph boxes)."""
+    return [style["font"], "DejaVu Serif" if style.get("font_serif") else "DejaVu Sans"]
+
+
 def _txt(fs, fam):
     return {"fontsize": fs, "fontfamily": fam}
 
@@ -423,10 +429,10 @@ def _tick_labels(ax, sp, style, k, rng):
         jit = float(rng.uniform(-1, 1)) * style["label_jitter_pt"] if style["label_jitter_pt"] else 0.0
         if k == "x":
             t = ax.annotate(s, xy=(u, 0), xycoords="axes fraction", xytext=(off + jit, -pad), textcoords="offset points",
-                            ha="center", va="top", **_txt(style["tick_font_pt"], style["font"]))
+                            ha="center", va="top", **_txt(style["tick_font_pt"], font_family(style)))
         else:
             t = ax.annotate(s, xy=(0, u), xycoords="axes fraction", xytext=(-pad, off + jit), textcoords="offset points",
-                            ha="right", va="center", **_txt(style["tick_font_pt"], style["font"]))
+                            ha="right", va="center", **_txt(style["tick_font_pt"], font_family(style)))
         t.set_annotation_clip(False)
         out.append(t)
     if off:
@@ -474,11 +480,11 @@ def _draw_caption(fig, rect, sp, style, cap, renderer, xt_bb=None, titles=None, 
     if anchor is None and style["caption"] == "diagram_above" and cell is not None:
         anchor = ((cell[0] + 2) / PAGE_W, 1 - (cell[1] + 2) / PAGE_H, "left", "top", fs)
     if anchor is not None:
-        t = fig.text(anchor[0], anchor[1], cap, ha=anchor[2], va=anchor[3], fontsize=anchor[4], fontfamily=style["font"],
+        t = fig.text(anchor[0], anchor[1], cap, ha=anchor[2], va=anchor[3], fontsize=anchor[4], fontfamily=font_family(style),
                      fontweight="bold")
     elif style["caption"].endswith("above"):
         y = y0 - 5 - (1.6 * style["font_pt"] if style["axis_title_pos"] == "top" else 0)
-        t = fig.text(x0 / PAGE_W, 1 - y / PAGE_H, cap, ha="left", va="bottom", fontsize=fs, fontfamily=style["font"],
+        t = fig.text(x0 / PAGE_W, 1 - y / PAGE_H, cap, ha="left", va="bottom", fontsize=fs, fontfamily=font_family(style),
                      fontweight="bold")
     else:
         if not titles:
@@ -486,7 +492,7 @@ def _draw_caption(fig, rect, sp, style, cap, renderer, xt_bb=None, titles=None, 
         else:
             yb = max(_bbox_pt(t, renderer)[3] for t in titles)
         t = fig.text((x0 + x1) / 2 / PAGE_W, 1 - (yb + 4) / PAGE_H, cap, ha="center", va="top", fontsize=fs,
-                     fontfamily=style["font"], fontweight="bold")
+                     fontfamily=font_family(style), fontweight="bold")
     return t
 
 

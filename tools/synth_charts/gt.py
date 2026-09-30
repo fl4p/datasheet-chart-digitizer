@@ -164,6 +164,32 @@ def _intersections(A, B):
     return out
 
 
+def _cluster_crossings(xs, tol=0.02):
+    """Single-linkage clusters of intersection points (a shared or merged stretch yields a chain of
+    numerical intersections; it is one crossing region). Angle = median over the cluster."""
+    if not xs:
+        return []
+    pts = [np.asarray(p) for p, _ in xs]
+    lab = list(range(len(xs)))
+
+    def find(i):
+        while lab[i] != i:
+            lab[i] = lab[lab[i]]
+            i = lab[i]
+        return i
+    order = np.argsort([p[0] for p in pts])
+    for a_i, i in enumerate(order):
+        for j in order[a_i + 1:]:
+            if pts[j][0] - pts[i][0] > tol:
+                break
+            if np.linalg.norm(pts[i] - pts[j]) <= tol:
+                lab[find(i)] = find(j)
+    groups = {}
+    for i in range(len(xs)):
+        groups.setdefault(find(i), []).append(i)
+    return [(np.mean([pts[i] for i in g], axis=0), float(np.median([xs[i][1] for i in g]))) for g in groups.values()]
+
+
 def difficulty_stats(gt_uv: dict, merge_tol=0.004):
     """Crossings, crossing angles, closest approach between curves (normalised units)."""
     labs = list(gt_uv)
@@ -173,7 +199,7 @@ def difficulty_stats(gt_uv: dict, merge_tol=0.004):
             A, B = gt_uv[labs[i]], gt_uv[labs[j]]
             if len(A) < 2 or len(B) < 2:
                 continue
-            xs = _intersections(A, B)
+            xs = _cluster_crossings(_intersections(A, B))
             n_cross += len(xs)
             angles += [a for _, a in xs]
             dab = seg_dist(A, B)
