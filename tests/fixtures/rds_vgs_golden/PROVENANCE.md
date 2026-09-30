@@ -97,6 +97,39 @@ PDFs and their SHA-256 are the ones in the table above.
 | CSD17307Q5A_TI__p1_dt525 | 1 | t525 |
 | CSD18502KCS_TI__p1_dt651 | 1 | t651 |
 
+## batch_all parts (Fab's review of the batch_all packet, 2026-09-30)
+
+**Human-verified by Fab** on `rds-vgs/review/rds-vgs-all-001.html`. In the export, the 15
+panels below were left "pending"; Fab then stated, in his words, "the pending are actually
+green". Frozen from `/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch_all/rdson_gate_voltage.json`
+(produced at 1fd3bda). The primary panel per part comes from
+`rds-vgs/work/batch_all_primary_manifest.json` and goes into `<part>/`; TI's page-1 copies go
+into `<part>__p1_d<figure>/`. The PDFs are in the same `ds/` directory; each fixture records
+its PDF's SHA-256 in `panel.json` (`pdf_sha256`).
+
+| part | primary panel | page-1 copy |
+|---|---|---|
+| CSD17310Q5A_TI | p4 fig 7 | t537 |
+| CSD17309Q3_TI | p6 fig 7 | t544 |
+| CSD17318Q2_TI | p5 fig 4-7 | t693 |
+| CSD18536KCS_TI | p5 fig 4-7 | t651 |
+| IRLB8314_IFX | p5 fig 12 | |
+| SISS76LDN_Vishay | p4 fig t491 | |
+| IRLTS6342_IFX | p5 fig 12 | |
+| AO3416_AOS | p3 fig 5 | |
+| VBZM150N03_LCSC_C700703 | p4 fig t500 | |
+| IRLB4132_IFX | p6 fig 12 | |
+| IRLB8721_IFX | p6 fig 12 | |
+
+Fab verified the curves. Some panel-level fields were frozen as dsdig served them, with
+known open defects (`rds-vgs/FINDINGS-batch_all` classes C and D). Fixing those defects
+changes these fixtures, and each change must be re-blessed explicitly:
+
+- IRLB8314: validation `not_evaluable`, because the spec-row parser dropped the printed
+  typ 2.6 / max 3.2 mΩ.
+- IRLB8721 and IRLTS6342: `axis_ticks_not_bound_to_grid`.
+- VBZM150N03 and IRLTS6342: chart vs table disagreement. That is a datasheet fact.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the

@@ -1,0 +1,214 @@
+{
+ "part": "CSD17318Q2_TI",
+ "pdf_name": "CSD17318Q2_TI.pdf",
+ "pdf_sha256": "463e47ea8aeac640b50d75c00d6fff96abb3994ef726e9531a9355f03ff72117",
+ "page": 1,
+ "diagram": "t693",
+ "title": "On-State Resistance vs Gate to Source Voltage",
+ "status": "ok",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 2.5,
+   "id_a": 8.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 19.1703
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 8.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 13.7967
+  },
+  {
+   "vgs_v": 8.0,
+   "id_a": 8.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 12.6593
+  }
+ ],
+ "reasons_at_freeze": [],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 1007,
+  "y1": 592
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.013071895424836602,
+   "b": -3.163398692810458,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.00000000000003
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 318.5
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 395.0
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 471.5
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 548.0
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 624.4999999999999
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 700.9999999999999
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 777.4999999999999
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 853.9999999999999
+    },
+    {
+     "text": "9",
+     "value": 9.0,
+     "pixel": 930.4999999999999
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 1006.9999999999999
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.07380073800738007,
+   "b": 43.690036900369,
+   "ticks": [
+    {
+     "text": "40",
+     "value": 40.0,
+     "pixel": 49.99999999999997
+    },
+    {
+     "text": "35",
+     "value": 35.0,
+     "pixel": 117.74999999999997
+    },
+    {
+     "text": "30",
+     "value": 30.0,
+     "pixel": 185.49999999999997
+    },
+    {
+     "text": "25",
+     "value": 25.0,
+     "pixel": 253.24999999999997
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 321.0
+    },
+    {
+     "text": "15",
+     "value": 15.0,
+     "pixel": 388.75
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 456.5
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 524.25
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 592.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tc=125C, ID=8A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tc",
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 803,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 26.7004,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 22.7177,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 20.768,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tc=25C, ID=8A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tc",
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 900,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 19.1703,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 15.4173,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 13.7967,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,174 @@
+{
+ "part": "IRLB8721_IFX",
+ "pdf_name": "IRLB8721_IFX.pdf",
+ "pdf_sha256": "8a313aecdd1e772533d581fe824a668b069daec97777f32517059eafed05dc39",
+ "page": 6,
+ "diagram": "12",
+ "title": "On-Resistance vs. Gate Voltage",
+ "status": "review_required",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 31.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 6.5081
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 25.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 12.2238
+  }
+ ],
+ "reasons_at_freeze": [
+  "axis_ticks_not_bound_to_grid: label_centroids_only (Y axis: full-span grid residual exceeds tolerance)"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 246,
+  "y0": 50,
+  "x1": 936,
+  "y1": 740
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.011594202898550725,
+   "b": -0.8521739130434782,
+   "ticks": [
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 246.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 418.49999999999994
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 591.0
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 763.5
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 936.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.04057971014492753,
+   "b": 34.028985507246375,
+   "ticks": [
+    {
+     "text": "32",
+     "value": 32.0,
+     "pixel": 49.999999999999964
+    },
+    {
+     "text": "28",
+     "value": 28.0,
+     "pixel": 148.57142857142856
+    },
+    {
+     "text": "24",
+     "value": 24.0,
+     "pixel": 247.1428571428571
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 345.7142857142857
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 444.2857142857143
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 542.8571428571429
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 641.4285714285714
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 740.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tj=125C, ID=31A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tj",
+   "id_a": 31.0,
+   "usable": true,
+   "n_points": 892,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 19.046,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tj=25C, ID=31A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tj",
+   "id_a": 31.0,
+   "usable": true,
+   "n_points": 1032,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 12.2238,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}
