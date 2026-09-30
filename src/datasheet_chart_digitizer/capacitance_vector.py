@@ -620,6 +620,14 @@ def _is_curve_stroke_color(color: object) -> bool:
     # separates them.
     if max(rgb) - min(rgb) > 0.5:
         return True
+    # Microsoft Office's default chart palette (Excel-drawn datasheets: blue
+    # 4F81BD, red C0504D, green 9BBB59) is saturated 0.38-0.45 but brighter
+    # than the dark-saturated rule below admits (max channel 0.73-0.75), so an
+    # Excel C(V) chart with clean vector curves lost all three (HYG292N60NP1D
+    # p5). Gridlines stay near-gray; the width, span and orthogonality gates
+    # downstream still apply.
+    if max(rgb) - min(rgb) >= 0.3 and max(rgb) <= 0.85:
+        return True
     # TI also uses a neutral light-gray stroke for Crss.  Its plot grid is much
     # thinner and is rejected by the width/orthogonality gates downstream;
     # admitting this bounded neutral tone preserves the actual full-span curve.
