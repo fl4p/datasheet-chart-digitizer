@@ -1029,3 +1029,44 @@ def _smooth_polyline(points: list[tuple[int, int]], stride: int = 4) -> list[tup
         hi = min(len(points), i + 4)
         out.append((int(round(xs[i])), int(round(np.median(ys[lo:hi])))))
     return out[::stride]
+
+
+def _trim_terminal_branch_hop(
+    points: list[tuple[int, int]],
+    plot_box: tuple[int, int, int, int],
+    *,
+    min_rise_fraction: float = 0.6,
+) -> list[tuple[int, int]]:
+    """Cut a curve at the end of its first branch when it hops down at the top.
+
+    Multi-VDD charts end their VGS branches below the frame; a trace that
+    reaches the end of one branch and then drops onto the next (IRFP4127PBF:
+    160 V branch to 12 V, then down onto the 100/40 V branches) is one branch
+    plus a foreign tail. Only a fall that begins after the curve has risen to
+    >= 60 % of the plot height is a terminal hop; an earlier fall (a trace
+    that leaves the plateau for a falling VDS stroke, STN1NF20) is left alone
+    for _gate_curve_is_monotone to refuse. Same coarse bins and tolerance.
+    """
+
+    if len(points) < 8:
+        return points
+    x0, y0, x1, y1 = plot_box
+    width, height = max(1, x1 - x0), max(1, y1 - y0)
+    bin_width = max(1.0, width / 24.0)
+    tolerance = max(4.0, 0.025 * height)
+    ordered = sorted(points)
+    bins: dict[int, list[tuple[int, int]]] = {}
+    for x, y in ordered:
+        bins.setdefault(min(23, max(0, int((x - x0) / bin_width))), []).append((x, y))
+    best_y, best_point = None, None
+    for index in sorted(bins):
+        members = bins[index]
+        median_y = float(np.median([y for _x, y in members]))
+        if best_y is not None and median_y - best_y > tolerance:
+            if (y1 - best_y) >= min_rise_fraction * height and best_point is not None:
+                return [p for p in ordered if p[0] <= best_point[0]]
+            return points
+        if best_y is None or median_y <= best_y:
+            best_y = median_y
+            best_point = min(members, key=lambda p: p[1])
+    return points

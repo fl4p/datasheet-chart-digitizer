@@ -44,6 +44,7 @@ from .gate_charge_trace import (
     _trace_gate_curve,
     _trace_monotone_upper_gate_curve,
     _trace_vector_gate_curve,
+    _trim_terminal_branch_hop,
 )
 from .gate_axis_ocr import (
     MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
@@ -210,10 +211,11 @@ def digitize_gate_charge(
                                     if seated.check.status == "verified"
                                     else (f"y_axis_grid_check_{seated.check.status}",)
                                 )
+                                curve_blocked = bool(CURVE_BLOCKING_DIAGNOSTICS & set(retained_diagnostics))
                                 result = replace(
                                     result,
                                     vpl=vpl,
-                                    status="ok" if not grid_diagnostics else "low_confidence",
+                                    status="ok" if not (grid_diagnostics or curve_blocked) else "low_confidence",
                                     y_tick_count=len(y_ticks_px),
                                     y_ticks_px=y_ticks_px,
                                     x_tick_unit=x_tick_unit,
@@ -404,6 +406,10 @@ def _detach_transient_panel_artifacts(panel: ChartPanel) -> ChartPanel:
 
 def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
+
+
+# Curve-fidelity findings an axis repair cannot cure.
+CURVE_BLOCKING_DIAGNOSTICS = frozenset({"non_monotone_gate_curve", "low_trace_confidence"})
 
 
 def _bounded_ocr_diagnostics(panel: ChartPanel) -> tuple[str, ...]:
@@ -712,6 +718,7 @@ def _digitize_panel(
         curve = _trim_dual_y_terminal_grid_capture(curve, plot_box)
     curve = _trim_terminal_flat_grid_capture(curve, plot_box)
     curve = _trim_after_upper_axis_reach(curve, plot_box)
+    curve = _trim_terminal_branch_hop(curve, plot_box)
     vpl, vpl_y_px = _estimate_vpl_from_curve(
         curve, panel, crop_rect, scale, plot_box, local_y_ticks
     )
@@ -727,9 +734,12 @@ def _digitize_panel(
     missing_axis_origin = (
         bounded_dual_y_trace and not _curve_starts_at_axis_origin(curve, plot_box)
     ) or bool(panel_x_ticks and min(value for value, _x in panel_x_ticks) > 0.0)
-    non_monotone_gate_curve = (
-        bounded_dual_y_trace and not _gate_curve_is_monotone(curve, plot_box)
-    )
+    # VGS(Qg) never falls, on any gate-charge chart. The coarse check used to
+    # run only on the bounded-OCR dual-y path, so an ordinary VGS+VDS chart
+    # whose raster trace left the VGS plateau for the falling VDS stroke
+    # (STN1NF20 p7: 5.1 V -> 0.15 V after the crossing) was served "ok".
+    # Too few points/bins to evaluate is non-monotone here (fail closed).
+    non_monotone_gate_curve = not _gate_curve_is_monotone(curve, plot_box)
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
