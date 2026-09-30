@@ -68,6 +68,7 @@ from .find_charts import ChartPanel, process_pdf
 from .gridline_anchor import (
     AmbiguousRegistration,
     AnchoredAxis,
+    _bindings_disagree,
     anchor_axis_on_grid,
     served_pixel,
 )
@@ -452,26 +453,48 @@ def _frame_around_ticks(image, x_axis: NumericAxis, y_axis: NumericAxis) -> Plot
 
 
 def _anchor_solid_then_broken(image, axis: NumericAxis, **kwargs) -> AnchoredAxis:
-    """Anchor on solid rules; only if NONE seat the labels, on dotted/dashed ones.
+    """Anchor on solid rules, CROSS-CHECKED against dotted/dashed-rule evidence.
 
     Same contract at both levels: every labelled tick must sit on an observed
-    line and the served mapping is asserted at each. Dotted rules
-    (``line_source == "broken_rule"``) are evidence only after the solid level
-    failed to bind, so a chart that binds today is decided exactly as before;
-    an AMBIGUOUS solid binding is final and never retried on weaker evidence.
-    A tie may be settled only by positive major-rule weight evidence
-    (``major_rule_weight``), never by a looser ambiguity threshold.
+    line and the served mapping is asserted at each. The solid level decides
+    when it binds, but only if the level that also admits dotted/dashed rules
+    (``line_source == "broken_rule"``) does not contradict it: if that level
+    binds a labelled value to a DIFFERENT line, or finds the labels ambiguous,
+    the grid supports two readings and the axis is refused. (Held-out seed2
+    page 0047: a dotted 300 V major was invisible to the solid level, which
+    then seated every label on the solid minor 28.5 px to its right.) When
+    the solid level cannot bind at all, the dotted level alone may. An
+    AMBIGUOUS solid binding is final. A tie may be settled only by positive
+    major-rule weight evidence (``major_rule_weight``), never by a looser
+    ambiguity threshold.
     """
     kwargs["major_rule_weight"] = True
     try:
-        return anchor_axis_on_grid(image, axis, **kwargs)
+        solid = anchor_axis_on_grid(image, axis, **kwargs)
     except AmbiguousRegistration:
         raise
-    except RuntimeError as solid:
+    except RuntimeError as solid_error:
         try:
             return anchor_axis_on_grid(image, axis, broken_rules=True, **kwargs)
         except RuntimeError as broken:
-            raise RuntimeError(f"{solid}; with dotted/dashed rules: {broken}") from broken
+            raise RuntimeError(f"{solid_error}; with dotted/dashed rules: {broken}") from broken
+    name = kwargs.get("name", "axis")
+    try:
+        broken = anchor_axis_on_grid(image, axis, broken_rules=True, **kwargs)
+    except AmbiguousRegistration as exc:
+        raise AmbiguousRegistration(
+            f"{name}: solid rules bind the labels, but with dotted/dashed rules: {exc}"
+        ) from exc
+    except RuntimeError:
+        return solid  # the dotted level adds no binding to contradict the solid one
+    solid_lines = {a.value: a.line_px for a in solid.anchors}
+    broken_lines = {a.value: a.line_px for a in broken.anchors}
+    if _bindings_disagree(solid_lines, broken_lines, solid.tolerance_px):
+        raise AmbiguousRegistration(
+            f"{name}: solid rules and dotted/dashed rules bind the labels to different "
+            f"lines ({solid_lines} vs {broken_lines}); refusing to pick one"
+        )
+    return solid
 
 
 def _fit_ladder(

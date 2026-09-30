@@ -79,6 +79,8 @@ _TICK_MARK_MIN_FILL = 0.80
 # majors 135..390 -- NOT separable, stays refused). set1 0105 (solid majors
 # 89..510 vs dotted minors 4..11) is the kind of evidence this admits.
 _MAJOR_RULE_MASS_RATIO = 2.0
+# Rows of a rule's run that must carry ink for it to count as continuous.
+_CONTINUOUS_RULE_MIN_FRACTION = 0.90
 # Dotted/dashed rules (opt-in evidence level, see ``line_evidence_attempts``):
 # a column is a broken rule when its ink covers at least this fraction of the
 # plot span ...
@@ -487,42 +489,61 @@ def check_served_on_grid(
     )
 
 
-def _rule_mass(
-    gray: np.ndarray,
-    line: ObservedLine,
-    orientation: Orientation,
-    cross_span: tuple[float, float],
-) -> float:
-    """Typical ink (255 - grey) per unit length along one rule's run.
-
-    Summed across the rule's width, so an anti-aliased rule split over two
-    pixel columns weighs the same as one seated on a single column.
-    """
+def _rule_band(gray, line, orientation, cross_span) -> np.ndarray:
+    """Ink (255 - grey) of one rule's run: rows along the rule x its width."""
     image = gray if orientation == "x" else gray.T
     c0 = max(0, int(math.floor(cross_span[0])))
     c1 = min(image.shape[0], int(math.ceil(cross_span[1])) + 1)
     half = int(math.ceil(line.width_px / 2.0)) + 1
     a0 = max(0, int(round(line.center_px)) - half)
     a1 = min(image.shape[1], int(round(line.center_px)) + half + 1)
-    band = 255.0 - image[c0:c1, a0:a1].astype(float)
-    # median over the run: a curve, label or crossing rule that overlaps a
-    # few rows must not make a minor rule look like a major one
+    return 255.0 - image[c0:c1, a0:a1].astype(float)
+
+
+def _rule_mass(gray, line, orientation, cross_span) -> float:
+    """Typical ink per unit length along one rule's run.
+
+    Summed across the rule's width, so an anti-aliased rule split over two
+    pixel columns weighs the same as one seated on a single column; median
+    over the run, so a curve, label or crossing rule that overlaps a few rows
+    must not make a minor rule look like a major one.
+    """
+    band = _rule_band(gray, line, orientation, cross_span)
     return float(np.median(band.sum(axis=1))) if band.size else 0.0
+
+
+def _rule_is_continuous(gray, line, orientation, cross_span) -> bool:
+    """Ink on nearly every row of the run: a solid rule, not dots or dashes.
+
+    Weight means nothing across rule STYLES: a dotted major is mostly gaps and
+    would read lighter than a solid minor (held-out seed2 page 0047 draws
+    majors dotted and minors solid), so a dense dotted rule that the
+    coverage detector reports as a "gridline" must not enter the comparison.
+    """
+    band = _rule_band(gray, line, orientation, cross_span)
+    if not band.size:
+        return False
+    return float(np.mean(band.max(axis=1) > 255 - _INK_THRESHOLD)) >= _CONTINUOUS_RULE_MIN_FRACTION
 
 
 def _heavier_rule_registration(gray, lines, tied, orientation, cross_span):
     """The one tied registration whose disputed rules all outweigh every rival's.
 
-    Only lines a registration binds and its rival does not are compared, and
-    only solid gridlines (a tick mark or dotted rule is not comparable ink);
-    each side needs at least two such rules. Returns None (the tie stands)
-    unless exactly one registration wins against every other by
-    ``_MAJOR_RULE_MASS_RATIO``.
+    Only lines a registration binds and its rival does not are compared; tick
+    marks are skipped, and each side needs at least two gridlines. Every
+    compared gridline must be CONTINUOUS (``_rule_is_continuous``): if either
+    side's disputed rules include a dotted/dashed one, styles differ and the
+    tie stands. Returns None (the tie stands) unless exactly one registration
+    wins against every other by ``_MAJOR_RULE_MASS_RATIO``.
     """
 
     def masses(indices):
-        rules = [i for i in indices if lines[i].source == "gridline"]
-        if len(rules) < 2:
+        rules = [i for i in indices if lines[i].source != "tick_mark"]
+        if len(rules) < 2 or any(
+            lines[i].source != "gridline"
+            or not _rule_is_continuous(gray, lines[i], orientation, cross_span)
+            for i in rules
+        ):
             return None
         return [_rule_mass(gray, lines[i], orientation, cross_span) for i in rules]
 

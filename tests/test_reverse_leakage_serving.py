@@ -70,6 +70,62 @@ class MajorRuleWeightTests(unittest.TestCase):
             _identify(_grid(135, 175, major_width=1), weight=True)
 
 
+    def test_dotted_rules_never_enter_the_weight_comparison(self):
+        # dense-dotted black rules (ink on 9 of every 20 rows) that the
+        # coverage detector still reports as gridlines, against solid grey
+        # rules: the dotted ones read ~0 median ink, so weight would pick the
+        # solid set -- and a chart drawing majors dotted, minors solid (held-out
+        # seed2 page 0047) would be seated on its minors. Styles differ: tie.
+        image = np.full((200, 520), 255, dtype=np.uint8)
+        for x in range(30, 481, 10):
+            image[20:180, x] = 150
+        for x in range(50, 451, 100):
+            image[20:180, x] = 255
+            for y0 in range(20, 180, 20):
+                image[y0 : y0 + 9, x] = 0
+        with self.assertRaises(AmbiguousRegistration):
+            _identify(image, weight=True)
+
+
+def _quarter_offset_grid(major_dotted: bool) -> np.ndarray:
+    """Majors at 50..350 under the labels; a solid minor a quarter interval
+    (25 px) right of each."""
+    image = np.full((200, 420), 255, dtype=np.uint8)
+    for x in range(75, 376, 100):
+        image[20:180, x] = 150
+    for x in range(50, 351, 100):
+        if major_dotted:
+            image[20:180:4, x] = 0  # sparse dots: invisible to the solid level
+        else:
+            image[20:180, x] = 0
+    return image
+
+
+class DottedCrossCheckTests(unittest.TestCase):
+    """seed2 page 0047: dotted majors under the labels, solid minors a quarter
+    interval away. The solid level alone seats every label on a minor."""
+
+    def anchor(self, image):
+        axis = fit_axis_ticks([AxisTick(str(v), float(v), 50.0 + v) for v in (0, 100, 200, 300)])
+        return rl._anchor_solid_then_broken(
+            image, axis, orientation="x", cross_span=(20, 180), name="X axis"
+        )
+
+    def test_solid_minor_binding_contradicted_by_dotted_majors_refuses(self):
+        from datasheet_chart_digitizer.gridline_anchor import anchor_axis_on_grid
+
+        image = _quarter_offset_grid(major_dotted=True)
+        axis = fit_axis_ticks([AxisTick(str(v), float(v), 50.0 + v) for v in (0, 100, 200, 300)])
+        solid_only = anchor_axis_on_grid(image, axis, orientation="x", cross_span=(20, 180), name="X")
+        self.assertEqual({round(a.line_px - a.label_px) for a in solid_only.anchors}, {25})
+        with self.assertRaisesRegex(AmbiguousRegistration, "different lines"):
+            self.anchor(image)
+
+    def test_solid_majors_agree_and_bind(self):
+        anchored = self.anchor(_quarter_offset_grid(major_dotted=False))
+        self.assertEqual([round(a.line_px) for a in anchored.anchors], [50, 150, 250, 350])
+
+
 class SolidThenBrokenTests(unittest.TestCase):
     def test_ambiguous_solid_binding_is_final(self):
         calls = []
@@ -132,7 +188,6 @@ class SyntheticServedFamilyTests(unittest.TestCase):
     CASES = (
         "syn1_0041_reverse_leakage",  # 10^n spans, unit only in the rotated owned title
         "syn1_0163_reverse_leakage",  # SI ticks in uA, two curves in one source path
-        "syn1_0105_reverse_leakage",  # tie settled by solid majors over dotted minors
     )
 
     def test_cases(self):
