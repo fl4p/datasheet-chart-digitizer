@@ -172,6 +172,7 @@ F5 = "RoundFiveTests."
 F6 = "RoundSixTests."
 V2 = "BatchAllV2Tests."
 V3 = "BatchAllV3Tests."
+V4 = "BatchAllV4Tests."
 SPEC = "test_rdson_gate_voltage.SpecTableTests."
 LOC = "test_rdson_gate_voltage.LocatorTests."
 
@@ -818,6 +819,25 @@ MUTANTS = {
     "log_end_tolerance_linear (F-v2-2)": (
         [patch.object(report, "vgs_per_px", lambda axis: abs(axis.m)), patch.object(rgv, "vgs_per_px", lambda axis: abs(axis.m))],
         [V3 + "test_f_v2_2_log_readout_end_tolerance_is_one_pixel_in_volts"]),
+    # ---- batch_all v4 (F-v3-1: linear axes bound to the rules their labels name) -----------
+    "no_lattice_binding (F-v3-1)": (
+        [patch.object(axes, "_bind_linear_lattice", lambda *a: None)],
+        [V4 + "test_f_v3_1_y_binds_to_the_rules_its_labels_name"]),
+    "lattice_any_residual (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("    if worst > LATTICE_MAX_RESIDUAL_PX:\n        return None\n", ""))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "lattice_missing_rule_filled_by_label (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("        if not near:\n            return None", "        if not near:\n            near = [tick.pixel]"))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "lattice_ambiguity_ignored (F-v3-1 opposite)": (
+        [_source_mutant(axes, "_bind_linear_lattice", ("            return None   # two assignments fit", "            pass   # two assignments fit"))],
+        [V4 + "test_f_v3_1_lattice_known_bads"]),
+    "no_filled_rules (F-v3-1)": (
+        [patch.object(axes, "_vector_fill_rules", lambda *a: ((), ()))],
+        [V4 + "test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules"]),
+    "vector_rules_not_preferred (F-v3-1)": (
+        [patch.object(axes, "_rule_source", lambda axis, vector_rules, all_rules: all_rules)],
+        [V4 + "test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules"]),
 }
 
 
