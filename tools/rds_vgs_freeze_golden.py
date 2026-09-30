@@ -13,9 +13,14 @@ writes the new output to `<part>/DIR/` beside the untouched original and prints
 the REBLESSED.json entry (kind "refreeze") that points the test at it. The entry
 pins the SHA-256 of the files it supersedes, so it goes stale if they change.
 
+A second verified panel of a part (e.g. TI's unnumbered front-page copy of a
+figure) is frozen with `--panel`: PART:PAGE:FIGURE picks the panel directly and
+the fixture goes to `<PART>__p<PAGE>_d<FIGURE>/`, beside the primary one.
+
 Usage (from the repo root):
     python tools/rds_vgs_freeze_golden.py RUN_JSON MANIFEST_JSON PART [PART ...]
     python tools/rds_vgs_freeze_golden.py --refreeze DIR RUN_JSON MANIFEST_JSON PART [PART ...]
+    python tools/rds_vgs_freeze_golden.py --panel RUN_JSON PART:PAGE:FIGURE [...]
 """
 
 from __future__ import annotations
@@ -37,19 +42,25 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def freeze(run: dict, manifest: dict, part: str, refreeze: str | None = None) -> dict | None:
-    entry = next(p for p in manifest["parts"] if p["part"] == part)
+def freeze(run: dict, manifest: dict | None, part: str, refreeze: str | None = None) -> dict | None:
+    fixture = part
+    if manifest is None:
+        part, page, figure = part.split(":")
+        entry = {"page": int(page), "figure": figure}
+        fixture = f"{part}__p{int(page)}_d{figure}"
+    else:
+        entry = next(p for p in manifest["parts"] if p["part"] == part)
     row = next(p for p in run["panels"]
                if p["part"] == part and p["page"] == entry["page"] and str(p["diagram"]) == str(entry["figure"]))
     superseded = None
     if refreeze:
-        base = GOLDEN / part
+        base = GOLDEN / fixture
         if not (base / "panel.json").is_file():
             raise SystemExit(f"{base} has no frozen panel to re-freeze; freeze it without --refreeze")
         superseded = {f.name: sha256(f) for f in sorted(base.iterdir()) if f.is_file()}
         target = base / refreeze
     else:
-        target = GOLDEN / part
+        target = GOLDEN / fixture
     if target.exists():
         raise SystemExit(f"{target} exists: golden fixtures are never rewritten; re-bless in REBLESSED.json")
     target.mkdir(parents=True)
@@ -104,11 +115,16 @@ def freeze(run: dict, manifest: dict, part: str, refreeze: str | None = None) ->
           + (f" -> {target.relative_to(GOLDEN)}" if refreeze else ""))
     if superseded is None:
         return None
-    return {"part": part, "kind": "refreeze", "dir": refreeze, "superseded_sha256": superseded}
+    return {"part": fixture, "kind": "refreeze", "dir": refreeze, "superseded_sha256": superseded}
 
 
 def main() -> None:
     args = sys.argv[1:]
+    if args[:1] == ["--panel"]:
+        run = json.loads(Path(args[1]).read_text())
+        for spec in args[2:]:
+            freeze(run, None, spec)
+        return
     refreeze = None
     if args[:1] == ["--refreeze"]:
         refreeze, args = args[1], args[2:]

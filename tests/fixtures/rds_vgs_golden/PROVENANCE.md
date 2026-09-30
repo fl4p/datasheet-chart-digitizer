@@ -79,6 +79,24 @@ frame, and unsampled stretches traced (F6-1). Source run:
   applied to the superseded fixture and are no longer applied.
 - `PENDING.json` is empty: all 15 panels get the full comparison below.
 
+## Front-page copies (Fab's review of the batch_all packet, 2026-09-30)
+
+**Human-verified by Fab** on `rds-vgs/review/rds-vgs-all-001.html`: his exported verdicts
+(`rds-vgs-all-001.review.json`, 09:27 UTC) mark these five panels **green**. They are TI's
+unnumbered page-1 copies of the figures frozen above. Frozen with
+`tools/rds_vgs_freeze_golden.py --panel` from
+`/Users/fab/dev/ee/solar-charger-eval/rds-vgs/batch_all/rdson_gate_voltage.json` (produced
+at 1fd3bda), each into `<part>__p<page>_d<figure>/` beside the part's primary fixture. The
+PDFs and their SHA-256 are the ones in the table above.
+
+| fixture | page | figure |
+|---|---|---|
+| CSD17306Q5A_TI__p1_dt519 | 1 | t519 |
+| CSD17302Q5A_TI__p1_dt525 | 1 | t525 |
+| CSD17304Q3_TI__p1_dt512 | 1 | t512 |
+| CSD17307Q5A_TI__p1_dt525 | 1 | t525 |
+| CSD18502KCS_TI__p1_dt651 | 1 | t651 |
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the
