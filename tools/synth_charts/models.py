@@ -350,7 +350,12 @@ def body_diode(rng, traps=frozenset()):
         vd = nid * K_B * tk * np.log(i / is_t + 1) + i * rs25 * (tk / 298.15) ** 1.5
         curves.append({"label": t, "printed": _deg(t, rng), "x": vd, "y": i})
     vmax = max(float(np.interp(imax, c["y"], c["x"])) for c in curves)
-    xa = lin_axis(0 if rng.random() < 0.5 else 0.2, min(vmax * _u(rng, 1.05, 1.4), 2.0), 5, "V",
+    if vmax > 1.6:  # vendors size Rs/axis so the curves reach the top of the frame
+        f = 1.6 / vmax
+        for c in curves:
+            c["x"] = c["x"] * f
+        vmax = 1.6
+    xa = lin_axis(0 if rng.random() < 0.5 else 0.2, vmax * _u(rng, 1.05, 1.4), 5, "V",
                   _choice(rng, ["VSD, Source-Drain Voltage (V)", "VSD [V]", "Body Diode Forward Voltage, VSD (V)"]))
     yt = _choice(rng, ["IS, Source Current (A)", "IF [A]", "Reverse Drain Current, IS (A)"])
     ya = log_axis(imax * _choice(rng, [1e-3, 1e-2, 1e-4]), imax, "A", yt) if log_y else \

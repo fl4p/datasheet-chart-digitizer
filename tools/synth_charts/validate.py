@@ -133,8 +133,10 @@ def vector_check(root: Path, cases):
                             owned[lab].append(q * S)
                         continue
                     for q in G.clip_polyline(uv, -1e-6, 1 + 1e-6):  # PDF coords carry ~1e-17 noise on the frame
-                        q = G.resample_arclength(q, per_unit=2000, min_n=2)
-                        fwd.append(np.min([G.seg_dist(q, gt[lab]) for lab in labs], axis=0) * 100)
+                        # forward: dense samples along the path; coverage: the exact path (resampling
+                        # would cut corners such as an MLCC resonance tip)
+                        qs = np.vstack([G.resample_arclength(q, per_unit=2000, min_n=2), q])
+                        fwd.append(np.min([G.seg_dist(qs, gt[lab]) for lab in labs], axis=0) * 100)
                         for lab in labs:
                             owned[lab].append(q)
             for lab, g in gt.items():
@@ -143,7 +145,9 @@ def vector_check(root: Path, cases):
                 elif filled:
                     gp = G.resample_arclength(gpt[lab], per_unit=4, min_n=2)
                     half = halfs[lab]
-                    dd = np.abs(np.min([G.seg_dist(gp, q) for q in owned[lab]], axis=0) - half)
+                    # one-sided: a GT point must lie inside the filled stroke (inner side of a tight
+                    # bend is closer than w/2 to the outline, which is fine)
+                    dd = np.maximum(np.min([G.seg_dist(gp, q) for q in owned[lab]], axis=0) - half, 0.0)
                     ends = np.minimum(np.linalg.norm(gp - gp[0], axis=1), np.linalg.norm(gp - gp[-1], axis=1))
                     cov.append(dd[ends > 2 * half + 0.5] / S.min() * 100)
                 else:
@@ -232,10 +236,10 @@ def raster_check(root: Path, cases, gate_only_clean=True):
                         "offset_med": float(np.median(o)) if len(o) else None, "n_off": int(len(o))}
             if lab not in dashed_labels:
                 fr.append(ink.mean())
-            if len(o) >= 10:
+            if len(o) >= 10 and lab not in dashed_labels:
                 offs.append(float(np.median(o)))
                 abs_offs.append(float(np.median(np.abs(o))))
-        r["frame_offsets_px"] = _frame_offsets(img, c)
+        r["frame_offsets_px"] = _frame_offsets(img, c, pcs)
         fo = [abs(v) for v in r["frame_offsets_px"].values() if v is not None]
         r["frame_offset_max_abs"] = max(fo) if fo else None
         r["per_curve"] = per
@@ -258,7 +262,7 @@ def raster_check(root: Path, cases, gate_only_clean=True):
     return out
 
 
-def _frame_offsets(img, c):
+def _frame_offsets(img, c, pcs=None):
     """Measured frame-line position minus plot_box_px, per visible spine (centroid of the dark
     profile across the spine, median over the middle 60 % of its length)."""
     x0, y0, x1, y1 = c["plot_box_px"]
@@ -275,6 +279,15 @@ def _frame_offsets(img, c):
         else:
             along = np.linspace(x0 + 0.2 * (x1 - x0), x1 - 0.2 * (x1 - x0), 60)
             P = _bilinear(dark[..., None], along[:, None], pos + t[None, :])[..., 0]
+        if pcs:  # a curve running along this spine (0 A rail) makes the side unevaluable
+            allp = np.vstack(list(pcs.values()))
+            near = np.abs(allp[:, 0 if o == "v" else 1] - pos) < 4
+            span = along.max() - along.min()
+            inside = (allp[:, 1 if o == "v" else 0] >= along.min()) & (allp[:, 1 if o == "v" else 0] <= along.max())
+            q = allp[near & inside][:, 1 if o == "v" else 0]
+            if len(q) and np.ptp(q) > 0.2 * span:
+                out[name] = None
+                continue
         prof = np.median(P, axis=0)  # median over the spine length: crossing curves / labels drop out
         k = int(np.argmax(prof))
         if prof[k] - prof.min() < 30 or k in (0, len(t) - 1):

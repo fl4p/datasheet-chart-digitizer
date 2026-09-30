@@ -121,7 +121,7 @@ def curve_styles(style: dict, n: int):
         col = pal[i % len(pal)] if (style["color_mode"] == "color" and style["distinguish"] == "color") else \
             ("#000000" if style["color_mode"] == "bw" else pal[0])
         ls = DASHES[i % len(DASHES)] if style["distinguish"] == "dash" else "solid"
-        lw = base * (1 + 0.7 * i) if style["distinguish"] == "width" else base
+        lw = min(3.0, max(base, 0.5) * (1 + 0.8 * i)) if style["distinguish"] == "width" else base
         out.append({"color": col, "ls": ls, "lw": round(lw, 3)})
     if style["color_mode"] == "color" and style["distinguish"] != "color":
         for o in out:

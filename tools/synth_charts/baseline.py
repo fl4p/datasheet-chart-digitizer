@@ -9,7 +9,7 @@ Chart status per GT case:
   not_detected  no dsdig chart of any class over this plot box
   wrong_class   a dsdig chart covers the box but under another class
   error         the class digitiser raised
-  refused       dsdig returned a refusal / fail-closed status with no curves
+  refused       dsdig returned a refusal / fail-closed status, or curves with withheld (None) values
   flagged       curves returned under a non-accepted status (unverified, review-required, ...)
   served        accepted status (ok / pass / verified)
 Only served and flagged charts are scored, and they are reported separately. Refusals are
@@ -142,7 +142,9 @@ def collect(root: Path, cases, normalize):
             if same:
                 ov, ch = max(same, key=lambda x: (bool(x[1].get("curves")), x[0]))
                 st = str(ch["status"])
-                has = any(len(k.get("data") or []) >= 2 for k in ch.get("curves", []))
+                # curves whose physical values dsdig withheld (None) are not an answer
+                has = any(sum(a is not None and b is not None for a, b in (k.get("data") or [])) >= 2
+                          for k in ch.get("curves", []))
                 rec.update(dsdig_class=ch["class"], dsdig_status=st, overlap=round(ov, 3),
                            status="served" if (st in ACCEPTED and has) else ("flagged" if has else "refused"),
                            chart=ch)
