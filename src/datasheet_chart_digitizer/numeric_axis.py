@@ -19,6 +19,19 @@ _ENGINEERING_RE = re.compile(
     r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:(?:[eE]([+-]?\d+))|([u\u00b5\u03bcmk]))?$"
 )
 _TIME_SCALES = {"u": 1e-6, "m": 1e-3, "k": 1e3}
+# A decade label typeset with Unicode superscript glyphs ("10⁻⁶", "10³"). The
+# superscript is an exponent, never another digit: "10²" is 100, not 102.
+_SUPERSCRIPT_POWER_RE = re.compile(r"^10([⁻⁺]?[⁰¹²³⁴⁵⁶⁷⁸⁹]+)$")
+_SUPERSCRIPT_EXPONENT = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹⁻⁺", "0123456789-+")
+# Current axes print SI-prefixed numbers ("100n", "1µ", "10µA"). The prefix is
+# a multiplier of the printed number; the optional trailing "A" says the label
+# itself is in amps. Admitted only under quantity="current_a", so an ordinary
+# axis never reads "1m" as a number.
+_CURRENT_RE = re.compile(
+    r"^([+-]?(?:\d+(?:\.\d*)?|\.\d+))(?:[eE]([+-]?\d+)|([pnuµμmk]))?(A)?$"
+)
+_CURRENT_SCALES = {"p": 1e-12, "n": 1e-9, "u": 1e-6, "µ": 1e-6, "μ": 1e-6, "m": 1e-3, "k": 1e3}
+_QUANTITIES = (None, "time_s", "current_a")
 _OUTER_FRAME_STEP_TOLERANCE = 0.18
 _OUTER_PARTIAL_STEP_TOLERANCE = 0.35
 
@@ -59,8 +72,11 @@ def fit_numeric_axis(
     At least two labels are required.  Two positive labels cannot distinguish
     linear from logarithmic spacing and therefore refuse unless one label is
     zero (which rules out log).  Superscript-aware PDF extraction supplies
-    powers as ``10^n``. Raw strings such as ``100,101,...`` remain ordinary
-    numbers because they could be a genuine narrow linear axis.
+    powers as ``10^n``; Unicode superscript runs (``10⁻⁶``) are read the same
+    way. Raw strings such as ``100,101,...`` remain ordinary numbers because
+    they could be a genuine narrow linear axis. ``quantity="time_s"`` and
+    ``quantity="current_a"`` additionally admit E-notation and SI prefixes
+    (``1E-5``, ``100u``, ``1m``; current also ``p``/``n`` and a trailing ``A``).
     """
     parsed, corrected_pixels = _parse_labels(labels, name, quantity, text_source)
     try:
@@ -184,7 +200,7 @@ def _parse_labels(
     quantity: str | None,
     text_source: str,
 ) -> tuple[list[AxisTick], set[float]]:
-    if quantity not in (None, "time_s"):
+    if quantity not in _QUANTITIES:
         raise ValueError(f"unsupported axis quantity: {quantity}")
     ticks: list[AxisTick] = []
     corrected_pixels: set[float] = set()
@@ -209,8 +225,14 @@ def _parse_numeric_token(
     explicit = _EXPLICIT_POWER_RE.fullmatch(text)
     if explicit is not None:
         return 10.0 ** int(explicit.group(1)), None, False
+    superscript = _SUPERSCRIPT_POWER_RE.fullmatch(text)
+    if superscript is not None:
+        exponent = int(superscript.group(1).translate(_SUPERSCRIPT_EXPONENT))
+        return 10.0**exponent, f"10^{exponent}", False
     if _NUMBER_RE.fullmatch(text):
         return float(text), None, False
+    if quantity == "current_a":
+        return _parse_current_token(text)
     if quantity != "time_s":
         return None
 
@@ -236,6 +258,39 @@ def _parse_numeric_token(
         value = mantissa
         canonical = match.group(1)
     return value, canonical, corrected
+
+
+def _parse_current_token(text: str) -> tuple[float, str, bool] | None:
+    """Parse "1E-2", "1.0E-02", "100n", "1µ", "10µA" as a current-axis number.
+
+    The value is the printed number times its own prefix ("100n" = 1e-7); a
+    trailing "A" marks a self-dimensioned label and is kept in the canonical
+    text ("1e-05A") so a consumer can tell it apart from a bare number that
+    takes its unit from the axis title.
+    """
+    match = _CURRENT_RE.fullmatch(text)
+    if match is None:
+        return None
+    mantissa, exponent, prefix, amps = match.groups()
+    value = float(mantissa)
+    if exponent is not None:
+        value *= 10.0 ** int(exponent)
+    elif prefix is not None:
+        value *= _CURRENT_SCALES[prefix]
+    return value, f"{value:.12g}" + (amps or ""), False
+
+
+def parse_tick_text(text: str, quantity: str | None = None) -> float | None:
+    """Return the value ``fit_numeric_axis`` would read from one label, or None.
+
+    For consumers that must pre-select candidate labels with exactly the
+    grammar the fitter will apply (so a label admitted here can never be
+    rejected there as "non-numeric", or vice versa).
+    """
+    if quantity not in _QUANTITIES:
+        raise ValueError(f"unsupported axis quantity: {quantity}")
+    parsed = _parse_numeric_token(text.strip().replace("−", "-"), quantity, "native")
+    return None if parsed is None else parsed[0]
 
 
 def _validate_ocr_corrections(axis: NumericAxis, corrected_pixels: set[float], name: str) -> None:

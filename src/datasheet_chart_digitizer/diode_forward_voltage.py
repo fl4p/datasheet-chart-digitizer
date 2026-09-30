@@ -19,6 +19,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
+from .axis_calibration import _explicit_power_labels
 from .capacitance_traces import find_plot_box
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
@@ -617,44 +618,32 @@ def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
         text = _normalize_numeric_text(word[4].strip())
         labels.append(TextLabel(text, (x0 + x1) / 2, (y0 + y1) / 2, x0, x1))
 
-    # PyMuPDF word text flattens 10 + superscript 0 into "100".  Preserve the
-    # decisive span metadata as explicit 10^0 before generic axis fitting.
-    for block in page.get_text("dict").get("blocks", []):
-        for line in block.get("lines", []):
-            spans = [span for span in line.get("spans", []) if span.get("text")]
-            if len(spans) != 2 or spans[0]["text"] != "10":
-                continue
-            exponent = spans[1]["text"].strip()
-            if not re.fullmatch(r"[+-]?\d+", exponent):
-                continue
-            if float(spans[1]["size"]) >= 0.85 * float(spans[0]["size"]):
-                continue
-            bbox = (
-                min(spans[0]["bbox"][0], spans[1]["bbox"][0]),
-                min(spans[0]["bbox"][1], spans[1]["bbox"][1]),
-                max(spans[0]["bbox"][2], spans[1]["bbox"][2]),
-                max(spans[0]["bbox"][3], spans[1]["bbox"][3]),
+    # PyMuPDF word text flattens 10 + superscript 0 into "100" (and 10 +
+    # superscript -2 into "10-2").  Preserve the decisive span metadata as an
+    # explicit 10^n before generic axis fitting; the span pairing (smaller,
+    # adjacent exponent span after a "10" base) is axis_calibration's.
+    for value, cx_pt, cy_pt, bbox in _explicit_power_labels(page):
+        exponent = int(round(math.log10(value)))
+        x0, y0 = transform.to_px(bbox[0], bbox[1])
+        x1, y1 = transform.to_px(bbox[2], bbox[3])
+        raw = f"10{exponent}"
+        matches = [
+            (
+                abs(label.cx - (x0 + x1) / 2) + abs(label.cy - (y0 + y1) / 2),
+                index,
             )
-            x0, y0 = transform.to_px(bbox[0], bbox[1])
-            x1, y1 = transform.to_px(bbox[2], bbox[3])
-            raw = f"10{exponent}"
-            matches = [
-                (
-                    abs(label.cx - (x0 + x1) / 2) + abs(label.cy - (y0 + y1) / 2),
-                    index,
-                )
-                for index, label in enumerate(labels)
-                if label.text == raw
-            ]
-            distance, nearest = min(matches, default=(float("inf"), None))
-            if nearest is not None and distance <= 12.0:
-                labels[nearest] = TextLabel(
-                    f"10^{exponent}",
-                    (x0 + x1) / 2,
-                    (y0 + y1) / 2,
-                    x0,
-                    x1,
-                )
+            for index, label in enumerate(labels)
+            if label.text == raw
+        ]
+        distance, nearest = min(matches, default=(float("inf"), None))
+        if nearest is not None and distance <= 12.0:
+            labels[nearest] = TextLabel(
+                f"10^{exponent}",
+                (x0 + x1) / 2,
+                (y0 + y1) / 2,
+                x0,
+                x1,
+            )
     return labels
 
 

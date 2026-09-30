@@ -53,8 +53,9 @@ def temperatures_from_source_words(words: list[Word]) -> list[float]:
     unit_words: list[Word] = []
     for word in words:
         text = normalized(word.text)
+        # "150°C", or glued to its symbol as one word: "Tj=150°C", "TJ=25°C"
         complete = re.fullmatch(
-            r"(-?\d+(?:\.\d+)?)\s*(?:°|[oO])\s*C", text, re.I
+            r"(?:T[jJ]?\s*=\s*)?(-?\d+(?:\.\d+)?)\s*(?:°|[oO])\s*C", text, re.I
         )
         if complete is not None:
             values.add(signed_value(word, float(complete.group(1))))
