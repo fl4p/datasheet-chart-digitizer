@@ -5,8 +5,14 @@ description: Read numeric values off datasheet charts (curves) with evidence. Us
 
 # Reading datasheet charts
 
-A number read off a chart carries the same evidence duty as a table value, plus the
-duties below. The tool is the datasheet-chart-digitizer ("dsdig") at
+A number read off a chart carries the same evidence duty as a table value:
+- cite the exact source: part, datasheet revision, page and figure;
+- state the conditions it holds at (temperature and its kind, current, voltage);
+- use it only at those conditions;
+- say plainly when it is unverified.
+
+In KiCad work, this is kicad-design's "Ground component decisions in current evidence".
+The duties below come on top. The tool is the datasheet-chart-digitizer ("dsdig") at
 `/Users/fab/dev/pv/ee/datasheet-chart-digitizer`. This skill lives in that repo
 (`skills/chart-digitization/`), so it changes in the same commit as the code.
 
@@ -51,15 +57,19 @@ about 24,500 PDFs) comes first; never web-fetch a datasheet that is already ther
 
 ## 2. Using dsdig's output
 
-- **Status is a claim, not a pass.** Only `ok` means the automated gates passed. The
-  vocabulary differs by chart class. On `main` (2026-09-30), dsdig emits:
-  - usable only as *unverified*: `unverified`, `review_required` (RDS(on) vs VGS),
-    `overlay-review-required`, `suspect`;
-  - no value: `refused`, `unresolved`, `not_evaluable`, and exceptions carrying a refusal
-    reason.
+- **Status is a claim, not a pass.** The vocabulary differs by chart class *and* by field
+  (panel status vs nested validation verdict). As checked on `main` (2026-09-30):
 
-  Treat any status other than `ok` as at best unverified. Carry the class's reasons or
-  diagnostics with the value.
+  | where | passed its automated gates | usable only as *unverified* | no value |
+  |---|---|---|---|
+  | most panel statuses | `ok` | `unverified`, `review_required` (RDS(on) vs VGS), `overlay-review-required` | `refused`, `unresolved`, and exceptions carrying a refusal reason |
+  | breakdown verdict | `verified` | `unverified` | `FAIL` |
+  | transfer | `ok` | | `guard-refusal-cold-anchor-conflict` (any `guard-refusal-*`) |
+  | nested validation (e.g. capacitance, RDS(on) table check) | `verified` | `suspect`, `consistent_at_approximate_conditions` | `inconsistent`, `not_evaluable` |
+
+  `annotate` embeds overlays whose status is `ok`, `pass` or `verified`. A status not in
+  this table is at best unverified until you have read the class's code. Carry the class's
+  reasons or diagnostics with the value.
 - **Each class has its own output contract.** Read it; don't assume the RDS(on)-vs-VGS
   one.
   - **Gate charge:** carries `diagnostics` and `physical_output_available`. No physical
@@ -181,8 +191,9 @@ is as a cross-check that sends dsdig/model disagreements to review.
   measured against their rules (check 4), printed-text inventory (check 12) and source
   visibility (check 17), plus a self-test a new reviewer setup must pass.
 - **An agent reviewer's FAIL is a claim to check, not a verdict.** Measured on 25 blind
-  controls (dsdig `out/astra-review-50/reviewer-calibration.md`), Astra as reviewer failed
-  24/24 known-bad charts, naming each defect. It passed only 6–7 of 13 known-good ones.
+  controls, each reviewed in two rounds (dsdig `out/astra-review-50/reviewer-calibration.md`),
+  Astra as reviewer failed all 12 known-bad charts in both rounds, naming each defect. It
+  passed only 6–7 of the 13 known-good ones.
   Check every FAIL against the PDF render with tick labels visible before acting on it.
 - A panel Fab passes becomes a golden fixture and is not shown to him again. A change to
   a golden is re-blessed explicitly, never silently.

@@ -8,8 +8,9 @@ vision/LLM models on charts. Paths are relative to the dsdig repo
 
 - **Branch from `main`, in a worktree.** The main checkout is shared, and its `.venv` is an
   editable install that other sessions use. Don't switch its branch for your work.
-- **Tests.** Run from the worktree with the shared venv:
-  `DSDIG_OCR_CACHE=<dir> .venv/bin/python -m pytest -n auto --dist loadgroup`.
+- **Tests.** Run from the worktree with the main checkout's venv, by absolute path; a
+  worktree has no `.venv` of its own:
+  `DSDIG_OCR_CACHE=<dir> /Users/fab/dev/pv/ee/datasheet-chart-digitizer/.venv/bin/python -m pytest -n auto --dist loadgroup`.
   `pyproject.toml` puts the worktree's `src/` first, so pytest tests the worktree's code;
   plain `python -c` does not. Compare the *failure sets* before and after, not the counts.
 - **Commits.** Use one focused commit per root cause, with before/after evidence in the body.
@@ -28,8 +29,15 @@ vision/LLM models on charts. Paths are relative to the dsdig repo
 
 Run it before merging any trace, calibration or finder change.
 - `hv_ab.py` runs one side; `hv_cmp.py A B out.json` compares them chart by chart.
-- A part or chart present on only one side is INCOMPLETE and exits 2. Missing evidence is
-  never a pass.
+- A part or chart present on only one side is INCOMPLETE and exits 2. That is the only
+  missing evidence `hv_cmp` catches:
+  - Missing axes compare as `None`.
+  - Curves with fewer than two samples are skipped.
+  - A missing curve label shows up only in `curve_set_diff`, not in the failures.
+  - Two empty trees compare as complete.
+
+  So check that both sides are non-empty and comparable, and read `curve_set_diff`.
+  Exit 0 does not mean the acceptance criteria below passed; apply them to the report.
 - **Acceptance:** no status regressions, and no served value moving by more than 0.5 % of
   span. Any newly served real chart is checked against its PDF render and listed for Fab.
 
@@ -69,8 +77,10 @@ the drawn geometry, with vector p95 ≤ 0.0002 % of span.
     network access or package install in Python mode, disqualifies the chart.
   - The runner blocks package installs (`PIP_NO_INDEX`, `PIP_REQUIRE_VIRTUALENV`,
     `UV_OFFLINE`), after a model pip-installed into Homebrew's Python.
-  - The runner caps each case at 60 tool calls (200 for DeepSeek), $0.75 and 30 min. Capped
-    or timed-out cases count as failures.
+  - Every route has a 30-minute wall timeout per case. Only the pi routes are also capped at
+    60 tool calls (200 for DeepSeek) and $0.75, because only their live logs expose calls and
+    cost. Codex and Claude runs have the timeout alone. Capped or timed-out cases count as
+    failures.
   - The pi-based Python mode has no network sandbox, so the audit is the only net check.
 - **Results and caveats:** `docs/model-benchmark-2026-09.md`; per-run detail in
   `out/vlm-chart2table/frontier/README.md`.
