@@ -34,6 +34,7 @@ from .diode_legend_color import (
     temperatures_from_source_words,
 )
 from . import served_axis_guard
+from .axis_title_identity import refuse_contradicted_body_diode
 from .find_charts import (
     ChartPanel,
     process_pdf,
@@ -154,6 +155,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
 
     crop_path = out_dir / panel.crop_png
     calibration = calibrate_panel(panel, crop_path)
+    refuse_contradicted_body_diode(panel, calibration, crop_path)  # wrong panel bound
     grid_failed, grid_unverified = served_axis_guard.problems(calibration.grid_checks)
     if grid_failed:
         raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
