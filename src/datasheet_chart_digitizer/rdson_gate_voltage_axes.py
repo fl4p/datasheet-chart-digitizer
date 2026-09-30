@@ -293,18 +293,39 @@ def _calibrate(
             raise RuntimeError(f"{name} axis: consumed tick {outside[0].text!r} lies outside the plot frame")
     search = PlotBox(max(0, plot.x0 - 6), max(0, plot.y0 - 6), min(gray.shape[1] - 1, plot.x1 + 6), min(gray.shape[0] - 1, plot.y1 + 6))
     vertical, horizontal = _full_span_grid_lines(gray, search, plot)
+    vector_x: tuple[float, ...] = ()
+    vector_y: tuple[float, ...] = ()
     if page is not None:
         vector_x, vector_y = _vector_full_span_grid_lines(page, transform, plot)
         vertical, horizontal = _merge_lines(vector_x, vertical), _merge_lines(vector_y, horizontal)
+        fill_x, fill_y = _vector_fill_rules(page, transform, plot)
+        vector_x, vector_y = _merge_lines(vector_x, fill_x), _merge_lines(vector_y, fill_y)
     binding = "snapped_to_full_span_grid"
-    try:
-        x_axis = _snap_axis_to_grid(raw_x, vertical, "X axis", authoritative=True)
-        y_axis = _snap_axis_to_grid(raw_y, horizontal, "Y axis", authoritative=True)
-        if x_axis is raw_x or y_axis is raw_y:
-            binding = "label_centroids_only (grid lines did not bind every tick)"
-    except RuntimeError as error:
-        x_axis, y_axis = raw_x, raw_y
-        binding = f"label_centroids_only ({error})"
+    # each axis on its own: one axis's refusal no longer throws away the other's binding
+    x_axis, x_error = _snap_or_raw(raw_x, vertical, "X axis")
+    y_axis, y_error = _snap_or_raw(raw_y, horizontal, "Y axis")
+    if x_axis is raw_x or y_axis is raw_y:
+        errors = [e for e in (x_error, y_error) if e]
+        binding = f"label_centroids_only ({errors[0]})" if errors else "label_centroids_only (grid lines did not bind every tick)"
+    # F-v3-1: a LINEAR axis the label snap could not bind (DMN4008LFG: its
+    # labels sit up to 10 px off their rules and two flat curve tails read as
+    # rules next to the 0.005 rule) is bound on the rule lattice its labels
+    # name: see _bind_linear_lattice
+    latticed = []
+    if x_axis is raw_x and raw_x.model == "linear":
+        bound = _bind_linear_lattice(raw_x, _rule_source(raw_x, vector_x, vertical), "X axis")
+        if bound is not None:
+            x_axis = bound
+            latticed.append("x")
+    if y_axis is raw_y and raw_y.model == "linear":
+        bound = _bind_linear_lattice(raw_y, _rule_source(raw_y, vector_y, horizontal), "Y axis")
+        if bound is not None:
+            y_axis = bound
+            latticed.append("y")
+    if latticed:
+        binding = ("snapped_to_full_span_grid" if x_axis is not raw_x and y_axis is not raw_y
+                   else binding)
+        source = f"{source} ({'/'.join(latticed)} axis bound on the rules its labels name)"
     # F-v2-2: a LOG axis whose labels sit too far from their rules for the
     # label snap (ZVNL120A's "1" and "10" print 10 / 7.5 px right of their
     # rules) is bound on its own grid ladder instead: see _snap_log_ladder
@@ -347,6 +368,122 @@ def _label_straddles_edge(tick, labels: list[TextLabel], lo: float, hi: float, n
                   and getattr(l, "y1", 0.0) > getattr(l, "y0", 0.0)), None)
     edge = lo if tick.pixel < lo else hi
     return owner is not None and owner.y0 < edge < owner.y1
+
+
+def _vector_fill_rules(page, transform, plot: PlotBox) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    """Grid rules the PDF paints as thin FILLED rectangles (the shared vector reader takes strokes only).
+
+    International Rectifier draws every grid rule as a filled 're' about
+    1 pt thick (IRLB8721, IRLTS6342); rasterised, they read back at integer
+    pixels and wobble +-1 px. A non-white filled rectangle <= 2 pt thick
+    spanning >= 65 % of the plot is a rule, at its centre line.
+    """
+    vertical: list[float] = []
+    horizontal: list[float] = []
+    for drawing in page.get_drawings():
+        fill = drawing.get("fill")
+        if drawing.get("type") != "f" or fill is None or min(fill) >= 0.9:
+            continue
+        for item in drawing.get("items", []):
+            if item[0] != "re":
+                continue
+            r = item[1]
+            x0, y0 = transform.to_px(float(r.x0), float(r.y0))
+            x1, y1 = transform.to_px(float(r.x1), float(r.y1))
+            thin_pt = 2.0 * transform.scale_x
+            if abs(y1 - y0) <= thin_pt and abs(x1 - x0) >= 0.65 * (plot.x1 - plot.x0) \
+                    and plot.y0 - 10 <= 0.5 * (y0 + y1) <= plot.y1 + 10:
+                horizontal.append(0.5 * (y0 + y1))
+            elif abs(x1 - x0) <= thin_pt and abs(y1 - y0) >= 0.65 * (plot.y1 - plot.y0) \
+                    and plot.x0 - 10 <= 0.5 * (x0 + x1) <= plot.x1 + 10:
+                vertical.append(0.5 * (x0 + x1))
+    return tuple(sorted(vertical)), tuple(sorted(horizontal))
+
+
+def _rule_source(axis: NumericAxis, vector_rules, all_rules):
+    """The PDF's own vector rules when they name every used tick, else every detected rule."""
+    if vector_rules and len(axis.ticks) >= 2:
+        ticks = sorted(t.pixel for t in axis.ticks)
+        reach = LATTICE_SEARCH_FRACTION * min(b - a for a, b in zip(ticks, ticks[1:]))
+        if all(any(abs(r - t) <= reach for r in vector_rules) for t in ticks):
+            return vector_rules
+    return all_rules
+
+
+def _snap_or_raw(raw: NumericAxis, lines, name: str) -> tuple[NumericAxis, str | None]:
+    try:
+        return _snap_axis_to_grid(raw, lines, name, authoritative=True), None
+    except RuntimeError as error:
+        return raw, str(error)
+
+
+LATTICE_SEARCH_FRACTION = 0.4    # a label's rule lies within this fraction of the label spacing
+LATTICE_MAX_RESIDUAL_PX = 1.5    # the chosen rules must be one linear lattice to within this
+LATTICE_MAX_COMBINATIONS = 4096
+LATTICE_SAME_RULE_PX = 2.5
+
+
+def _bind_linear_lattice(axis: NumericAxis, lines, name: str) -> NumericAxis | None:
+    """Bind a linear axis to the rules its labels name; None when they do not agree.
+
+    Every used tick must have a rule within LATTICE_SEARCH_FRACTION of the
+    label spacing of its label; among the candidates, the one assignment is
+    chosen -- one rule per tick, no rule twice, in the ticks' order -- whose
+    rules fit value(pixel) best as ONE straight line. It is accepted only
+    when that fit's worst residual is <= LATTICE_MAX_RESIDUAL_PX and no other
+    assignment fits within it too (else the rules do not say which is which).
+    A tick without a rule, a rule missing or shifted out of the lattice, or
+    rules out of the labels' order leave the axis unbound. Rules the labels
+    do not name (minor rules, curve ink detected as a rule) are ignored.
+    Two candidates within LATTICE_SAME_RULE_PX are one rule found twice.
+    """
+    if axis.model != "linear" or len(axis.ticks) < 3:
+        return None
+    ticks = sorted(axis.ticks, key=lambda t: t.pixel)
+    spacing = min(b.pixel - a.pixel for a, b in zip(ticks, ticks[1:]))
+    if spacing <= 0:
+        return None
+    rules = sorted(float(v) for v in lines)
+    candidates = []
+    for tick in ticks:
+        near = [r for r in rules if abs(r - tick.pixel) <= LATTICE_SEARCH_FRACTION * spacing]
+        if not near:
+            return None
+        candidates.append(near)
+    total = 1
+    for near in candidates:
+        total *= len(near)
+    if total > LATTICE_MAX_COMBINATIONS:
+        return None
+    import itertools
+    values = np.asarray([t.value for t in ticks], dtype=float)
+    fits = []
+    for combo in itertools.product(*candidates):
+        pixels = np.asarray(combo, dtype=float)
+        if np.any(np.diff(pixels) <= 0):
+            continue
+        slope, intercept = np.polyfit(pixels, values, 1)
+        worst = float(np.max(np.abs((values - intercept) / slope - pixels)))
+        fits.append((worst, combo))
+    if not fits:
+        return None
+    fits.sort()
+    worst, combo = fits[0]
+    if worst > LATTICE_MAX_RESIDUAL_PX:
+        return None
+    for other_worst, other in fits[1:]:
+        if other_worst > LATTICE_MAX_RESIDUAL_PX:
+            break
+        if max(abs(a - b) for a, b in zip(combo, other)) > LATTICE_SAME_RULE_PX:
+            return None   # two assignments fit: the rules do not say which label is which
+        # (candidates within LATTICE_SAME_RULE_PX are one printed rule found twice,
+        # e.g. a frame edge seen by the vector and the raster detector)
+    try:
+        fitted = fit_axis_ticks([AxisTick(t.text, t.value, px, t.normalized_text) for t, px in zip(ticks, combo)],
+                                name, model="linear")
+    except RuntimeError:
+        return None
+    return fitted
 
 
 LOG_LADDER_MIN_MATCHED = 0.8     # of the 1..9 x 10^k positions inside the used ticks' span
