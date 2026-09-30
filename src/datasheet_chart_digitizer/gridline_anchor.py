@@ -71,6 +71,16 @@ _MAX_SCALE_DISAGREEMENT = 0.08
 _LOG_MINOR_UNEXPLAINED_MAX = 0.30
 # A tick mark must be ink over this fraction of its band beside the frame.
 _TICK_MARK_MIN_FILL = 0.80
+# Dotted/dashed rules (opt-in evidence level, see ``line_evidence_attempts``):
+# a column is a broken rule when its ink covers at least this fraction of the
+# plot span ...
+_BROKEN_RULE_MIN_COVERAGE = 0.20
+# ... AND that ink is spread over the WHOLE span: at least this share of the
+# span's bins hold ink. A dot pitch is a few pixels, so every bin of a rule
+# holds dots; a curve crossing, a steep segment or a text column fills a few
+# bins only, however dark it is.
+_BROKEN_RULE_BINS = 16
+_BROKEN_RULE_MIN_BIN_SHARE = 0.9
 
 
 class AmbiguousRegistration(RuntimeError):
@@ -155,6 +165,7 @@ def anchor_axis_on_grid(
     name: str,
     ink_threshold: int = _INK_THRESHOLD,
     unlined_labels: UnlinedPolicy = "refuse",
+    broken_rules: bool = False,
 ) -> AnchoredAxis:
     """Re-seat *label_axis*'s ticks on observed lines, re-fit, and assert.
 
@@ -182,6 +193,7 @@ def anchor_axis_on_grid(
         name=name,
         ink_threshold=ink_threshold,
         unlined_labels=unlined_labels,
+        broken_rules=broken_rules,
     )
     anchored_ticks = [
         AxisTick(tick.text, tick.value, line_px, tick.normalized_text)
@@ -230,6 +242,7 @@ def identify_tick_lines(
     name: str,
     ink_threshold: int = _INK_THRESHOLD,
     unlined_labels: UnlinedPolicy = "refuse",
+    broken_rules: bool = False,
 ) -> TickLineMatch:
     """Bind each labelled tick to the observed gridline or tick mark it names.
 
@@ -257,6 +270,7 @@ def identify_tick_lines(
         max_width=max(8, int(round(0.08 * pitch))),
         tick_band=max(3, int(round(0.05 * pitch))),
         ink_threshold=ink_threshold,
+        broken_rules=broken_rules,
     )
     centers = np.asarray([line.center_px for line in lines], dtype=float)
 
@@ -369,6 +383,7 @@ def check_served_on_grid(
     name: str,
     ink_threshold: int = _INK_THRESHOLD,
     unlined_labels: UnlinedPolicy = "refuse",
+    broken_rules: bool = False,
 ) -> GridCheck:
     """Assert the SERVED value->pixel mapping at every labelled tick.
 
@@ -388,6 +403,7 @@ def check_served_on_grid(
             name=name,
             ink_threshold=ink_threshold,
             unlined_labels=unlined_labels,
+            broken_rules=broken_rules,
         )
     except AmbiguousRegistration as exc:
         return GridCheck("unverified", str(exc), None, (), ambiguous=True)
@@ -555,6 +571,7 @@ def detect_axis_lines(
     max_width: int,
     tick_band: int,
     ink_threshold: int = _INK_THRESHOLD,
+    broken_rules: bool = False,
 ) -> list[ObservedLine]:
     """Find gridlines (and frame-attached tick marks) crossing one axis.
 
@@ -562,6 +579,12 @@ def detect_axis_lines(
     positions; for ``"y"`` they are horizontal. A line's pixel is the centre
     of its dark run, so a thick frame and a hairline gridline are anchored the
     same way.
+
+    *broken_rules* also admits DOTTED and DASHED rules (source
+    ``"broken_rule"``) from per-column ink+span evidence: coverage below the
+    solid-gridline floor but ink in nearly every bin of the span. Off by
+    default; ``line_evidence_attempts`` enables it only for callers that opt
+    in, after every solid-rule level has failed to bind.
     """
     ink = gray < ink_threshold
     if orientation == "y":
@@ -580,6 +603,8 @@ def detect_axis_lines(
         for center, run_width in _runs(coverage >= _GRIDLINE_MIN_COVERAGE)
         if run_width <= max_width
     ]
+    if broken_rules:
+        lines.extend(_broken_rule_lines(ink[c0:c1, a0:a1], a0, coverage, lines, max_width))
 
     # x labels sit below the plot (high rows); y labels sit left of it, which
     # after the transpose is the low end of the cross span.
@@ -600,6 +625,34 @@ def detect_axis_lines(
             ):
                 lines.append(ObservedLine(position, run_width, "tick_mark"))
     return sorted(lines, key=lambda line: line.center_px)
+
+
+def _broken_rule_lines(
+    ink: np.ndarray,
+    offset: int,
+    coverage: np.ndarray,
+    solid: list[ObservedLine],
+    max_width: int,
+) -> list[ObservedLine]:
+    """Dotted/dashed rules in *ink* (cross span x along), not near a solid line."""
+    bins = np.array_split(np.arange(ink.shape[0]), _BROKEN_RULE_BINS)
+    if min(len(b) for b in bins) < 2:
+        return []
+    per_bin = np.stack([ink[b].any(axis=0) for b in bins])
+    spread = per_bin.mean(axis=0) >= _BROKEN_RULE_MIN_BIN_SHARE
+    candidate = (coverage >= _BROKEN_RULE_MIN_COVERAGE) & spread
+    found: list[ObservedLine] = []
+    for center, run_width in _runs(candidate):
+        position = offset + center
+        # a column run adjacent to a solid run is the same rule's fringe;
+        # anything further away is a distinct rule (a dotted decade sits one
+        # 90 % minor, ~8 px, from a solid minor on a dense log grid)
+        if run_width <= max_width and all(
+            abs(position - line.center_px) > (line.width_px + run_width) / 2 + 1
+            for line in solid
+        ):
+            found.append(ObservedLine(position, run_width, "broken_rule"))
+    return found
 
 
 def _frame_on_label_side(
@@ -664,7 +717,7 @@ def suppress_curve_ink(
     sub[is_dark & ~keep] = 255
     return out
 
-def line_evidence_attempts(gray: np.ndarray, frame):
+def line_evidence_attempts(gray: np.ndarray, frame, *, broken_rules: bool = False):
     """Line-evidence levels for anchoring, most trustworthy first.
 
     Yields lists of ``(name, image, kwargs)`` variants for
@@ -678,18 +731,24 @@ def line_evidence_attempts(gray: np.ndarray, frame):
     labelled tick to sit on a line; the later ones admit INTERIOR labels
     between gridlines as identity-only while the end labels must still sit on
     lines.
+
+    *broken_rules* (opt-in) appends the same levels again with dotted/dashed
+    rules admitted as line evidence. They come LAST, so a chart that binds on
+    solid rules today is decided exactly as before; only a chart with no
+    solid-rule binding can be seated on its dotted rules.
     """
     images = (("curve_ink_suppressed", suppress_curve_ink(gray, frame)), ("raw", gray))
-    for policy in ("refuse", "identity_only"):
-        for threshold in (_INK_THRESHOLD, _LIGHT_RULE_INK_THRESHOLD):
-            yield [
-                (
-                    f"{image_name}/{policy}/ink<{threshold}",
-                    image,
-                    {"unlined_labels": policy, "ink_threshold": threshold},
-                )
-                for image_name, image in images
-            ]
+    for broken in (False, True) if broken_rules else (False,):
+        suffix = "/broken_rules" if broken else ""
+        for policy in ("refuse", "identity_only"):
+            for threshold in (_INK_THRESHOLD, _LIGHT_RULE_INK_THRESHOLD):
+                kwargs: dict[str, object] = {"unlined_labels": policy, "ink_threshold": threshold}
+                if broken:
+                    kwargs["broken_rules"] = True
+                yield [
+                    (f"{image_name}/{policy}/ink<{threshold}{suffix}", image, kwargs)
+                    for image_name, image in images
+                ]
 
 
 def _joined(errors: list[tuple[str, str]]) -> str:
@@ -713,6 +772,7 @@ def anchor_axis_on_grid_attempts(
     orientation: Orientation,
     cross_span: tuple[float, float],
     name: str,
+    broken_rules: bool = False,
 ) -> tuple[AnchoredAxis, str]:
     """``anchor_axis_on_grid`` over ``line_evidence_attempts``.
 
@@ -722,7 +782,7 @@ def anchor_axis_on_grid_attempts(
     raises with every distinct refusal reason when nothing binds.
     """
     errors: list[tuple[str, str]] = []
-    for level in line_evidence_attempts(gray, frame):
+    for level in line_evidence_attempts(gray, frame, broken_rules=broken_rules):
         bound: list[tuple[AnchoredAxis, str]] = []
         ambiguous: list[str] = []
         for attempt, image, kwargs in level:
@@ -766,6 +826,7 @@ def check_served_on_grid_attempts(
     orientation: Orientation,
     cross_span: tuple[float, float],
     name: str,
+    broken_rules: bool = False,
 ) -> GridCheck:
     """``check_served_on_grid`` over ``line_evidence_attempts``.
 
@@ -775,7 +836,7 @@ def check_served_on_grid_attempts(
     unverified for lack of lines; the reason then lists every refusal.
     """
     errors: list[tuple[str, str]] = []
-    for level in line_evidence_attempts(gray, frame):
+    for level in line_evidence_attempts(gray, frame, broken_rules=broken_rules):
         bound: list[tuple[GridCheck, str]] = []
         ambiguous: list[str] = []
         for attempt, image, kwargs in level:

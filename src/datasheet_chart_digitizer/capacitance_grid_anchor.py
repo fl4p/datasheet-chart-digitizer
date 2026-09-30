@@ -95,7 +95,7 @@ def _anchor(gray, plot, ticks, model, orientation, cross_span, name) -> tuple[An
     label_axis = fit_axis_ticks(ticks, name, model=model)  # type: ignore[arg-type]
     return anchor_axis_on_grid_attempts(
         gray, label_axis, frame=_frame(plot), orientation=orientation,
-        cross_span=cross_span, name=name,
+        cross_span=cross_span, name=name, broken_rules=True,
     )
 
 
@@ -193,7 +193,7 @@ def check_axis_on_grid(
     span = _index_span(span)
     return check_served_on_grid_attempts(
         gray, served, ticks, frame=_frame(plot), orientation=axis, cross_span=span,
-        name=f"capacitance {axis}",
+        name=f"capacitance {axis}", broken_rules=True,
     )
 
 
