@@ -23,6 +23,10 @@ the raster:
    land on a line). On a log axis the hypothesis must also explain the minor
    gridlines of each labelled decade, so the 90 % minor line 0.046 decade from a
    decade cannot stand in for it even when a label sits closer to the minor.
+   A registration that a whole-pitch translation would seat clearly closer to
+   the labels, on rules the labels sit on, is refused at that evidence level
+   even when the translation lacks an end rule there (a hairline frame lighter
+   than the ink threshold): proximity to *a* rule is not the label's binding.
 4. The axis is re-fitted on the matched line centres and the SERVED mapping is
    asserted at every consumed tick; a miss beyond tolerance fails closed.
 """
@@ -352,6 +356,19 @@ def identify_tick_lines(
                 "to pick a gridline by proximity alone"
             )
         best, evidence = heavier, "major_rule_weight"
+    rival = _translated_rival(
+        centers, coords, label_px, best[2], match_tol, model,
+        search=search, margin=ambiguity,
+    )
+    if rival is not None:
+        shift, own_offset, rival_offset = rival
+        raise RuntimeError(
+            f"{name}: the registration binds every label to a rule "
+            f"{-shift:+.1f}px from where the labels sit (mean label offset "
+            f"{own_offset:.1f}px), while translating it onto the rules under the "
+            f"labels (offset {rival_offset:.1f}px) leaves an end rule unobserved "
+            "at this evidence level; refusing a binding one line pitch off"
+        )
     kept = [tick for tick, i in zip(ticks, best[2]) if i >= 0]
     unlined = [tick for tick, i in zip(ticks, best[2]) if i < 0]
     matched = [i for i in best[2] if i >= 0]
@@ -630,30 +647,8 @@ def _register(
                 if key in seen or len(set(lined)) != len(lined):
                     continue
                 seen.add(key)
-                expected = list(predicted)
-                hits = 0
-                if model == "log10":
-                    # the 2..9 minors of EVERY decade inside the labelled
-                    # span, including one whose label was not read (an OCR
-                    # gap such as TK100E08N1's missing "1"), so a gap does not
-                    # leave its minor rules looking unexplained
-                    c_lo, c_hi = float(np.min(coords)), float(np.max(coords))
-                    for base in range(math.floor(c_lo + 1e-9), math.ceil(c_hi - 1e-9)):
-                        for j in range(2, 10):
-                            c = base + math.log10(j)
-                            if not c_lo - 1e-9 <= c <= c_hi + 1e-9:
-                                continue
-                            p = a + (c - coords[0]) * scale
-                            expected.append(p)
-                            if np.min(np.abs(centers - p)) <= match_tol:
-                                hits += 1
-                        if base > c_lo + 1e-9 and not np.any(np.isclose(coords, base)):
-                            expected.append(a + (base - coords[0]) * scale)
-                lo_px, hi_px = sorted((a, b))
-                expected_arr = np.asarray(expected)
-                inside = [c for c in centers if lo_px + match_tol < c < hi_px - match_tol]
-                unexplained = sum(
-                    1 for c in inside if np.min(np.abs(expected_arr - c)) > match_tol
+                hits, unexplained, inside = _pattern_fit(
+                    centers, coords, predicted, a, scale, match_tol, model
                 )
                 if (
                     model == "log10"
@@ -676,6 +671,117 @@ def _register(
                 score = hits - unexplained if model == "log10" else 0
                 out.append((score, offset, key))
     return out
+
+
+def _pattern_fit(
+    centers: np.ndarray,
+    coords: np.ndarray,
+    predicted: np.ndarray,
+    a: float,
+    scale: float,
+    match_tol: float,
+    model: str,
+) -> tuple[int, int, list[float]]:
+    """How well one registration explains the observed lines of its span.
+
+    Returns (predicted log minors that exist, observed lines inside the
+    labelled span that nothing predicted explains, those inside lines).
+    """
+    expected = list(predicted)
+    hits = 0
+    if model == "log10":
+        # the 2..9 minors of EVERY decade inside the labelled span, including
+        # one whose label was not read (an OCR gap such as TK100E08N1's
+        # missing "1"), so a gap does not leave its minor rules looking
+        # unexplained
+        c_lo, c_hi = float(np.min(coords)), float(np.max(coords))
+        for base in range(math.floor(c_lo + 1e-9), math.ceil(c_hi - 1e-9)):
+            for j in range(2, 10):
+                c = base + math.log10(j)
+                if not c_lo - 1e-9 <= c <= c_hi + 1e-9:
+                    continue
+                p = a + (c - coords[0]) * scale
+                expected.append(p)
+                if np.min(np.abs(centers - p)) <= match_tol:
+                    hits += 1
+            if base > c_lo + 1e-9 and not np.any(np.isclose(coords, base)):
+                expected.append(a + (base - coords[0]) * scale)
+    lo_px, hi_px = sorted((float(predicted[0]), float(predicted[-1])))
+    expected_arr = np.asarray(expected)
+    inside = [float(c) for c in centers if lo_px + match_tol < c < hi_px - match_tol]
+    unexplained = sum(1 for c in inside if np.min(np.abs(expected_arr - c)) > match_tol)
+    return hits, unexplained, inside
+
+
+def _translated_rival(
+    centers: np.ndarray,
+    coords: np.ndarray,
+    label_px: np.ndarray,
+    key: tuple[int, ...],
+    match_tol: float,
+    model: str,
+    *,
+    search: float,
+    margin: float,
+) -> tuple[float, float, float] | None:
+    """A whole-registration translation that seats the labels clearly better.
+
+    ``_register`` enumerates hypotheses from the END ticks' candidate lines
+    only. When an end rule is missing from this evidence level (a hairline
+    frame lighter than the ink threshold), the registration that binds each
+    label to the rule it sits on is never enumerated, and a copy translated by
+    one line pitch -- every label bound to its NEIGHBOURING rule, all interior
+    labels sitting on rules it leaves unbound -- can be the only hypothesis
+    and so wins without a rival (Infineon IPP020N03LF2S: every y label 27 px,
+    one minor pitch, from its bound rule). ``check_served_on_grid`` re-uses
+    the same binding, so it cannot see this.
+
+    The chosen registration *key* is translated by the offset from each
+    label's predicted pixel to every observed line near the label. A rival
+    must (a) seat every interior tick the chosen one seats on an observed
+    line, and at least two ticks overall, (b) leave an END tick without an
+    observed line (a rival with both ends seated is an ordinary hypothesis
+    that ``_register`` already ranked), (c) on a log axis explain the minor
+    pattern at least as well, and (d) put the label glyphs closer to their
+    values than the chosen registration by more than *margin* (the same
+    ambiguity margin the tie gate uses). Returns (shift px, chosen mean label
+    offset, rival mean label offset) for the best such rival, else None.
+    """
+    n = len(coords)
+    if n < 3:
+        return None  # no interior tick to evidence a translation
+    a, b = centers[key[0]], centers[key[-1]]
+    scale = (b - a) / (coords[-1] - coords[0])
+    predicted = a + (coords - coords[0]) * scale
+    own_offset = float(np.mean(np.abs(label_px - predicted)))
+    own_hits, own_unexplained, _ = _pattern_fit(
+        centers, coords, predicted, a, scale, match_tol, model
+    )
+    seated_interior = [k for k in range(1, n - 1) if key[k] >= 0]
+    shifts: list[float] = []
+    for k in range(n):
+        for c in centers[np.abs(centers - label_px[k]) <= search]:
+            shift = float(c - predicted[k])
+            if abs(shift) > match_tol and all(abs(shift - t) > match_tol for t in shifts):
+                shifts.append(shift)
+    best: tuple[float, float, float] | None = None
+    for shift in shifts:
+        rival = predicted + shift
+        on = [bool(np.min(np.abs(centers - p)) <= match_tol) for p in rival]
+        if not all(on[k] for k in seated_interior) or sum(on) < 2:
+            continue
+        if on[0] and on[-1]:
+            continue
+        if model == "log10":
+            hits, unexplained, _ = _pattern_fit(
+                centers, coords, rival, a + shift, scale, match_tol, model
+            )
+            if hits - unexplained < own_hits - own_unexplained:
+                continue
+        offset = float(np.mean(np.abs(label_px - rival)))
+        if offset + margin < own_offset and (best is None or offset < best[2]):
+            best = (shift, own_offset, offset)
+    return best
 
 
 def detect_axis_lines(
