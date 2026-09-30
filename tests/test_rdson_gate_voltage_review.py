@@ -2258,6 +2258,62 @@ class BatchAllV3Tests(unittest.TestCase):
         self.assertEqual(report.readouts(short, True, [], tolerance, targets=(20.0,))[0]["status"], "not_on_chart")
 
 
+_DMN_Y_LABELS = [("0.04", 59.6), ("0.035", 152.0), ("0.03", 243.1), ("0.025", 335.2), ("0.02", 426.5),
+                 ("0.015", 517.7), ("0.01", 610.0), ("0.005", 701.1), ("0", 792.2)]
+# DMN4008LFG p3's own vector rules (crop px), plus the two flat curve tails the raster
+# detector reports as rules beside the 0.005 rule (698 / 700 px)
+_DMN_Y_RULES = (50.1, 144.2, 238.5, 332.7, 426.0, 520.1, 614.5, 698.0, 700.0, 708.6, 801.7)
+
+
+@unittest.skipUnless(HAVE_DS and HAVE_TESSERACT, "needs the datasheets and tesseract")
+class BatchAllV4Tests(unittest.TestCase):
+    """Fab's v3 finding F-v3-1 (DMN4008LFG: "y-axis ticks are off") and its sweep."""
+
+    def _raw(self):
+        from datasheet_chart_digitizer.numeric_axis import fit_numeric_axis
+        return fit_numeric_axis(_DMN_Y_LABELS, "Y axis")
+
+    def test_f_v3_1_y_binds_to_the_rules_its_labels_name(self):
+        row = _panel("DMN4008LFG_Diodes", 3, "4")
+        cal = row["calibration"]
+        self.assertEqual(cal["grid_binding"], "snapped_to_full_span_grid")
+        self.assertIn("y axis bound on the rules its labels name", cal["tick_source"])
+        y = {t["value"]: t["pixel"] for t in cal["y_axis"]["ticks"]}
+        box = row["plot_box_px"]
+        self.assertAlmostEqual(y[0.04], box["y0"], delta=0.6)
+        self.assertAlmostEqual(y[0.0], box["y1"], delta=0.6)
+        self.assertAlmostEqual(y[0.005], 708.0, delta=1.0)   # the rule, not a curve tail at 698/700
+        self.assertFalse(any(r.startswith("axis_ticks_not_bound_to_grid") for r in row["reasons"]))
+        by_id = {c["id_a"]: c for c in row["curves"]}
+        self.assertAlmostEqual(_readout(by_id[10.0], 4.5)["rds_mohm"], 6.99, delta=0.02)
+
+    def test_f_v3_1_lattice_known_bads(self):
+        from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes_mod
+        raw = self._raw()
+        bound = axes_mod._bind_linear_lattice(raw, _DMN_Y_RULES, "Y axis")
+        self.assertIsNotNone(bound)
+        self.assertEqual(sorted(round(t.pixel, 1) for t in bound.ticks),
+                         [50.1, 144.2, 238.5, 332.7, 426.0, 520.1, 614.5, 708.6, 801.7])
+        # one rule removed: a label without its rule -> refused
+        missing = tuple(r for r in _DMN_Y_RULES if r != 426.0)
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, missing, "Y axis"))
+        # one rule shifted 8 px: the rules are no longer one lattice -> refused
+        shifted = tuple(r + 8.0 if r == 426.0 else r for r in _DMN_Y_RULES)
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, shifted, "Y axis"))
+        # a second complete lattice 4 px away: the rules do not say which -> refused
+        doubled = tuple(sorted(set(_DMN_Y_RULES) | {r + 4.0 for r in _DMN_Y_RULES}))
+        self.assertIsNone(axes_mod._bind_linear_lattice(raw, doubled, "Y axis"))
+
+    def test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules(self):
+        # IRLB8721 / IRLTS6342 (goldens) paint their rules as filled rectangles; the
+        # raster read of them wobbles +-1 px, too much for a lattice. Their labels
+        # already sat on the rules, so the served values do not move (0.0000 %).
+        for name, page in (("IRLB8721_IFX", 6), ("IRLTS6342_IFX", 5)):
+            row = _panel(name, page, "12")
+            self.assertEqual(row["calibration"]["grid_binding"], "snapped_to_full_span_grid", name)
+            self.assertFalse(any(r.startswith("axis_ticks_not_bound_to_grid") for r in row["reasons"]), name)
+
+
 def _vgs(row: dict, px: float) -> float:
     axis = row["calibration"]["x_axis"]
     return axis["m"] * px + axis["b"]

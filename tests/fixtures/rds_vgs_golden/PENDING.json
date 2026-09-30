@@ -29,6 +29,18 @@
     }
    },
    "date": "2026-09-30"
+  },
+  {
+   "part": "IRLB8721_IFX",
+   "pending": "re-bless: F-v3-1 (y axis bound to its printed rules)",
+   "why": "Frozen with axis_ticks_not_bound_to_grid (PROVENANCE.md, 'batch_all parts'): the shared snap read the rules from the raster, where IR's filled-rectangle rules wobble +-1 px, and refused. F-v3-1 reads the filled rules from the PDF and binds each label to the rule it names (lattice residual 0.56 px). The calibration after frame anchoring is unchanged (every tick within 0.3 px), no point moved, every readout is unchanged (max change 0.0000 %). The only served change: the reason axis_ticks_not_bound_to_grid is gone, so the status is ok.",
+   "changed_fields": {
+    "status": {
+     "frozen": "review_required",
+     "now": "ok"
+    }
+   },
+   "date": "2026-09-30"
   }
  ]
 }
