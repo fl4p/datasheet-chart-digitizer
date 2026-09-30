@@ -1,4 +1,34 @@
 {
  "_doc": "Golden panels Fab found defects in on the v4 overlays (2026-09-29). Their labels and curve grouping are being changed by the named findings; only the ink is still pinned (see test_rdson_gate_voltage_golden.py). Fab re-blesses them after he has seen the fix; nobody else removes an entry here.",
- "entries": []
+ "entries": [
+  {
+   "part": "FDP8870_onsemi",
+   "pending": "re-bless: F-v2-1 (steep heads of filled-outline curves traced to the top frame)",
+   "why": "Rule-4 sweep of batch_all_v3: FDP8870's curves are filled outlines whose steep heads the column sampler served as a few mid-run points; the source outlines run to the top frame (source top y=49 px, plot y0=49). F-v2-1 adds the head row by row on each curve's own outline (row_traced_points_px). No golden point moved or was removed; no readout, label, temperature, I_D value, status or validation changed. The I_D binding provenance changed with the traced heads: 'ID = 35A' now sits nearest its own head (proximity_far_curve_behind_near_curve) and 'ID = 1A' follows by elimination -- the frozen fixture had both by id_order_rule; the values (1 A on c0, 35 A on c1) are the same.",
+   "changed_fields": {
+    "curves": {
+     "kind": "points_added",
+     "added_points": {
+      "c0 (1 A)": 180,
+      "c1 (35 A)": 195
+     },
+     "added_vgs_ranges_v": {
+      "c0 (1 A)": [
+       2.756,
+       3.142
+      ],
+      "c1 (35 A)": [
+       2.883,
+       3.141
+      ]
+     },
+     "parameter_binding.id_a": {
+      "frozen": "id_order_rule (both)",
+      "now": "c0 elimination_last_label_last_curve, c1 proximity_far_curve_behind_near_curve"
+     }
+    }
+   },
+   "date": "2026-09-30"
+  }
+ ]
 }
