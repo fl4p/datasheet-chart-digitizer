@@ -201,15 +201,14 @@ class SyntheticMergedRuleTests(unittest.TestCase):
             return ("refused", None)
         return ("served", round(_max_error(anchored), 3))
 
-    @unittest.expectedFailure
-    def test_known_open_curve_fused_with_the_rule_is_served_off_it(self):
-        """OPEN, unchanged by the split (main 6a1a61b behaves the same): when
-        the curve's gap row is >= 80 % ink, suppression keeps it as a rule,
-        both rasters see one fused 6 px run, agree, and serve 0 A ~2 px off
-        (0.78 px max error after the fit). No dip means no recoverable centre;
-        refusing it needs its own guard."""
+    def test_curve_fused_with_the_rule_is_served_on_the_rule(self):
+        """Was the pinned OPEN case (8b9ed96, main 6a1a61b): with the gap row
+        >= 80 % ink both rasters saw one fused 6 px run, agreed, and served
+        0 A 0.78 px off. ``_guard_fused_runs`` re-measures the run where the
+        curve leaves the rule (the last 5 % of the span) and serves it there."""
         anchored, _ = _anchor(_panel(_isc_curve(0.9)))
         self.assertLess(_max_error(anchored), 0.5)
+        self.assertIn("recovered_rule", {a.source for a in anchored.anchors})
 
     def test_pieces_the_pitch_cannot_tell_apart_refuse(self):
         """Known-bad: with no interior label (or one far from the end), curve
@@ -252,6 +251,197 @@ class SyntheticMergedRuleTests(unittest.TestCase):
         frame = ObservedLine(3.0, 3, "gridline")
         hair = [ObservedLine(100.0 + 50 * i, 1, "gridline") for i in range(3)]
         self.assertEqual(ga._split_merged_runs([frame, *hair], coverage, 0), [frame, *hair])
+
+
+
+# ------------------------------------------------------- fused, no dip at all
+# A curve lying on the 0 rule, or beside it with the gap row filled in, fuses
+# with it into one wide run that _split_merged_runs cannot split; both rasters
+# agree on its centre. _guard_fused_runs re-measures the run where the curve
+# leaves the rule, refuses a binding to it when it shows two strokes along its
+# whole length, and otherwise keeps it (a bold rule).
+def _fused(gap=0.9, share=0.95, grey=128):
+    curve = ((-4, min(0.76, share)), (-3, share), (-2, share), (-1, gap * share))
+    return _panel(curve, rule_grey=grey)
+
+
+def _on_rule(rows, share=0.95, grey=128):
+    return _panel(tuple((row, share) for row in rows), rule_grey=grey)
+
+
+def _outcome(image):
+    try:
+        anchored, _ = _anchor(image)
+    except RuntimeError as exc:
+        return ("refused", str(exc))
+    return ("served", round(_max_error(anchored), 3))
+
+
+def _served_wrong(outcome) -> bool:
+    return outcome[0] == "served" and outcome[1] >= 0.5
+
+
+TY_FIXTURE = (Path(__file__).parent / "fixtures" / "gridline_fused_rule"
+              / "ty_MBASL042SCG1R5CWNA01_c_vs_f.webp")
+# value: (vector label centre, vector rule), case px (see PROVENANCE.md)
+TY_TICKS = {
+    "x": [(1.0, 95.158, 95.237), (10.0, 169.889, 169.994), (100.0, 244.796, 244.761),
+          (1000.0, 319.522, 319.518), (10000.0, 394.256, 394.018), (100000.0, 469.112, 468.771)],
+    "y": [(100.0, 50.033, 50.565), (10.0, 158.684, 159.175), (1.0, 267.35, 267.784),
+          (0.1, 376.01, 376.393)],
+}
+TY_BOX = (95.24, 50.57, 468.76, 376.39)
+
+
+class FusedRuleTests(unittest.TestCase):
+    def test_partial_fusion_is_recovered_at_any_gap_ink(self):
+        """Known-bad: gap row 80-100 % ink, curve along 50 % or 95 % of the
+        rule. 8b9ed96 refused at 0.80 and served 0.78 px off from 0.90."""
+        for grey in (128, 0):
+            for share in (0.5, 0.95):
+                for gap in (0.8, 0.9, 1.0):
+                    with self.subTest(grey=grey, share=share, gap=gap):
+                        outcome = _outcome(_fused(gap, share, grey))
+                        self.assertEqual(outcome[0], "served", outcome)
+                        self.assertLess(outcome[1], 0.5, outcome)
+
+    def test_curve_on_the_rule_off_centre_is_recovered(self):
+        """Known-bad: a 3-4 px curve ON the 2 px rule, centred 0-2 px off it,
+        along 95 % of the span. 8b9ed96 served 0.52 / 0.52 / 0.78 px off for
+        the three off-centre 4- and 3-row cases."""
+        for rows in ((-1, 0, 1, 2), (-2, -1, 0, 1), (-1, 0, 1), (-2, -1, 0), (-3, -2, -1, 0)):
+            for grey in (128, 0):
+                with self.subTest(rows=rows, grey=grey):
+                    outcome = _outcome(_on_rule(rows, 0.95, grey))
+                    self.assertEqual(outcome[0], "served", outcome)
+                    self.assertLess(outcome[1], 0.5, outcome)
+
+    def test_whole_length_fusion_showing_two_strokes_refuses(self):
+        """Known-bad: the curve runs the WHOLE rule, so nowhere does the rule
+        show alone. Two strokes are still visible -- a grey rule under a black
+        curve, or (black on black) paper between them along part of the
+        length -- and the centre is refused, never guessed. 8b9ed96 served
+        all four 0.78 px off."""
+        for grey, gap in ((128, 0.9), (128, 1.0), (0, 0.9), (0, 0.95)):
+            with self.subTest(grey=grey, gap=gap):
+                outcome = _outcome(_fused(gap, 1.0, grey))
+                self.assertEqual(outcome[0], "refused", outcome)
+                self.assertIn("fused into along its whole length", outcome[1])
+
+    @unittest.expectedFailure
+    def test_known_open_rule_hidden_in_a_same_ink_bar(self):
+        """OPEN: a curve along the WHOLE rule, same ink, gap filled (or the
+        rule painted over): the run is a uniform bar with no stretch where the
+        rule shows alone and no second stroke. That is what a bold rule looks
+        like; refusing it on width alone refuses the bold decade rules of 11
+        good vendor axes (Taiyo Yuden). Served 0.78 px off, as on 8b9ed96."""
+        for image in (_fused(1.0, 1.0, 0), _on_rule((-3, -2, -1, 0), 1.0, 128)):
+            self.assertFalse(_served_wrong(_outcome(image)))
+
+    def test_gap_ink_sweep_never_serves_wrong(self):
+        """Monotonicity: as the gap row fills in, at every share of the span
+        and both rule inks, the verdict is served-on-the-rule or refused, and
+        never comes back to served-wrong. The one exception is the far tail of
+        the black, whole-length family (gap 1.00: a uniform bar, pinned as
+        OPEN above); its sweep stops at 0.95."""
+        for grey in (128, 0):
+            for share in (0.5, 0.95, 1.0):
+                top = 0.95 if (grey, share) == (0, 1.0) else 1.0
+                rows = [(round(float(gap), 2), _outcome(_fused(float(gap), share, grey)))
+                        for gap in np.arange(0.40, top + 1e-9, 0.05)]
+                with self.subTest(grey=grey, share=share):
+                    self.assertFalse([r for r in rows if _served_wrong(r[1])], rows)
+
+    def test_curve_sliding_onto_the_rule_never_serves_wrong(self):
+        """Monotonicity in position: a 3 px black curve along 95 % of the span
+        moves from 6 px above the 0 rule onto it and through it."""
+        for grey in (128, 0):
+            for top in range(-6, 2):
+                with self.subTest(grey=grey, top=top):
+                    outcome = _outcome(_on_rule((top, top + 1, top + 2), 0.95, grey))
+                    self.assertFalse(_served_wrong(outcome), outcome)
+
+    def test_served_check_on_a_fused_run(self):
+        """The served check uses the same detection. On the partial fusion it
+        verifies the truth against the RULE (on 8b9ed96 it bound 0 to the fused
+        centre, 2 px off, and the fused-centre mapping, 0.78 px off after the
+        fit, verified inside the 1.8 px tolerance); a 2 px shift fails. On a
+        whole-length two-stroke fusion it verifies nothing (unverified)."""
+        labels = [AxisTick(f"{v:g}", v, _true_px(v)) for v in SIX]
+        frame = SimpleNamespace(x0=LEFT, y0=_true_px(250.0), x1=RIGHT, y1=_true_px(0.0))
+        truth = fit_axis_ticks(labels, "y", model="linear")
+        fused_centre = fit_axis_ticks(
+            [AxisTick(t.text, t.value, t.pixel - 2.0 * (t.value == 0.0)) for t in labels],
+            "y", model="linear",
+        )
+
+        def check(image, axis):
+            return check_served_on_grid_attempts(
+                image, axis, labels, frame=frame, orientation="y",
+                cross_span=(LEFT, RIGHT), name="y",
+            )
+
+        verified = check(_fused(0.9, 0.95), truth)
+        self.assertEqual(verified.status, "verified", verified.reason)
+        zero = [t for t in verified.ticks if t["value"] == 0.0][0]
+        self.assertLess(abs(float(zero["line_px"]) - _true_px(0.0)), 0.5, zero)
+        self.assertEqual(zero["line_source"], "recovered_rule")
+        self.assertEqual(check(_fused(0.9, 0.95), _shifted(truth, -2.0)).status, "failed")
+        self.assertEqual(check(_fused(0.9, 1.0), truth).status, "unverified")
+        self.assertEqual(check(_fused(0.9, 1.0), fused_centre).status, "unverified")
+
+    def test_bold_rules_are_kept(self):
+        """Known-good: rules legitimately thicker than the chart's median rule
+        are not re-measured or refused -- every labelled rule bold (4 px black
+        among 2 px minors), a lone bold 0 rule, and a bold rule thinned by one
+        anti-aliased row along part of its length."""
+        bold_all = _panel(rule_grey=0)
+        for value in SIX:
+            bold_all[_rule_row(value) - 1:_rule_row(value) + 3, LEFT:RIGHT + 1] = 0
+        lone = _panel(rule_grey=0)
+        lone[_rule_row(0) - 1:_rule_row(0) + 3, LEFT:RIGHT + 1] = 0
+        thinned = lone.copy()
+        thinned[_rule_row(0) + 2, LEFT:LEFT + 60] = 255  # one edge row missing on 60 px
+        for name, image in (("all bold", bold_all), ("lone bold", lone), ("thinned", thinned)):
+            with self.subTest(name):
+                anchored, _ = _anchor(image)
+                self.assertLess(_max_error(anchored), 0.5)
+                self.assertEqual({a.source for a in anchored.anchors}, {"gridline"})
+
+    def test_taiyo_yuden_bold_decades_are_kept(self):
+        """Real known-good control (see fixtures/gridline_fused_rule): bold
+        3 px decade rules, locally one row thinner. Served on the vector rules
+        as on 8b9ed96 (y 0.03 px); a draft that re-measured them served 0.32."""
+        gray = np.asarray(Image.open(TY_FIXTURE).convert("L"))
+        x0, y0, x1, y1 = TY_BOX
+        frame = SimpleNamespace(x0=x0 - 0.5, y0=y0 - 0.5, x1=x1 - 0.5, y1=y1 - 0.5)
+        for axis, span in (("x", (y0 - 0.5, y1 - 0.5)), ("y", (x0 - 0.5, x1 - 0.5))):
+            with self.subTest(axis=axis):
+                ticks = [AxisTick(f"{v:g}", v, lab - 0.5) for v, lab, _ in TY_TICKS[axis]]
+                rule = {v: line - 0.5 for v, _, line in TY_TICKS[axis]}
+                anchored, _ = anchor_axis_on_grid_attempts(
+                    gray, fit_axis_ticks(ticks, axis, model="log10"), frame=frame,
+                    orientation=axis, cross_span=span, name=axis,
+                )
+                self.assertEqual({a.source for a in anchored.anchors}, {"gridline"})
+                for anchor in anchored.anchors:
+                    self.assertLess(abs(anchor.served_px - rule[anchor.value]), 0.5, anchor)
+
+    def test_guard_needs_peers_and_an_anomalous_width(self):
+        """Unevaluable: fewer than 4 rules give no chart rule width, and a run
+        only 1 px wider than the median is anti-aliasing: both untouched."""
+        ink = np.zeros((100, 60), dtype=bool)
+        grey = np.full((100, 60), 255, dtype=np.uint8)
+        ink[:, 2:8] = True  # a 6 px run ...
+        ink[90:, 2:6] = False  # ... where the "rule" (rows 6-7) shows alone on 10 positions
+        grey[ink] = 0
+        fused = ObservedLine(4.5, 6, "gridline")
+        peers = [ObservedLine(20.0 + 10 * i, 2, "gridline") for i in range(3)]
+        out = ga._guard_fused_runs([fused, *peers], ink, grey, 0)
+        self.assertEqual([(line.center_px, line.width_px, line.source) for line in out][0], (6.5, 2, "recovered_rule"))
+        self.assertEqual(ga._guard_fused_runs([fused, *peers[:2]], ink, grey, 0), [fused, *peers[:2]])
+        wide3 = [ObservedLine(4.5, 3, "gridline"), *peers]
+        self.assertEqual(ga._guard_fused_runs(wide3, ink, grey, 0), wide3)
 
 
 if __name__ == "__main__":
