@@ -1,8 +1,11 @@
 """Independent-review F01-F12: real producer output and constructed failures."""
 
 import copy
+import json
 import math
+import tempfile
 import unittest
+from pathlib import Path
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -12,6 +15,7 @@ import numpy as np
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer import rdson_gate_voltage_evidence as evidence
+from datasheet_chart_digitizer import rdson_gate_voltage_duplicates as duplicates
 from datasheet_chart_digitizer.rdson_gate_voltage_conditions import typical_temperature_note, pulse_conditions
 from datasheet_chart_digitizer.rdson_gate_voltage_traces import Trace
 from datasheet_chart_digitizer.rdson_spec_table import parse_rdson_spec_rows
@@ -140,7 +144,9 @@ class BatchAllV5Tests(unittest.TestCase):
         self.assertEqual(top['state'],'measured')
         for name,page,figure,axis,value in [('CSD17309Q3_TI',1,'t544','x',10),
                                            ('DMN4008LFG_Diodes',3,'4','y',.005)]:
-            ticks=panel(name,page,figure)['calibration']['printed_tick_evidence'][axis]['ticks']
+            # Page-1 repeats are no longer served, but their extraction and
+            # calibration evidence are still exercised by the capture path.
+            ticks=captured(name,page,figure)['row']['calibration']['printed_tick_evidence'][axis]['ticks']
             tick=next(t for t in ticks if t['value']==value)
             self.assertEqual(tick['state'],'measured')
             self.assertLess(abs(tick['residual_px']),1)
@@ -261,3 +267,237 @@ class BatchAllV5Tests(unittest.TestCase):
         for p in placed:
             x0,y0,x1,y1=p['box_px']
             self.assertFalse(ink[y0:y1+1,x0:x1+1].any())
+
+
+class DuplicateTests(unittest.TestCase):
+    """Real PDF panels; each negative is a named mutation of their evidence."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory(prefix='rds-duplicates-')
+        cls.root = Path(cls.tmp.name)
+        cls.pdf = Path('/Users/fab/dev/ee/solar-charger-eval/ds/CSD17310Q5A_TI.pdf')
+        if not cls.pdf.exists():
+            raise unittest.SkipTest(f'real duplicate PDF missing: {cls.pdf}')
+        located, _, words = rgv.locate_panels(cls.pdf, cls.root/'work')
+        specs = parse_rdson_spec_rows(cls.pdf)
+        cls.original = [rgv.digitize_panel(p, words[(p.page, p.diagram)], specs, cls.root) for p in located]
+        assert len(cls.original) == 2
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def setUp(self):
+        self.a, self.b = copy.deepcopy(self.original)
+
+    def check(self, reason, decision='conflict'):
+        result = duplicates.compare_panels(self.a, self.b, self.root)
+        self.assertEqual(result['decision'], decision, result)
+        self.assertTrue(any(reason in r for r in result['reasons']), result)
+        kept, audit = duplicates.deduplicate_pdf([self.a, self.b], self.pdf, self.root)
+        self.assertEqual(len(kept), 2, audit)
+        self.assertFalse(audit['discarded_duplicates'])
+        return result
+
+    def test_real_pair_keeps_numbered_and_served_data(self):
+        before = copy.deepcopy(self.b)
+        kept, audit = duplicates.deduplicate_pdf([self.a, self.b], self.pdf, self.root)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(kept[0]['diagram'], '7')
+        notes = kept[0].pop('also_printed_at')
+        self.assertEqual(kept[0], before)
+        self.assertEqual((notes[0]['page'], notes[0]['diagram']), (1, 't537'))
+        self.assertGreater(notes[0]['visual_score'], 0.90)
+        self.assertLess(notes[0]['max_value_diff'], 0.005)
+        self.assertEqual(len(audit['discarded_duplicates']), 1)
+        duplicates.write_audit(audit, self.pdf, self.root)
+        persisted = json.loads(next((self.root/'duplicate_checks').glob(f'{self.pdf.name}.*.json')).read_text())
+        self.assertEqual(persisted['discarded_duplicates'], audit['discarded_duplicates'])
+        self.assertEqual(len(persisted['source_sha256']), 64)
+
+    def test_producer_and_cli_record_evidence(self):
+        # Actual production integration and CLI manifest, not just the helper.
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp)
+            self.assertEqual(rgv.main(['--pdf', str(self.pdf), '--out', str(out)]), 0)
+            manifest = json.loads((out/'rdson_gate_voltage.json').read_text())
+        self.assertEqual(len(manifest['panels']), 1)
+        self.assertEqual(len(manifest['discarded_duplicates']), 1)
+        self.assertEqual(manifest['duplicate_checks'][0]['decision'], 'duplicate')
+
+    def test_cross_pdf_identical_plots_kept(self):
+        import rds_digitize_cache as cache
+        names = ['IRLB4132_IFX', 'IRLB8743_IFX']
+        rows = [cache.digitize_pdf(self.pdf.parent/f'{n}.pdf', self.root)[0][0] for n in names]
+        self.assertGreater(duplicates.visual_evidence(*rows, self.root)['visual_score'], 0.999)
+        self.a, self.b = rows
+        self.check('different_pdf', 'distinct')
+
+    def test_real_nonduplicate_plots(self):
+        # Closest genuinely different pair in the 42-panel v5 corpus.
+        # Deliberately place their rows in one document to exercise the visual
+        # gate as well as the separate same-PDF boundary test above.
+        import rds_digitize_cache as cache
+        rows = [cache.digitize_pdf(self.pdf.parent/f'{n}.pdf', self.root)[0][0]
+                for n in ['SIS176LDN_Vishay', 'SISS76LDN_Vishay']]
+        self.a, self.b = rows
+        self.b['pdf'] = self.a['pdf']
+        result = self.check('plot_ink_differs', 'distinct')
+        self.assertLess(result['visual_score'], 0.70)
+
+    def test_changed_plot_keeps_identical_data(self):
+        import cv2
+        bad = copy.deepcopy(self.a)
+        image = cv2.imread(str(self.root/bad['crop_png']))
+        box = bad['plot_box_px']; x0,y0,x1,y1 = [int(box[k]) for k in ('x0','y0','x1','y1')]
+        image[y0:y1, x0:x1] = np.flip(image[y0:y1, x0:x1], axis=1)
+        path = self.root/'reflected.png'; cv2.imwrite(str(path),image)
+        self.b = bad | {'crop_png':path.name, 'page':9}
+        self.check('plot_ink_differs', 'distinct')
+
+    def test_bound_labels(self):
+        for key, value in [('id_a', 21), ('temperature_c', 150), ('temperature_kind', 'Tj')]:
+            with self.subTest(key=key):
+                self.b = copy.deepcopy(self.original[1])
+                self.b['curves'][0][key] = value
+                result = self.check('bound_labels_differ')
+                self.assertGreater(result['visual_score'], 0.9)
+
+    def test_relabelled_real_pdf_is_not_merged(self):
+        import pymupdf
+        pdf = self.root/'relabelled_150C.pdf'
+        with pymupdf.open(self.pdf) as doc:
+            page = doc[0]
+            word = next(w for w in page.get_text('words') if w[4] == '125°C')
+            page.add_redact_annot(pymupdf.Rect(word[:4]), fill=(1,1,1))
+            page.apply_redactions(images=0, graphics=0)
+            page.insert_text((word[0], word[3]-1.5), '150°C', fontsize=6.7)
+            doc.save(pdf, no_new_id=True)
+        audit = {}
+        rows, _ = rgv.digitize_pdf(pdf, self.root/'relabelled', duplicate_audit=audit)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual({c['temperature_c'] for c in rows[0]['curves']}, {25,150})
+        self.assertEqual({c['temperature_c'] for c in rows[1]['curves']}, {25,125})
+        check = audit['duplicate_checks'][0]
+        self.assertGreater(check['visual_score'], 0.90)
+        self.assertEqual(check['decision'], 'conflict')
+        self.assertIn('bound_labels_differ', check['reasons'])
+
+    def test_unbound_labels(self):
+        for key in ['id_a','temperature_c','temperature_kind']:
+            with self.subTest(key=key):
+                self.b = copy.deepcopy(self.original[1]); self.b['curves'][0][key] = None
+                self.check('unbound_', 'unevaluable')
+
+    def test_refused_or_unusable(self):
+        self.b['status'] = 'refused'
+        self.check('panel_refused', 'unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'][0]['usable'] = False
+        self.check('curve_unusable', 'unevaluable')
+
+    def test_status_and_verdict_conflict(self):
+        self.b['status'] = 'ok'; self.check('panel_status_or_verdict')
+        self.b = copy.deepcopy(self.original[1]); self.b['validation']['verdict'] = 'inconsistent'
+        self.check('panel_status_or_verdict')
+
+    def test_calibration_missing_and_unbound(self):
+        self.b.pop('calibration'); self.check('calibration', 'unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['calibration']['grid_binding'] = 'unverified'
+        self.check('calibration_not_bound', 'unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['calibration']['x_axis']['ticks'] = []
+        self.check('too_few_calibration_ticks', 'unevaluable')
+
+    def test_axis_model_ranges_units_and_ticks(self):
+        for key, value, reason in [('model','log10','axis_models'),('m',0.01,'calibrated_ranges')]:
+            self.b = copy.deepcopy(self.original[1]); self.b['calibration']['x_axis'][key] = value
+            self.check(reason)
+        self.b = copy.deepcopy(self.original[1]); self.b['calibration']['x_axis']['ticks'][1]['value'] = 1.1
+        self.check('calibrated_ticks')
+        self.b = copy.deepcopy(self.original[1]); self.b['calibration']['y_to_mohm'] = 1000
+        self.check('axis_units_differ')
+
+    def test_curve_count_and_ambiguity(self):
+        self.b['curves'].pop(); self.check('curve_count')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'][1] = copy.deepcopy(self.b['curves'][0])
+        self.check('ambiguous_curve_identity','unevaluable')
+
+    def test_readout_values_and_states(self):
+        for factor in [1.006, 1.1, 10, 1000000]:
+            self.b = copy.deepcopy(self.original[1])
+            self.b['curves'][0]['readouts'][0]['rds_mohm'] *= factor
+            self.check('curve_or_readout_value')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'][0]['readouts'][0]['status'] = 'not_on_chart'
+        self.check('readout_target_or_state')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'][0]['readouts'] = []
+        self.check('readouts_missing','unevaluable')
+
+    def test_curve_values_all_samples_and_far_tail(self):
+        for index in [0, 18, -1]:
+            for factor in [1.02, 2, 10000]:
+                self.b = copy.deepcopy(self.original[1])
+                self.b['curves'][0]['points'][index][1] *= factor
+                self.check('curve_or_readout_value')
+
+    def test_curve_domain(self):
+        self.b['curves'][0]['points'] = [[x+0.02,y] for x,y in self.b['curves'][0]['points']]
+        self.check('curve_domain')
+
+    def test_sample_count_gaps_and_missing(self):
+        self.b['curves'][0]['points'] = self.b['curves'][0]['points'][:2]
+        self.check('too_few_curve_samples','unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'][0]['gaps'] = [[3,4]]
+        self.check('curve_unusable_or_incomplete','unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['curves'] = []
+        self.check('curves_missing','unevaluable')
+
+    def test_nonfinite_data(self):
+        for value in [float('nan'),float('inf'),float('-inf')]:
+            for where in ['points','readout','axis','label']:
+                self.b = copy.deepcopy(self.original[1])
+                if where == 'points': self.b['curves'][0]['points'][10][1] = value
+                elif where == 'readout': self.b['curves'][0]['readouts'][0]['rds_mohm'] = value
+                elif where == 'axis': self.b['calibration']['x_axis']['m'] = value
+                else: self.b['curves'][0]['id_a'] = value
+                self.check('nonfinite','unevaluable')
+
+    def test_visual_missing_blank_corrupt_and_box(self):
+        import cv2
+        for image in [np.full((900,1200),255,np.uint8),np.zeros((900,1200),np.uint8)]:
+            path = self.root/'blank.png'; cv2.imwrite(str(path),image)
+            self.b = copy.deepcopy(self.original[1]); self.b['crop_png'] = path.name
+            self.check('degenerate_plot_ink','unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['crop_png'] = 'nonexistent.png'
+        self.check('FileNotFoundError','unevaluable')
+        path = self.root/'corrupt.png'; path.write_bytes(b'not an image')
+        self.b['crop_png'] = path.name; self.check('crop_not_decodable','unevaluable')
+        self.b = copy.deepcopy(self.original[1]); self.b['plot_box_px']['x1'] = 10000
+        self.check('plot_box_outside','unevaluable')
+
+    def test_probe_exception_keeps_both(self):
+        with patch.object(duplicates,'visual_evidence',side_effect=RuntimeError('probe failed')):
+            self.check('probe failed','unevaluable')
+
+    def test_resolution_preference_and_deterministic_order(self):
+        self.a['diagram'],self.b['diagram'] = '8','7'
+        kept, _ = duplicates.deduplicate_pdf([self.a,self.b],self.pdf,self.root)
+        self.assertEqual(kept[0]['diagram'],'7')  # larger actual plot box
+        # Equal data/crop/area: deterministic page/figure ordering.
+        a,b = copy.deepcopy(self.original[1]),copy.deepcopy(self.original[1])
+        a['diagram'],b['diagram']='9','8'
+        for rows in [[a,b],[b,a]]:
+            kept,_ = duplicates.deduplicate_pdf(copy.deepcopy(rows),self.pdf,self.root)
+            self.assertEqual(kept[0]['diagram'],'8')
+
+    def test_no_transitive_merge(self):
+        # Real rows with a constructed similarity chain, A~B~C but A!~C.
+        rows = [copy.deepcopy(self.b) | {'diagram':str(i)} for i in range(3)]
+        real_compare = duplicates.compare_panels
+        def compare(a,b,root):
+            result = real_compare(a,b,root)
+            if {a['diagram'],b['diagram']} == {'0','2'}:
+                result['decision'] = 'unevaluable'
+            return result
+        with patch.object(duplicates,'compare_panels',compare):
+            kept,_ = duplicates.deduplicate_pdf(rows,self.pdf,self.root)
+        self.assertEqual(len(kept),2)

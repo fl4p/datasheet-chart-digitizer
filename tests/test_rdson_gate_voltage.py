@@ -533,7 +533,9 @@ class CliTests(unittest.TestCase):
             manifest = json.loads((Path(tmp) / "rdson_gate_voltage.json").read_text())
         self.assertEqual(code, 0)
         self.assertEqual(manifest["kind"], "rds_on_vgs")
-        self.assertEqual(sorted(p["diagram"] for p in manifest["panels"]), ["7", "t519"])
+        self.assertEqual([p["diagram"] for p in manifest["panels"]], ["7"])
+        self.assertEqual(manifest["panels"][0]["also_printed_at"][0]["diagram"], "t519")
+        self.assertEqual(len(manifest["discarded_duplicates"]), 1)
 
 
 # Unpatched originals, captured once so a patch can wrap the real producer.

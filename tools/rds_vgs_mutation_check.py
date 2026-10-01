@@ -43,6 +43,7 @@ from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces
 from datasheet_chart_digitizer import rdson_spec_table as spec
 from datasheet_chart_digitizer import rdson_gate_voltage_conditions as conditions
 from datasheet_chart_digitizer import rdson_gate_voltage_evidence as evidence
+from datasheet_chart_digitizer import rdson_gate_voltage_duplicates as duplicates
 
 import test_rdson_gate_voltage_golden as golden
 import test_rdson_gate_voltage_review as review
@@ -123,7 +124,8 @@ class _source_mutant:
             source = source.replace(old, new)
         scope = dict(vars(module))
         exec(compile(source, f"<mutant {name}>", "exec"), scope)
-        holders = [m for m in (rgv, report, traces, axes, spec, labels, loc, conditions, evidence) if getattr(m, name, None) is original]
+        holders = [m for m in (rgv, report, traces, axes, spec, labels, loc, conditions, evidence, duplicates)
+                   if getattr(m, name, None) is original]
         self._patches = [patch.object(m, name, scope[name]) for m in holders]
         self._stack = None
 
@@ -923,6 +925,72 @@ MUTANTS.update({
         [_source_mutant(rgv, "_digitize", ('if anchor.get("condition_match") == "approximate_drain_current":', 'if False:'))],
         [V5 + "test_f12_approximate_rows_have_panel_reasons"]),
 })
+
+
+# Duplicate selection: one disabled condition per mutant, on real PDF panels
+# or deliberately altered copies of those panels (no fabricated curves).
+_D = "test_rdson_gate_voltage_v5.DuplicateTests."
+for _label, _patch, _test in [
+    ("SCOPE", _source_mutant(duplicates, "compare_panels",
+         ('Path(a["pdf"]).resolve() != Path(b["pdf"]).resolve()', 'False')), "test_cross_pdf_identical_plots_kept"),
+    ("VISUAL", patch.object(duplicates, "VISUAL_MIN", -1.0), "test_changed_plot_keeps_identical_data"),
+    ("VALUES", patch.object(duplicates, "VALUE_REL_TOL", 2.0), "test_curve_values_all_samples_and_far_tail"),
+    ("READOUTS", patch.object(duplicates, "_readout_diff", return_value=0.0), "test_readout_values_and_states"),
+    ("SAMPLE_ALL", patch.object(duplicates, "_directed_value_diff", return_value=0.0), "test_curve_values_all_samples_and_far_tail"),
+    ("X_BOUND", patch.object(duplicates, "X_SPAN_TOL", 1.0), "test_curve_domain"),
+    ("REFUSAL", _source_mutant(duplicates, "data_evidence",
+         ('if any(r.get("status") not in ("ok", "review_required") for r in (a, b)):', 'if False:')),
+         "test_refused_or_unusable"),
+    ("VERDICT", _source_mutant(duplicates, "data_evidence",
+         ('if a["status"] != b["status"] or a["validation"]["verdict"] != b["validation"]["verdict"]:', 'if False:')),
+         "test_status_and_verdict_conflict"),
+    ("GRID", _source_mutant(duplicates, "_axes",
+         ('if cal["grid_binding"] != "snapped_to_full_span_grid":', 'if False:')), "test_calibration_missing_and_unbound"),
+    ("MODEL", _source_mutant(duplicates, "data_evidence", ('if am != bm:', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("RANGES", patch.object(duplicates, "AXIS_RANGE_TOL", 100), "test_axis_model_ranges_units_and_ticks"),
+    ("TICKS", _source_mutant(duplicates, "data_evidence",
+         ('if len(at) != len(bt) or not np.allclose(at, bt, rtol=1e-9, atol=1e-10):', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("UNITS", _source_mutant(duplicates, "data_evidence", ('if sa != sb:', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("COUNT", _source_mutant(duplicates, "data_evidence", ('if len(left) != len(right):', 'if False:')),
+         "test_curve_count_and_ambiguity"),
+    ("AMBIGUITY", _source_mutant(duplicates, "data_evidence",
+         ('if len(lc) != len(left) or len(rc) != len(right):', 'if False:')), "test_curve_count_and_ambiguity"),
+    ("ID", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (0, curve["temperature_c"], curve["temperature_kind"])')), "test_bound_labels"),
+    ("TEMP", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (curve["id_a"], 0, curve["temperature_kind"])')), "test_bound_labels"),
+    ("KIND", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (curve["id_a"], curve["temperature_c"], "ignored")')), "test_bound_labels"),
+    ("BOUND", _source_mutant(duplicates, "_curve_key",
+         ('if curve.get(key) is None or not curve.get("parameter_binding", {}).get(key):', 'if False:')),
+         "test_unbound_labels"),
+    ("FINITE", _source_mutant(duplicates, "_finite", ('if not np.isfinite(result).all():', 'if False:')),
+         "test_nonfinite_data"),
+    ("SAMPLES", patch.object(duplicates, "MIN_SAMPLES", 2), "test_sample_count_gaps_and_missing"),
+    ("GAPS", _source_mutant(duplicates, "_points",
+         ('if not curve["usable"] or curve.get("gaps") or curve.get("untraced_section_reasons"):', 'if False:')),
+         "test_sample_count_gaps_and_missing"),
+    ("BLANK", _source_mutant(duplicates, "_plot_ink",
+         ('if not 0.002 < float(ink.mean()) < 0.8 or float(ink.std()) < 0.01:', 'if False:')),
+         "test_visual_missing_blank_corrupt_and_box"),
+    ("EXCEPTIONS", _source_mutant(duplicates, "compare_panels",
+         ('decision = "unevaluable"', 'decision = "duplicate"')), "test_probe_exception_keeps_both"),
+    ("NUMBERED", _source_mutant(duplicates, "_preference", ('return (not numbered, -area,', 'return (numbered, -area,')),
+         "test_real_pair_keeps_numbered_and_served_data"),
+    ("AREA", _source_mutant(duplicates, "_preference", ('return (not numbered, -area,', 'return (not numbered, area,')),
+         "test_resolution_preference_and_deterministic_order"),
+    ("LINKAGE", _source_mutant(duplicates, "deduplicate_pdf", ('if all(lookup[', 'if any(lookup[')),
+         "test_no_transitive_merge"),
+    ("PRODUCER", _source_mutant(rgv, "digitize_pdf", ('results, audit = deduplicate_pdf(results, pdf, out_dir)',
+         '_, audit = deduplicate_pdf(results, pdf, out_dir)')), "test_producer_and_cli_record_evidence"),
+]:
+    MUTANTS["DUP_" + _label] = ([_patch], [_D + _test])
 
 
 # Mutants that change NO output on any of the 15 real panels (checked by

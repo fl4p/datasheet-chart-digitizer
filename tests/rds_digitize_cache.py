@@ -502,7 +502,8 @@ def _run_capture(pdf: Path, out_dir: Path):
     """
     panels: dict = {}
     current: dict = {}
-    real_curves, real_readouts = rgv._curves, rgv.readouts
+    real_curves, real_readouts, real_panel = rgv._curves, rgv.readouts, rgv.digitize_panel
+    keyed = {}
 
     def curves_spy(traces, calibration, scale, gray=None):
         current.clear()
@@ -518,11 +519,19 @@ def _run_capture(pdf: Path, out_dir: Path):
                                              "gaps": [list(g) for g in gaps or []]})
         return real_readouts(points, log_y, gaps, *args, **kwargs)
 
-    with mock.patch.object(rgv, "_curves", curves_spy), mock.patch.object(rgv, "readouts", readouts_spy):
+    def panel_spy(*args, **kwargs):
+        before = len(panels)
+        row = real_panel(*args, **kwargs)
+        if len(panels) > before:
+            # Bind at extraction, before per-PDF suppression changes the
+            # served list. An index into that list would bind page 1's
+            # calibration/traces to the kept numbered panel.
+            keyed[(row["page"], row["diagram"])] = dict(panels[len(panels)-1], row=row)
+        return row
+
+    with mock.patch.object(rgv, "_curves", curves_spy), mock.patch.object(rgv, "readouts", readouts_spy), \
+            mock.patch.object(rgv, "digitize_panel", panel_spy):
         rows, refusals = rgv.digitize_pdf(pdf, out_dir)
-    keyed = {}
-    for index, row in enumerate(r for r in rows if "curves" in r):
-        keyed[(row["page"], row["diagram"])] = dict(panels[index], row=row)
     return rows, refusals, keyed
 
 

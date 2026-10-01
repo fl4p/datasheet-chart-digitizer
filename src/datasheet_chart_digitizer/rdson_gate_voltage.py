@@ -118,7 +118,7 @@ MAX_PLAUSIBLE_VGS_AXIS_V = 30.0   # beyond any gate rating: a scale misread (e.g
 # --------------------------------------------------------------------------- driver
 
 
-def digitize_pdf(pdf: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
+def digitize_pdf(pdf: Path, out_dir: Path, *, duplicate_audit: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Locate and digitize every owned RDS(VGS) panel in ``pdf``."""
     # Tesseract's multi-threaded LSTM returned different digit readings for the
     # same tick image from run to run (measured on RQ3E180AJ, 2026-09-28);
@@ -136,6 +136,11 @@ def digitize_pdf(pdf: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
             row["rendered_from"] = (f"{source} (upright copy: the PDF stores rotated pages, see "
                                     "rdson_gate_voltage_locate.upright_pdf)")
         results.append(row)
+    from .rdson_gate_voltage_duplicates import deduplicate_pdf, write_audit
+    results, audit = deduplicate_pdf(results, pdf, out_dir)
+    write_audit(audit, pdf, out_dir)
+    if duplicate_audit is not None:
+        duplicate_audit.update(audit)
     return results, [r.to_json() | ({"pdf": str(pdf)} if source != pdf else {}) for r in refusals]
 
 
@@ -1363,23 +1368,27 @@ def main(argv: list[str] | None = None) -> int:
     if not pdfs:
         parser.error("give a charts.json or --pdf")
     args.out.mkdir(parents=True, exist_ok=True)
-    panels, refusals, errors = [], [], []
+    panels, refusals, errors, duplicate_checks, discarded_duplicates = [], [], [], [], []
     for pdf in pdfs:
         print(f"scan {pdf}")
         try:
-            results, refused = digitize_pdf(pdf, args.out)
+            audit = {}
+            results, refused = digitize_pdf(pdf, args.out, duplicate_audit=audit)
         except Exception as error:  # noqa: BLE001 - serialized, not swallowed
             errors.append({"pdf": str(pdf), "error": f"{type(error).__name__}: {error}"})
             print(f"  ERROR {error}")
             continue
         panels.extend(results)
         refusals.extend(refused)
+        duplicate_checks.extend(audit["duplicate_checks"])
+        discarded_duplicates.extend(audit["discarded_duplicates"])
         for result in results:
             print(f"  p{result['page']} fig {result['diagram']}: {result['status']} "
                   f"validation={result.get('validation', {}).get('verdict')} overlay: {args.out / result['overlay']}")
         for refusal in refused:
             print(f"  located-but-refused p{refusal['page']} fig {refusal['diagram']}: {refusal['reason']}")
-    manifest = {"kind": KIND, "panels": panels, "locator_refusals": refusals, "errors": errors}
+    manifest = {"kind": KIND, "panels": panels, "locator_refusals": refusals, "errors": errors,
+                "duplicate_checks": duplicate_checks, "discarded_duplicates": discarded_duplicates}
     path = args.out / "rdson_gate_voltage.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {path}")

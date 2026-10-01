@@ -252,6 +252,14 @@ class EntryTests(unittest.TestCase):
         self.assertEqual(dcache.STATS["memory_hit"] - before["memory_hit"], 1)
         self.assertEqual(dcache.STATS["disk_hit"] - before["disk_hit"], 1)
 
+    def test_capture_binds_both_copies_before_duplicate_selection(self):
+        captured = dcache.captured(FAST_PDF)
+        self.assertEqual(set(captured), {(1, "t519"), (4, "7")})
+        for identity, cap in captured.items():
+            self.assertEqual((cap["row"]["page"], cap["row"]["diagram"]), identity)
+            plot = cap["calibration"].plot
+            self.assertEqual(cap["row"]["plot_box_px"], {k: getattr(plot, k) for k in ("x0", "y0", "x1", "y1")})
+
     def test_corrupt_or_partial_entries_are_recomputed(self):
         dcache.digitize_pdf(FAST_PDF)
         (entry,) = self._entries()
