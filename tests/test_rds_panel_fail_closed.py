@@ -76,3 +76,36 @@ class UnroutedRdsPanelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SubscriptSplitFormulaTests(unittest.TestCase):
+    """ISC040N10NM8 / IPP050N03LF2S Diagram 9 print R_DS(on)=f(T_j) with the
+    subscripts on a lower baseline, just below the panel box."""
+
+    WORDS = [
+        ("T", 174.6, 385.1, 180.0, 401.9), ("j", 180.4, 390.5, 183.0, 402.2),
+        ("[°C]", 185.8, 385.1, 200.0, 401.9),
+        ("R", 45.4, 409.9, 51.0, 425.9), ("DS(on)", 51.6, 416.5, 70.0, 426.5),
+        ("=f(", 71.6, 410.2, 83.0, 425.8), ("T", 83.6, 409.9, 89.0, 425.9),
+        ("j", 89.5, 416.5, 91.0, 426.5), ("),", 91.3, 410.2, 98.0, 425.8),
+        ("I", 99.6, 409.9, 102.0, 425.9), ("D", 102.5, 416.5, 106.0, 426.5),
+        ("=25", 106.8, 410.2, 124.0, 425.8), ("A,", 125.4, 410.2, 135.0, 425.8),
+    ]
+
+    def test_formula_line_reassembles_subscripts(self) -> None:
+        from datasheet_chart_digitizer.find_charts import Word
+
+        words = [Word(*w) for w in self.WORDS]
+        text = rdson_temperature._subscript_merged_formula_text(words, (40, 160, 300, 432))
+        self.assertEqual(text, "R DS(on) =f( T j ), I D =25 A,")
+        self.assertIsNotNone(rdson_temperature._RDS_TEMPERATURE_FORMULA_RE.search(text))
+
+    def test_isc040_diagram9_is_digitized_not_dropped(self) -> None:
+        if not ISC040.exists():
+            self.skipTest(f"missing local corpus fixture: {ISC040}")
+        with tempfile.TemporaryDirectory() as tmp:
+            results, errors = rdson_temperature.digitize_pdf_fail_closed(ISC040, Path(tmp), dpi=180)
+        d9 = [r for r in results if (r["panel"]["page"], r["panel"]["diagram"]) == (9, 9)]
+        self.assertEqual(len(d9), 1, errors)
+        self.assertIn("=f(", d9[0]["panel"]["formula"])
+        self.assertFalse(any(e.get("reason") == rdson_temperature.PANEL_OWNERSHIP_UNPROVEN for e in errors))
