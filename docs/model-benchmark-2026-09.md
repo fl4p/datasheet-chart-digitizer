@@ -140,5 +140,6 @@ inconsistently (STK295N10F8AG).
 - **Different harnesses.** GPT-6 Sol and Luna ran via pi, while Astra ran via codex.
 - **Visible part numbers.** The part number is visible in the images. No model had network
   access to look it up, per the audit.
-- **Known dsdig issue.** On 7 Infineon vendor-set charts, dsdig's `gridline_anchor` registers
-  the y axis one grid pitch (~27 px) off. This is not yet fixed.
+- **Fixed dsdig issue.** On 7 Infineon vendor-set charts, dsdig's `gridline_anchor` registered
+  the y axis one grid pitch (~27 px) off. Fixed on 2026-10-01 (`fix/gridline-one-pitch`): 6
+  now land within 0.13 px, and ISC058N04NM5 is refused (a curve merges with its 0 A rule).
