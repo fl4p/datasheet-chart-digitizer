@@ -38,9 +38,14 @@ from .rdson_temperature import (
     DIAG_NO_FULL_SPAN_CURVE,
     PanelCalibration,
     _digitize_rds_panel,
+    _rdson_temperature_titles,
     _rdson_titles_matching,
     _vgs_label_rows,
 )
+
+# A finder ``rds_on`` panel that no RDS(on) digitizer owns.  Reported as an
+# explicit refusal so a supported-class chart never vanishes without a status.
+UNROUTED_RDS_PANEL = "rds_on_panel_not_routed_to_any_rdson_digitizer"
 
 MIN_CURRENT_SPAN_FRACTION = 0.70
 MIN_RDS_SPAN_FRACTION = 0.20
@@ -84,8 +89,11 @@ def _digitize_pdf(
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     results: list[dict[str, object]] = []
     errors: list[dict[str, object]] = []
+    unrouted: list[ChartPanel] = []
     for panel in process_pdf(pdf, out_dir, dpi):
         if not _is_rdson_current_panel(panel):
+            if panel.kind == "rds_on":
+                unrouted.append(panel)
             continue
         try:
             crop_path = out_dir / panel.crop_png
@@ -120,9 +128,79 @@ def _digitize_pdf(
                 "diagram": panel.diagram,
                 "error": str(error),
             })
+    if fail_closed and unrouted:
+        errors.extend(_unrouted_rds_panel_refusals(pdf, unrouted))
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "rdson_current.json").write_text(json.dumps(results, indent=2) + "\n")
     return results, errors
+
+
+def _caption_claims_panel(
+    number: object, bbox_pt: tuple[float, float, float, float], panel: ChartPanel
+) -> bool:
+    """A sibling digitizer's caption that names this finder panel."""
+    if str(number) == str(panel.diagram):
+        return True
+    x0, y0, x1, y1 = panel.crop_box_pt
+    cx = 0.5 * (bbox_pt[0] + bbox_pt[2])
+    cy = 0.5 * (bbox_pt[1] + bbox_pt[3])
+    return x0 - 8.0 <= cx <= x1 + 8.0 and y0 - 40.0 <= cy <= y1 + 40.0
+
+
+def _unrouted_rds_panel_refusals(
+    pdf: Path, panels: list[ChartPanel]
+) -> list[dict[str, object]]:
+    """Refusal records for finder RDS(on) panels no sibling digitizer owns.
+
+    The siblings are RDS(on) vs Tj (``rdson_temperature``, which runs its own
+    caption search on the page and reports its own refusals) and RDS(on) vs
+    VGS (``digitize-rds-vgs``).  A panel either of them names is theirs; any
+    other ``rds_on`` panel was previously dropped with no result and no
+    refusal (LSIC1MO120E0160 p5 Figure 11, a normalized RDS(on) vs I_D chart).
+    """
+    from .rdson_gate_voltage_locate import RDS_VGS_TITLE_RE, find_rds_vgs_captions
+
+    pages = {page.page_num: page for page in run_text_bbox(pdf)}
+    refusals: list[dict[str, object]] = []
+    for panel in panels:
+        page = pages.get(panel.page)
+        title = normalize_dashes(panel.title)
+        claimed_by = None
+        if page is not None and any(
+            _caption_claims_panel(t.number, t.bbox_pt, panel)
+            for t in _rdson_temperature_titles(page)
+        ):
+            claimed_by = "rds_on_temperature"
+        elif RDS_VGS_TITLE_RE.search(title) or (
+            page is not None
+            and any(
+                _caption_claims_panel(c.number, c.bbox_pt, panel)
+                for c in find_rds_vgs_captions(page)
+            )
+        ):
+            claimed_by = "rds_on_gate_voltage"
+        if claimed_by is not None:
+            continue
+        owned = " ".join((panel.title, panel.formula, panel.text)).lower()
+        if _rdson_current_direction_is_evidenced(panel) and "normalized" in owned:
+            reason = (
+                "normalized RDS(on) vs I_D: dsdig has no normalized RDS(on)(I_D) "
+                "digitizer (the mOhm RDS(on)(I_D) plugin refuses normalized axes)"
+            )
+        else:
+            reason = (
+                "not owned by the RDS(on)(I_D) or RDS(on)(Tj) digitizers and not "
+                "named by a digitize-rds-vgs caption"
+            )
+        refusals.append({
+            "kind": "rds_on_current",
+            "page": panel.page,
+            "diagram": panel.diagram,
+            "status": "refused",
+            "reason": UNROUTED_RDS_PANEL,
+            "error": f"{UNROUTED_RDS_PANEL}: {reason} (title {panel.title!r})",
+        })
+    return refusals
 
 
 def _rdson_current_titles(page: PageText) -> list[DiagramTitle]:

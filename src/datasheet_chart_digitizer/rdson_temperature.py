@@ -91,6 +91,7 @@ DIAG_LEGEND_TRACE_MISMATCH = "legend_trace_style_mismatch"
 DIAG_ABSOLUTE_LIMIT_LABELS = "absolute_rds_typ_max_labels_unverified"
 DIAG_ABSOLUTE_LIMIT_ORDER = "absolute_rds_typ_max_curve_order_unverified"
 DIAG_ABSOLUTE_SPAN = "absolute_rds_span_below_threshold"
+PANEL_OWNERSHIP_UNPROVEN = "rdson_temperature_panel_ownership_unproven"
 
 _RDS_TITLE_RE = re.compile(
     r"(?:normalized\s+(?:drain(?:-|\s+to\s+)source\s+)?)?"
@@ -241,6 +242,22 @@ def _digitize_rds_family(
                         pdf, out_dir, page, page_png, title, crop_group=crop_group
                     )
                     if panel_selector is not None and not panel_selector(panel):
+                        # A caption this family matched must not vanish: the
+                        # refusal is the status (fail-closed *visible*).
+                        if errors is not None:
+                            errors.append({
+                                "kind": error_kind,
+                                "page": page.page_num,
+                                "diagram": title.number,
+                                "status": "refused",
+                                "reason": PANEL_OWNERSHIP_UNPROVEN,
+                                "error": (
+                                    f"{PANEL_OWNERSHIP_UNPROVEN}: caption "
+                                    f"{title.title!r} matched, but the panel lacks "
+                                    "owned direction evidence (title, Tj axis or "
+                                    "RDS(on)=f(Tj) formula)"
+                                ),
+                            })
                         continue
                     calibration = calibrate_panel(panel, crop_path, region)
                     results.append(_digitize_rds_panel(

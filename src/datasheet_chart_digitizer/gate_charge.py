@@ -257,6 +257,14 @@ def digitize_gate_charge(
                             result = ocr_result
                 if result is not None:
                     results.append(enforce_curve_provenance(pdf, result))
+                elif _errors is not None:
+                    # a finder gate-charge panel never vanishes without a status
+                    _errors.append({
+                        "kind": "gate_charge",
+                        "page": panel.page,
+                        "diagram": panel.diagram,
+                        "error": "gate-charge digitizer produced no result for this panel",
+                    })
             except Exception as error:
                 if _errors is None:
                     raise
