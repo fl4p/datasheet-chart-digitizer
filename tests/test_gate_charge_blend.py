@@ -16,6 +16,8 @@ from datasheet_chart_digitizer.gate_charge_blend import BLEND_DIAGNOSTIC, served
 
 IPB180 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/infineon/IPB180N04S401ATMA1.pdf")
 ISC040 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/infineon/ISC040N10NM8.pdf")
+FDP16 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/onsemi/FDP16AN08A0.pdf")
+PSMN5R3 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/nxp/PSMN5R3-25MLD.pdf")
 
 
 def _pt(x, y):
@@ -95,6 +97,27 @@ class GateChargeBlendEndToEndTests(unittest.TestCase):
                    if (r.panel.page, r.panel.diagram) == (10, 15)]
         self.assertEqual(len(results), 1)
         self.assertNotIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
+
+    def test_raster_trace_in_an_outlined_stroke_is_not_measured(self) -> None:
+        # FDP16AN08A0 Figure 14 draws thick curves as outlined shapes; the
+        # raster trace in the band centre is on the ink, 2-3 px from both
+        # outlines. Only vector-tracer output is checked.
+        if not FDP16.exists():
+            self.skipTest(f"missing local corpus fixture: {FDP16}")
+        results = [r for r in digitize_gate_charge(FDP16, dpi=220, finder_dpi=220)
+                   if (r.panel.page, r.panel.diagram) == (5, 14)]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0].trace_source, "raster")
+        self.assertNotIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
+
+    def test_psmn5r3_median_between_vds_curves_is_not_served(self) -> None:
+        # Fab's HV set: the vector median runs between the 12 V and 20 V strokes.
+        if not PSMN5R3.exists():
+            self.skipTest(f"missing local corpus fixture: {PSMN5R3}")
+        results = [r for r in digitize_gate_charge(PSMN5R3, dpi=220, finder_dpi=220)
+                   if (r.panel.page, r.panel.diagram) == (8, 12)]
+        self.assertEqual(len(results), 1)
+        self.assertIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
 
 
 if __name__ == "__main__":

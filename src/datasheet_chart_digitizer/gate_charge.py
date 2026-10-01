@@ -764,9 +764,15 @@ def _digitize_panel(
     )
     # A trace between two source strokes (the median of a multi-curve vector
     # component) is on neither curve: never served (IPB180N04S4 Figure 15).
-    # Applies only where the vector tracer itself found a gate curve in the
-    # plot (a panel property): frame fragments on a raster chart do not count.
-    blend = served_curve_blend(page, crop_rect, scale, plot_box, curve) if vector_curve else None
+    # Applies to traces the vector tracer produced (its per-column median is
+    # the blending mechanism). A raster trace is not measured against vector
+    # strokes: FDP16AN08A0 draws each thick curve as an outlined shape, and
+    # its correct centre-of-band raster trace sits 2-3 px from both outlines.
+    blend = (
+        served_curve_blend(page, crop_rect, scale, plot_box, curve)
+        if vector_curve and trace_source == "vector"
+        else None
+    )
     blended_trace = blend is not None and blend.blended
     if blended_trace:
         diagnostics.append(BLEND_DIAGNOSTIC)
