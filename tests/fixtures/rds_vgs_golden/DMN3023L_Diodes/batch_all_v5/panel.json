@@ -1,0 +1,206 @@
+{
+ "part": "DMN3023L_Diodes",
+ "pdf_name": "DMN3023L_Diodes.pdf",
+ "pdf_sha256": "4e3cc6c0827092e2e65396b80b7bdfb3b8e992dffc7287186bc70877692c3506",
+ "page": 3,
+ "diagram": "4",
+ "title": "Typical Transfer Characteristic",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 4.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 3.5,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 2.5,
+   "id_a": 2.5,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_coincident_with_curve_1 (4.02..7.30 V, median separation 0.69 px, max 0.75 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_coincident_with_curve_1 (8.35..20.00 V, median separation 0.50 px, max 0.75 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_1_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_0_exceeds_table_max_at_2.5V (curve 0 exceeds table max at the table's VGS (76.6 > 68 mOhm at 2.5 V); temperature binding unknown; chart ID 4 A vs table ID 2.5 A)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 1004,
+  "y1": 708
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.026246719160104987,
+   "b": -6.351706036745407,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 318.2
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 394.4
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 470.6
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 546.8
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 622.9999999999999
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 699.1999999999999
+    },
+    {
+     "text": "14",
+     "value": 14.0,
+     "pixel": 775.4
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 851.5999999999999
+    },
+    {
+     "text": "18",
+     "value": 18.0,
+     "pixel": 927.8
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 1004.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.00015197568389057752,
+   "b": 0.10759878419452888,
+   "ticks": [
+    {
+     "text": "0.1",
+     "value": 0.1,
+     "pixel": 50.00000000000001
+    },
+    {
+     "text": "0.08",
+     "value": 0.08,
+     "pixel": 181.60000000000002
+    },
+    {
+     "text": "0.06",
+     "value": 0.06,
+     "pixel": 313.20000000000005
+    },
+    {
+     "text": "0.04",
+     "value": 0.04,
+     "pixel": 444.80000000000007
+    },
+    {
+     "text": "0.02",
+     "value": 0.02,
+     "pixel": 576.4
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 708.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "ID=4A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 4.0,
+   "usable": true,
+   "n_points": 1204,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 76.6322,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 24.0931,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 20.4086,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "ID=3.5A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 3.5,
+   "usable": true,
+   "n_points": 1203,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 60.9615,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 23.9454,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 20.3,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

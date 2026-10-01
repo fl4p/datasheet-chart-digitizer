@@ -1,0 +1,143 @@
+{
+ "part": "DMT6009LCT_Diodes",
+ "pdf_name": "DMT6009LCT_Diodes.pdf",
+ "pdf_sha256": "76da0c5a756ab269c3b3b60e0926b364d710ff9c69883d37e88e665283caf993",
+ "page": 3,
+ "diagram": "4",
+ "title": "Typical Transfer Characteristic",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 13.5,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 11.5,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_temperature_c_unknown (no temperature label read on the panel or page)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 1053,
+  "y1": 634
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.02466091245376079,
+   "b": -5.967940813810111,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 404.2
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 566.4
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 728.5999999999999
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 890.8
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 1053.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.00017123287671232877,
+   "b": 0.10856164383561645,
+   "ticks": [
+    {
+     "text": "0.1",
+     "value": 0.1,
+     "pixel": 50.000000000000036
+    },
+    {
+     "text": "0.08",
+     "value": 0.08,
+     "pixel": 166.80000000000007
+    },
+    {
+     "text": "0.06",
+     "value": 0.06,
+     "pixel": 283.6000000000001
+    },
+    {
+     "text": "0.04",
+     "value": 0.04,
+     "pixel": 400.40000000000003
+    },
+    {
+     "text": "0.02",
+     "value": 0.02,
+     "pixel": 517.2
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 634.0000000000001
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "ID=13.5A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 13.5,
+   "usable": true,
+   "n_points": 1256,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 13.0659,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 9.1232,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

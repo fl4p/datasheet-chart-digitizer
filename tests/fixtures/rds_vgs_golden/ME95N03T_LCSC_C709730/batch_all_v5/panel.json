@@ -1,0 +1,121 @@
+{
+ "part": "ME95N03T_LCSC_C709730",
+ "pdf_name": "ME95N03T_LCSC_C709730.pdf",
+ "pdf_sha256": "84a3a6510f037e39057239d0bac57665b7ba13857d50cf3e218e99f6bd385399",
+ "page": 3,
+ "diagram": "t344",
+ "title": "On-Resistance vs. Gate-to-Source Voltage",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 50.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 35.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "x_axis_printed_rule_residual_4.800px: single linear map does not seat every printed tick",
+  "y_axis_printed_rule_residual_1.501px: single linear map does not seat every printed tick",
+  "validation_condition_assumption: chart Tj taken as table Ta (both 25 C); equivalence not established by the datasheet",
+  "curve_0_readout_outside_calibrated_span (4.5 V: y 0.008084 beyond the used ticks (0.00998838..0.0399825); NOT anchored (frame edge 736 px is 2.00 px off the fitted lattice))",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "raster",
+ "plot_box_px": {
+  "x0": 248,
+  "y0": 51,
+  "x1": 1014,
+  "y1": 736
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.013054830287206266,
+   "b": -3.237597911227154,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 248.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 554.0
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 1014.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -5.8240999696414156e-05,
+   "b": 0.04295278815641964,
+   "ticks": [
+    {
+     "text": "0.04",
+     "value": 0.04,
+     "pixel": 51.0
+    },
+    {
+     "text": "0.03",
+     "value": 0.03,
+     "pixel": 222.0
+    },
+    {
+     "text": "0.02",
+     "value": 0.02,
+     "pixel": 394.0
+    },
+    {
+     "text": "0.01",
+     "value": 0.01,
+     "pixel": 566.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tj=25C, ID=50A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tj",
+   "id_a": 50.0,
+   "usable": true,
+   "n_points": 481,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 8.0839,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,167 @@
+{
+ "part": "SISS76LDN_Vishay",
+ "pdf_name": "SISS76LDN_Vishay.pdf",
+ "pdf_sha256": "8c15ed3c0d2e7ca97337bfa332afe92936aa6e9f4d82bab069609095c39a3817",
+ "page": 4,
+ "diagram": "t491",
+ "title": "On-Resistance vs. Gate-to-Source Voltage",
+ "status": "ok",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 4.5,
+   "id_a": 10.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 5.2338
+  },
+  {
+   "vgs_v": 3.3,
+   "id_a": 10.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 5.9033
+  }
+ ],
+ "reasons_at_freeze": [],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 857,
+  "y1": 607
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.008130081300813009,
+   "b": -1.9674796747967482,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.0
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 365.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 488.0
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 611.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 734.0
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 856.9999999999999
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -5.385996409335727e-05,
+   "b": 0.03269299820466786,
+   "ticks": [
+    {
+     "text": "0.03",
+     "value": 0.03,
+     "pixel": 49.99999999999995
+    },
+    {
+     "text": "0.024",
+     "value": 0.024,
+     "pixel": 161.39999999999992
+    },
+    {
+     "text": "0.018",
+     "value": 0.018,
+     "pixel": 272.79999999999995
+    },
+    {
+     "text": "0.012",
+     "value": 0.012,
+     "pixel": 384.19999999999993
+    },
+    {
+     "text": "0.006",
+     "value": 0.006,
+     "pixel": 495.59999999999997
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 606.9999999999999
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tj=125C, ID=10A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tj",
+   "id_a": 10.0,
+   "usable": true,
+   "n_points": 810,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 11.9894,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 10.02,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 9.1171,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tj=25C, ID=10A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tj",
+   "id_a": 10.0,
+   "usable": true,
+   "n_points": 872,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 7.8726,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 5.9033,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 5.2338,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,218 @@
+{
+ "part": "IRLTS6342_IFX",
+ "pdf_name": "IRLTS6342_IFX.pdf",
+ "pdf_sha256": "2c6b3597d13fe215891331be313d6604179243a06e8bdc1aff3e691b9ad9dcbb",
+ "page": 5,
+ "diagram": "12",
+ "title": "On-Resistance vs. Gate Voltage",
+ "status": "review_required",
+ "validation_verdict": "consistent_at_approximate_conditions",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 4.5,
+   "id_a": 8.3,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 11.3217
+  },
+  {
+   "vgs_v": 2.5,
+   "id_a": 6.7,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 15.4375
+  }
+ ],
+ "reasons_at_freeze": [
+  "x_axis_printed_rule_residual_1.273px: single linear map does not seat every printed tick",
+  "y_axis_printed_rule_residual_2.000px: single linear map does not seat every printed tick",
+  "approximate_current_anchor_at_4.5V: chart 8 A vs table 8.3 A",
+  "approximate_current_anchor_at_2.5V: chart 8 A vs table 6.7 A",
+  "validation_consistent_at_approximate_conditions"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 246,
+  "y0": 50,
+  "x1": 936,
+  "y1": 738
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.015942028985507246,
+   "b": -2.9217391304347826,
+   "ticks": [
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 246.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 308.72727272727275
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 371.4545454545455
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 434.1818181818182
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 496.90909090909093
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 559.6363636363637
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 622.3636363636365
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 685.0909090909091
+    },
+    {
+     "text": "9",
+     "value": 9.0,
+     "pixel": 747.8181818181819
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 810.5454545454546
+    },
+    {
+     "text": "11",
+     "value": 11.0,
+     "pixel": 873.2727272727274
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 936.0000000000001
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.05813953488372093,
+   "b": 47.906976744186046,
+   "ticks": [
+    {
+     "text": "45",
+     "value": 45.0,
+     "pixel": 50.0
+    },
+    {
+     "text": "40",
+     "value": 40.0,
+     "pixel": 136.0
+    },
+    {
+     "text": "35",
+     "value": 35.0,
+     "pixel": 222.0
+    },
+    {
+     "text": "30",
+     "value": 30.0,
+     "pixel": 308.0
+    },
+    {
+     "text": "25",
+     "value": 25.0,
+     "pixel": 394.0
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 480.0
+    },
+    {
+     "text": "15",
+     "value": 15.0,
+     "pixel": 566.0
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 652.0
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 738.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tj=125C, ID=8A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tj",
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 950,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 27.6268,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 24.1894,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 22.3948,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tj=25C, ID=8A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tj",
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 896,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 15.4375,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 12.549,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 11.3217,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}
