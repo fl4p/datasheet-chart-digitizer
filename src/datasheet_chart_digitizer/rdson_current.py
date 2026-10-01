@@ -30,6 +30,7 @@ from .find_charts import (
 from . import served_axis_guard
 from .finder_caption_geometry import page_vector_plot_frames
 from .chart_classifier import rdson_formula_direction
+from .text_dashes import normalize_dashes
 from .numeric_axis import AxisTick, NumericAxis
 from .overlay import draw_axis_ticks, draw_plot_frame
 from .rdson_temperature import (
@@ -163,7 +164,7 @@ def _rdson_current_direction_is_evidenced(
         return False
     local = local_axis_text if local_axis_text is not None else _local_axis_text(panel)
     if (
-        _RDS_CURRENT_TITLE_RE.search(panel.title)
+        _RDS_CURRENT_TITLE_RE.search(normalize_dashes(panel.title))
         or _RDS_CURRENT_FORMULA_RE.search(panel.formula)
         or _RDS_CURRENT_FORMULA_RE.search(local)
         or rdson_formula_direction(panel.title) == "current"

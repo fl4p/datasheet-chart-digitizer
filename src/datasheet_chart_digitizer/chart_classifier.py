@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 
+from .text_dashes import normalize_dashes
+
 
 CAPACITANCE_WORDS = {"ciss", "coss", "crss", "capacitance", "capacitances"}
 
 
 def _normalized_chart_text(text: str) -> str:
-    normalized = text.lower().replace("‑", "-").replace("–", "-")
+    normalized = normalize_dashes(text.lower())
     normalized = re.sub(r"[-_/]+", " ", normalized)
     return re.sub(r"\s+", " ", normalized).strip()
 

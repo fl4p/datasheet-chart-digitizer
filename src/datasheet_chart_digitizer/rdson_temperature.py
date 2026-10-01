@@ -29,6 +29,7 @@ from .capacitance_vector import (
 )
 from .crop_transform import CropTransform
 from .chart_classifier import is_rdson_chart_title, rdson_formula_direction
+from .text_dashes import normalize_dashes
 from .diode_forward_voltage import (
     TextLabel,
     _full_span_grid_lines,
@@ -431,7 +432,7 @@ def _rdson_temperature_titles(page: PageText) -> list[DiagramTitle]:
         title
         for title in _rdson_titles_matching(page, _RDS_NORMALIZED_TITLE_STEM_RE)
         if title.number < 9000
-        and _RDS_DIRECTION_CLAUSE_RE.search(title.title) is None
+        and _RDS_DIRECTION_CLAUSE_RE.search(normalize_dashes(title.title)) is None
     ]
     relaxed.extend(
         title for title in find_caption_titles(page)
@@ -453,15 +454,16 @@ def _rdson_temperature_panel_owned(panel: ChartPanel) -> bool:
 
     if panel.kind != "rds_on":
         return False
-    if _RDS_TITLE_RE.search(panel.title):
+    title = normalize_dashes(panel.title)
+    if _RDS_TITLE_RE.search(title):
         return True
-    if rdson_formula_direction(panel.title) == "temperature":
+    if rdson_formula_direction(title) == "temperature":
         return True
     if _RDS_TEMPERATURE_FORMULA_RE.search(panel.text):
         return True
-    local = panel.text.replace("º", "°")
+    local = normalize_dashes(panel.text.replace("º", "°"))
     return bool(
-        _RDS_NORMALIZED_TITLE_STEM_RE.search(panel.title)
+        _RDS_NORMALIZED_TITLE_STEM_RE.search(title)
         and _TEMPERATURE_AXIS_RE.search(local)
         and _RDS_TEMPERATURE_FORMULA_RE.search(local)
     )
@@ -519,7 +521,7 @@ def _rdson_titles_matching(
         for start, end in zip(starts, starts[1:]):
             segment = line[start:end]
             segment_bbox = line_bbox(segment)
-            text = line_text(segment)
+            text = normalize_dashes(line_text(segment))
             match = re.match(
                 r"(?i)^(?:Figure|Fig\.?|Diagram)\s+(\d+(?:[.-]\d+)?)[\.:]?\s+(.+)$",
                 text,
@@ -546,9 +548,9 @@ def _rdson_titles_matching(
                             max(segment_bbox[2], local_bbox[2]),
                             local_bbox[3],
                         )
-                text = " ".join(
+                text = normalize_dashes(" ".join(
                     filter(None, (line_text(segment), line_text(continuation)))
-                )
+                ))
                 match = re.match(
                     r"(?i)^(?:Figure|Fig\.?|Diagram)\s+(\d+(?:[.-]\d+)?)[\.:]?\s+(.+)$",
                     text,
@@ -583,7 +585,7 @@ def _rdson_titles_matching(
             ]
             if not local:
                 continue
-            text = line_text(local).strip()
+            text = normalize_dashes(line_text(local).strip())
             if title_pattern.fullmatch(text) is None:
                 continue
             bbox = line_bbox(local)
@@ -651,7 +653,7 @@ def _build_panel(
     formula_direction, formula_side = _nearby_rdson_formula_evidence(page, title)
     if direction is None and formula_direction is not None:
         direction = formula_side
-    if direction is None and _RDS_NORMALIZED_TITLE_STEM_RE.search(title.title):
+    if direction is None and _RDS_NORMALIZED_TITLE_STEM_RE.search(normalize_dashes(title.title)):
         for region in candidates:
             if region[1] < title.bbox_pt[3]:
                 continue
@@ -1361,7 +1363,7 @@ def _absolute_validation_reasons(
     x_ticks = [tick.value for tick in calibration.x_axis.ticks]
     y_ticks = [tick.value for tick in calibration.y_axis.ticks]
     title_identity = bool(
-        _RDS_TITLE_RE.search(panel.title)
+        _RDS_TITLE_RE.search(normalize_dashes(panel.title))
         or _RDS_TEMPERATURE_FORMULA_RE.search(panel.text)
     )
     if not (
@@ -1414,7 +1416,7 @@ def _validation_reasons(
     x_ticks = [tick.value for tick in calibration.x_axis.ticks]
     y_ticks = [tick.value for tick in calibration.y_axis.ticks]
     title_identity = bool(
-        _RDS_TITLE_RE.search(panel.title)
+        _RDS_TITLE_RE.search(normalize_dashes(panel.title))
         or _RDS_TEMPERATURE_FORMULA_RE.search(panel.text)
     )
     if not (

@@ -41,6 +41,7 @@ from .find_charts import (
 from .finder_caption_geometry import bbox_iou, page_vector_plot_frames
 from .finder_text_ocr import page_text_from_tesseract_tsv, tesseract_tsv
 from .finder_types import Word
+from .text_dashes import normalize_dashes
 
 BBox = tuple[float, float, float, float]
 
@@ -446,9 +447,6 @@ def caption_names_both_axes(title: str) -> bool:
     return _BOTH_AXES_CAPTION_RE.match(normalize_dashes(title)) is not None
 
 
-def normalize_dashes(text: str) -> str:
-    """Fold typographic hyphens/minus signs (U+2010..U+2015, U+2212) to '-'."""
-    return re.sub(r"[\u2010-\u2015\u2212]", "-", text)
 
 
 class LocateError(RuntimeError):

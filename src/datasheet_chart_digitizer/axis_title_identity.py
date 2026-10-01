@@ -19,6 +19,8 @@ import re
 
 import pymupdf
 
+from .text_dashes import normalize_dashes
+
 _BODY_DIODE_X_EXPECT = re.compile(r"V\s*_?\s*(SD|DS\s*\(?\s*F|F\b)|source\s*[-‐–]?\s*(to\s*[-‐–]?\s*)?drain|forward|diode", re.I)
 _BODY_DIODE_X_OTHER = re.compile(r"V\s*_?\s*GS\b|gate", re.I)
 _BODY_DIODE_Y_EXPECT = re.compile(r"I\s*_?\s*(S|F|SD)\b|source\s+current|reverse|diode|forward", re.I)
@@ -41,6 +43,7 @@ def title_band_texts(pdf: str, page: int, plot: tuple[float, float, float, float
 def body_diode_title_contradiction(x_text: str, y_text: str) -> str | None:
     """Reason the titles name a non-body-diode chart, or None (includes unevaluated)."""
 
+    x_text, y_text = normalize_dashes(x_text), normalize_dashes(y_text)
     reasons = []
     if _BODY_DIODE_X_OTHER.search(x_text) and not _BODY_DIODE_X_EXPECT.search(x_text):
         reasons.append(f"x title {x_text.strip()[:40]!r}")
