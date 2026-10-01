@@ -91,6 +91,39 @@ def _is_reverse_leakage_chart_text(text: str) -> bool:
     return "reverse current" in text and "reverse voltage" in text
 
 
+# Semiconductor capacitance identity: device capacitances or a drain / gate /
+# collector voltage axis.  Any of these keeps a chart a MOSFET/IGBT family.
+_SEMICONDUCTOR_CAPACITANCE_RE = re.compile(
+    r"\b(?:ciss|coss|crss|cies|coes|cres|cgs|cgd|cds|qoss|eoss)\b"
+    r"|\b[cq]\s?(?:iss|oss|rss|ies|oes|res)\b"
+    r"|input capacitance|output capacitance|reverse transfer capacitance"
+    r"|\bdrain\b|\bgate\b|\bcollector\b|\bv\s?ds\b|\bv\s?ce\b|\bv\s?r\b"
+    r"|reverse voltage|junction capacitance"
+)
+# Passive-capacitor (MLCC) chart vocabulary: capacitance against frequency,
+# temperature, DC/AC bias, or a capacitance-change percentage axis.
+_MLCC_CAPACITANCE_RE = re.compile(
+    r"\bfreq\b|\bfrequency\b|\btemp\b|\bdc bias\b|\bac voltage\b|\bbias\b"
+    r"|\bdc\s?c\b|capacitance change|\bimpedance\b|\besr\b"
+    r"|capacitance\s*\[\s*(?:u|µ|μ)f\s*\]"
+)
+
+
+def is_mlcc_capacitance_text(normalized: str) -> bool:
+    """A passive capacitor's capacitance chart, not a MOSFET capacitance panel.
+
+    Taiyo Yuden MLCC sheets title their charts "Capacitance Freq." and
+    "Capacitance Temp." (axes "Capacitance[uF]", "dC/C[%]"); the generic
+    capacitance-word test filed all of them as MOSFET ``capacitances``.  Both
+    conditions are required, so a MOSFET chart that names a device
+    capacitance or a drain/gate voltage is never re-filed.
+    """
+    return (
+        _MLCC_CAPACITANCE_RE.search(normalized) is not None
+        and _SEMICONDUCTOR_CAPACITANCE_RE.search(normalized) is None
+    )
+
+
 def strong_noncapacitance_panel_kind(text: str) -> str | None:
     """Return a contradictory owned family only from decisive panel semantics."""
     normalized = _normalized_chart_text(text)
@@ -217,6 +250,8 @@ def classify_chart(title: str, text: str) -> str:
         return owned_noncapacitance
     haystack = _normalized_chart_text(f"{title} {text}")
     if any(word in haystack for word in CAPACITANCE_WORDS):
+        if is_mlcc_capacitance_text(haystack):
+            return "mlcc_capacitance"
         return "capacitances"
     if "gate charge" in haystack or "dynamic input output" in haystack:
         return "gate_charge"
