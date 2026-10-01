@@ -34,6 +34,7 @@ the raster:
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import dataclass
 from typing import Literal, Sequence
 
@@ -95,6 +96,18 @@ _BROKEN_RULE_MIN_COVERAGE = 0.20
 # bins only, however dark it is.
 _BROKEN_RULE_BINS = 16
 _BROKEN_RULE_MIN_BIN_SHARE = 0.9
+# A curve running a few pixels beside a rule merges with it into one wide run
+# (Infineon ISC058N04NM5 output chart: the 4 V curve 3 px above the 0 A rule
+# gives a 6 px run centred 2 px off the rule). Only a run anomalously wide
+# against the chart's other rules (at least this many px wider than their
+# median width, and at least twice it, with at least
+# _MERGED_RUN_MIN_PEERS other rules to measure that median) is examined ...
+_MERGED_RUN_EXTRA_PX = 3
+_MERGED_RUN_MIN_PEERS = 3
+# ... and it is split only where its coverage dips to at most this fraction of
+# the LOWER of the two peaks either side: the paper showing through between two
+# separate strokes. ISC058N04NM5: dip 0.53 between peaks 0.94 / 1.00 (0.56).
+_MERGED_RUN_DIP_FRACTION = 0.65
 
 
 class AmbiguousRegistration(RuntimeError):
@@ -105,7 +118,7 @@ class AmbiguousRegistration(RuntimeError):
 class ObservedLine:
     center_px: float
     width_px: int
-    source: str  # "gridline" or "tick_mark"
+    source: str  # "gridline", "tick_mark", "broken_rule" or "split_rule"
 
 
 @dataclass(frozen=True)
@@ -825,6 +838,7 @@ def detect_axis_lines(
         for center, run_width in _runs(coverage >= _GRIDLINE_MIN_COVERAGE)
         if run_width <= max_width
     ]
+    lines = _split_merged_runs(lines, coverage, a0)
     if broken_rules:
         lines.extend(_broken_rule_lines(ink[c0:c1, a0:a1], a0, coverage, lines, max_width))
 
@@ -847,6 +861,75 @@ def detect_axis_lines(
             ):
                 lines.append(ObservedLine(position, run_width, "tick_mark"))
     return sorted(lines, key=lambda line: line.center_px)
+
+
+def _split_merged_runs(
+    lines: list[ObservedLine], coverage: np.ndarray, offset: int
+) -> list[ObservedLine]:
+    """Split a rule run that a parallel curve has merged into, at its dip.
+
+    A curve drawn a few pixels beside a rule joins its run, and the run's
+    centre is then the centre of rule + gap + curve, not of the rule. Such a
+    run is wider than the chart's other rules, and between the two strokes
+    the paper shows through: the run's coverage dips. Only a run that is BOTH
+    anomalously wide against the median width of the chart's detected rules
+    (``_MERGED_RUN_EXTRA_PX`` wider and x2; at least ``_MERGED_RUN_MIN_PEERS``
+    + 1 rules, so the median is not set by the merged run itself)
+    AND dips to ``_MERGED_RUN_DIP_FRACTION`` of the lower flanking peak is
+    split; each piece keeps the rows above the half-way level between dip and
+    that peak and is reported as source ``"split_rule"``. At least one piece
+    must be as narrow as a typical rule (+1 px), or the run is kept whole.
+
+    The pieces are candidate lines, not a choice: which one the label names is
+    decided by the registration exactly as for two separate lines (a piece
+    the pitch does not seat fails the match tolerance, two that both fit tie
+    and refuse). A curve lying ON the rule leaves no dip and the run is kept
+    as it is -- unchanged behaviour, never a guessed centre. Every other run
+    is returned untouched.
+    """
+    widths = [line.width_px for line in lines if line.source == "gridline"]
+    if len(widths) < _MERGED_RUN_MIN_PEERS + 1:
+        return lines
+    # the chart's rule width; with >= 4 rules one merged run is an outlier
+    # the median does not follow
+    typical = float(statistics.median(widths))
+    limit = max(typical + _MERGED_RUN_EXTRA_PX, 2 * typical)
+    if max(widths) < limit:
+        return lines
+    out: list[ObservedLine] = []
+    for line in lines:
+        width = line.width_px
+        if line.source != "gridline" or width < limit:
+            out.append(line)
+            continue
+        start = int(round(line.center_px - (width - 1) / 2.0)) - offset
+        pieces = _dip_split(coverage[start:start + width])
+        if len(pieces) < 2 or min(w for _, w in pieces) > typical + 1:
+            out.append(line)
+            continue
+        out.extend(
+            ObservedLine(offset + start + center, piece_width, "split_rule")
+            for center, piece_width in pieces
+        )
+    return out
+
+
+def _dip_split(profile: np.ndarray) -> list[tuple[float, int]]:
+    """Two (centre, width) strokes of one run's coverage *profile*, or [].
+
+    The deepest interior row must dip to ``_MERGED_RUN_DIP_FRACTION`` of the
+    lower peak either side; the strokes are the rows above the half-way level
+    between dip and that peak. Anything but exactly two strokes (no dip, a
+    shallow dip, three strokes) returns [] and the run is kept whole.
+    """
+    if len(profile) < 3:
+        return []
+    k = 1 + int(np.argmin(profile[1:-1]))
+    floor = min(float(np.max(profile[:k])), float(np.max(profile[k + 1:])))
+    if float(profile[k]) > _MERGED_RUN_DIP_FRACTION * floor:
+        return []
+    pieces = _runs(profile > (float(profile[k]) + floor) / 2.0)
+    return pieces if len(pieces) == 2 else []
 
 
 def _broken_rule_lines(
