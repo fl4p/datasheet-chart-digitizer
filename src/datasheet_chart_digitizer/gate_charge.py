@@ -48,6 +48,7 @@ from .gate_charge_trace import (
     _trace_vector_gate_curve,
     _trim_terminal_branch_hop,
 )
+from .gate_charge_blend import BLEND_DIAGNOSTIC, served_curve_blend
 from .gate_axis_ocr import (
     carried_x_ticks,
     MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
@@ -423,7 +424,7 @@ def _vpl_is_plausible(vpl: float | None) -> bool:
 CURVE_CLIPPED_DIAGNOSTIC = "plot_box_clips_source_curve"
 # Curve-fidelity findings an axis repair cannot cure.
 CURVE_BLOCKING_DIAGNOSTICS = frozenset(
-    {"non_monotone_gate_curve", CURVE_CLIPPED_DIAGNOSTIC, "low_trace_confidence"}
+    {"non_monotone_gate_curve", CURVE_CLIPPED_DIAGNOSTIC, "low_trace_confidence", BLEND_DIAGNOSTIC}
 )
 
 
@@ -761,6 +762,14 @@ def _digitize_panel(
     clipped_curve = _curve_clipped_by_plot_box(
         np.asarray(trace_crops[0].convert("L")), curve, plot_box, aligned_frame
     )
+    # A trace between two source strokes (the median of a multi-curve vector
+    # component) is on neither curve: never served (IPB180N04S4 Figure 15).
+    # Applies only where the vector tracer itself found a gate curve in the
+    # plot (a panel property): frame fragments on a raster chart do not count.
+    blend = served_curve_blend(page, crop_rect, scale, plot_box, curve) if vector_curve else None
+    blended_trace = blend is not None and blend.blended
+    if blended_trace:
+        diagnostics.append(BLEND_DIAGNOSTIC)
     if len(curve) < 20:
         diagnostics.append("insufficient_curve_points")
     elif low_trace_confidence:
@@ -824,6 +833,7 @@ def _digitize_panel(
         or non_monotone_gate_curve
         or clipped_curve
         or branch_cut_short
+        or blended_trace
         # A value the digitizer itself calls implausible, or one it had to extrapolate
         # off the end of its ticks, must not be reported as "ok". These two diagnostics
         # were computed and then dropped on the floor by the status: SUP90140E returned
