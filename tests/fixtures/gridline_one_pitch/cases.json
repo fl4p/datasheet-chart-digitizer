@@ -1,0 +1,321 @@
+[
+ {
+  "id": "ifx_BSC010N04LS_d06_rdson_id",
+  "image": "ifx_BSC010N04LS_d06_rdson_id.webp",
+  "crop_origin_px": [
+   85,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_BSC010N04LS_d06_rdson_id.png",
+  "source_case_png_sha256": "ec41bfd98bfb178473d95fa734ba3516c57e5e71a4355bbd6d2677ce4b690328",
+  "pdf_file": "vendor_src/infineon/BSC010N04LS/datasheet.pdf",
+  "pdf_sha256": "35dd1de78f490a5a4ef476395d08723d865f552f5b64b906421e17b1397589ad",
+  "pdf_page": 8,
+  "diagram": "Diagram 6: Typ. drain-source on-state resistance",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   11.86,
+   75.56,
+   532.37,
+   620.17
+  ],
+  "y_ticks": [
+   {
+    "value": 1.6,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 1.4,
+    "label_px": 184.393,
+    "true_rule_px": 184.485
+   },
+   {
+    "value": 1.2,
+    "label_px": 293.313,
+    "true_rule_px": 293.405
+   },
+   {
+    "value": 1.0,
+    "label_px": 402.234,
+    "true_rule_px": 402.325
+   },
+   {
+    "value": 0.8,
+    "label_px": 511.154,
+    "true_rule_px": 511.245
+   },
+   {
+    "value": 0.6,
+    "label_px": 620.074,
+    "true_rule_px": 620.165
+   }
+  ],
+  "y_scale": "linear"
+ },
+ {
+  "id": "ifx_IPP018N03LF2S_d06_rdson_id",
+  "image": "ifx_IPP018N03LF2S_d06_rdson_id.webp",
+  "crop_origin_px": [
+   85,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_IPP018N03LF2S_d06_rdson_id.png",
+  "source_case_png_sha256": "b77bbb965924542385e11b94ac843a66eb445042e1baaa966c393fee3a15513f",
+  "pdf_file": "vendor_src/infineon/IPP018N03LF2S/datasheet.pdf",
+  "pdf_sha256": "fecc42259fb3148bb0ea87e6b345f2b3c8029f7932cc8d4ce1ff7c17a08b56d6",
+  "pdf_page": 8,
+  "diagram": "Diagram 6: Typ. drain-source on-state resistance",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   11.86,
+   75.56,
+   532.37,
+   620.17
+  ],
+  "y_ticks": [
+   {
+    "value": 3.0,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 2.5,
+    "label_px": 211.623,
+    "true_rule_px": 211.715
+   },
+   {
+    "value": 2.0,
+    "label_px": 347.773,
+    "true_rule_px": 347.865
+   },
+   {
+    "value": 1.5,
+    "label_px": 483.924,
+    "true_rule_px": 484.015
+   },
+   {
+    "value": 1.0,
+    "label_px": 620.074,
+    "true_rule_px": 620.165
+   }
+  ],
+  "y_scale": "linear"
+ },
+ {
+  "id": "ifx_IPP020N03LF2S_d05_output",
+  "image": "ifx_IPP020N03LF2S_d05_output.webp",
+  "crop_origin_px": [
+   95,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_IPP020N03LF2S_d05_output.png",
+  "source_case_png_sha256": "7c5d06af0b44492ed4747e21f3ef617e2900bc4d148c40f9ef55e6b9c9c20a85",
+  "pdf_file": "vendor_src/infineon/IPP020N03LF2S/datasheet.pdf",
+  "pdf_sha256": "14214b24a79cd851f54c653fafa79b1a7ab0ac1fd26c967bff9406fc8b9f3de6",
+  "pdf_page": 8,
+  "diagram": "Diagram 5: Typ. output characteristics",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   12.03,
+   75.56,
+   533.25,
+   618.44
+  ],
+  "y_ticks": [
+   {
+    "value": 500.0,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 400.0,
+    "label_px": 184.049,
+    "true_rule_px": 184.14
+   },
+   {
+    "value": 300.0,
+    "label_px": 292.624,
+    "true_rule_px": 292.716
+   },
+   {
+    "value": 200.0,
+    "label_px": 401.2,
+    "true_rule_px": 401.291
+   },
+   {
+    "value": 100.0,
+    "label_px": 509.775,
+    "true_rule_px": 509.867
+   },
+   {
+    "value": 0.0,
+    "label_px": 618.35,
+    "true_rule_px": 618.442
+   }
+  ],
+  "y_scale": "linear"
+ },
+ {
+  "id": "ifx_IPP044N03LF2S_d05_output",
+  "image": "ifx_IPP044N03LF2S_d05_output.webp",
+  "crop_origin_px": [
+   95,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_IPP044N03LF2S_d05_output.png",
+  "source_case_png_sha256": "050d47e1cfd25f49a975e8cc77bb4149214a2778322ad5c3ff3bfc27b53bcb52",
+  "pdf_file": "vendor_src/infineon/IPP044N03LF2S/datasheet.pdf",
+  "pdf_sha256": "eb3bf4a637618f2be1038ed9634e5799a0d0b57bb9db7825e5a6b0af0763662b",
+  "pdf_page": 8,
+  "diagram": "Diagram 5: Typ. output characteristics",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   12.03,
+   75.56,
+   533.25,
+   618.44
+  ],
+  "y_ticks": [
+   {
+    "value": 200.0,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 160.0,
+    "label_px": 184.049,
+    "true_rule_px": 184.14
+   },
+   {
+    "value": 120.0,
+    "label_px": 292.624,
+    "true_rule_px": 292.716
+   },
+   {
+    "value": 80.0,
+    "label_px": 401.2,
+    "true_rule_px": 401.291
+   },
+   {
+    "value": 40.0,
+    "label_px": 509.775,
+    "true_rule_px": 509.867
+   },
+   {
+    "value": 0.0,
+    "label_px": 618.35,
+    "true_rule_px": 618.442
+   }
+  ],
+  "y_scale": "linear"
+ },
+ {
+  "id": "ifx_IPP050N03LF2S_d05_output",
+  "image": "ifx_IPP050N03LF2S_d05_output.webp",
+  "crop_origin_px": [
+   95,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_IPP050N03LF2S_d05_output.png",
+  "source_case_png_sha256": "6a87e8435ffc3cb0712999394e24492ab88c38340812f3adb6cef973a424a63a",
+  "pdf_file": "vendor_src/infineon/IPP050N03LF2S/datasheet.pdf",
+  "pdf_sha256": "6adc884b395358c4d2b73cebe6bb6b1711f19b2d460f3bb998e71148f2f58636",
+  "pdf_page": 8,
+  "diagram": "Diagram 5: Typ. output characteristics",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   12.03,
+   75.56,
+   533.25,
+   618.44
+  ],
+  "y_ticks": [
+   {
+    "value": 200.0,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 160.0,
+    "label_px": 184.049,
+    "true_rule_px": 184.14
+   },
+   {
+    "value": 120.0,
+    "label_px": 292.624,
+    "true_rule_px": 292.716
+   },
+   {
+    "value": 80.0,
+    "label_px": 401.2,
+    "true_rule_px": 401.291
+   },
+   {
+    "value": 40.0,
+    "label_px": 509.775,
+    "true_rule_px": 509.867
+   },
+   {
+    "value": 0.0,
+    "label_px": 618.35,
+    "true_rule_px": 618.442
+   }
+  ],
+  "y_scale": "linear"
+ },
+ {
+  "id": "ifx_ISC040N10NM8_d09_rdson_temperature",
+  "image": "ifx_ISC040N10NM8_d09_rdson_temperature.webp",
+  "crop_origin_px": [
+   93,
+   0
+  ],
+  "source_case_image": "cases/vendor/infineon_ips/ifx_ISC040N10NM8_d09_rdson_temperature.png",
+  "source_case_png_sha256": "af1135d57a5d46fc267a7bf4f62a4cb2f838f18108a35ede52308adb71e452eb",
+  "pdf_file": "vendor_src/infineon/ISC040N10NM8/datasheet.pdf",
+  "pdf_sha256": "3eb8c3f2307ea8ba44ba099e49439e6bd4420503fb7e3de7eb16de5d1913df49",
+  "pdf_page": 9,
+  "diagram": "Diagram 9: Normalized drain-source on-state resistance",
+  "render_dpi": 180,
+  "plot_box_index_px": [
+   12.01,
+   75.56,
+   532.52,
+   616.72
+  ],
+  "y_ticks": [
+   {
+    "value": 2.4,
+    "label_px": 75.473,
+    "true_rule_px": 75.565
+   },
+   {
+    "value": 2.0,
+    "label_px": 183.704,
+    "true_rule_px": 183.796
+   },
+   {
+    "value": 1.6,
+    "label_px": 291.935,
+    "true_rule_px": 292.026
+   },
+   {
+    "value": 1.2,
+    "label_px": 400.166,
+    "true_rule_px": 400.257
+   },
+   {
+    "value": 0.8,
+    "label_px": 508.396,
+    "true_rule_px": 508.488
+   },
+   {
+    "value": 0.4,
+    "label_px": 616.627,
+    "true_rule_px": 616.719
+   }
+  ],
+  "y_scale": "linear"
+ }
+]
