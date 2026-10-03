@@ -175,6 +175,32 @@ its PENDING entry is removed. `PENDING.json` is empty.
 
 `PENDING.json` is empty. There are 41 golden panels.
 
+## batch_all v5 (Fab's review of the v5 packets, 2026-10-01)
+
+**Human-verified by Fab** on `rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html` and
+`-002.html` (42 cards), in his words: "all green".
+
+v5 is dsdig 8a9def0: the fixes for the GPT Astra review of batch_all v4 (F01–F12). They
+changed served metadata only. No traced point, readout or axis map moved:
+- verdicts at assumed conditions are qualified;
+- approximate-current reasons are shown;
+- printed I_D and page/table temperature headings are bound;
+- off-axis readouts are `not_on_chart`;
+- tick and log residuals are disclosed;
+- condition-mismatch notes and pulse conditions are recorded;
+- WSR3090 contact ink is recovered;
+- overlay labels no longer collide.
+
+- **All 41 existing golden panels are re-frozen** into `<fixture>/batch_all_v5/` (kind
+  `refreeze`). Their originals are untouched. Each entry pins the SHA-256 of the files it
+  supersedes. Path entries and earlier refreezes listed before it no longer apply.
+- **ZVNL120A_Diodes p3 fig t394: newly frozen.** Log/log axes, three curves at I_D 1 / 0.5 /
+  0.1 A, temperature not printed. Its 20 V tick residual of 4.07 px is disclosed as a
+  reason.
+
+`PENDING.json` is empty. There are 42 golden panels. TI's page-1 copies remain separate
+fixtures: their served values agree with the numbered figure within 0.4 %.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the

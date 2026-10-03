@@ -1,0 +1,175 @@
+{
+ "part": "IRLB8748_IFX",
+ "pdf_name": "IRLB8748_IFX.pdf",
+ "pdf_sha256": "6a4964eb4fe12d7f1cc3b4e1ae8957dcea74255662fd823349d5d15f0c0ed89e",
+ "page": 6,
+ "diagram": "12",
+ "title": "On-Resistance vs. Gate Voltage",
+ "status": "review_required",
+ "validation_verdict": "verified",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 40.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 4.1989
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 32.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 6.1071
+  }
+ ],
+ "reasons_at_freeze": [
+  "y_axis_printed_rule_residual_1.286px: single linear map does not seat every printed tick",
+  "approximate_current_anchor_at_4.5V: chart 40 A vs table 32 A"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 244,
+  "y0": 50,
+  "x1": 934,
+  "y1": 739
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.011594202898550725,
+   "b": -0.8289855072463768,
+   "ticks": [
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 244.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 416.5
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 589.0
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 761.4999999999999
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 933.9999999999999
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.020319303338171262,
+   "b": 19.015965166908565,
+   "ticks": [
+    {
+     "text": "18",
+     "value": 18.0,
+     "pixel": 50.00000000000008
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 148.4285714285715
+    },
+    {
+     "text": "14",
+     "value": 14.0,
+     "pixel": 246.85714285714295
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 345.2857142857144
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 443.7142857142858
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 542.1428571428572
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 640.5714285714287
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 739.0000000000001
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tj=125C, ID=40A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tj",
+   "id_a": 40.0,
+   "usable": true,
+   "n_points": 977,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 8.9812,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tj=25C, ID=40A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tj",
+   "id_a": 40.0,
+   "usable": true,
+   "n_points": 1112,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.1071,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

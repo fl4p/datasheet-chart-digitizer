@@ -1,0 +1,253 @@
+{
+ "part": "DMN4008LFG_Diodes",
+ "pdf_name": "DMN4008LFG_Diodes.pdf",
+ "pdf_sha256": "188235b8f7d2d50a86f3f1048a8f1e627cd78a46bbc378f7e3e4329ce0f89f81",
+ "page": 3,
+ "diagram": "4",
+ "title": "Typical Transfer Characteristics",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 10.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 8.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 3.3,
+   "id_a": 6.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "x_axis_printed_rule_residual_1.248px: single linear map does not seat every printed tick",
+  "curve_0_coincident_with_curve_1 (5.98..6.54 V, median separation 0.00 px, max 0.50 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_coincident_with_curve_1 (18.91..20.00 V, median separation 0.00 px, max 0.50 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_coincident_with_curve_2 (3.95..6.54 V, median separation 0.00 px, max 1.00 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_coincident_with_curve_2 (18.91..20.00 V, median separation 0.00 px, max 0.50 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_1_coincident_with_curve_2 (3.74..4.46 V, median separation 0.00 px, max 0.50 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_1_coincident_with_curve_2 (5.98..20.00 V, median separation 0.00 px, max 0.50 px: drawn on top of each other there, so both serve the same values; not separable in that range)",
+  "curve_0_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_1_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_2_temperature_c_unknown (no temperature label read on the panel or page)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 991,
+  "y1": 802
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.0267022696929239,
+   "b": -6.461949265687584,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 316.9
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 391.79999999999995
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 466.69999999999993
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 541.5999999999999
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 616.5
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 691.4
+    },
+    {
+     "text": "14",
+     "value": 14.0,
+     "pixel": 766.3
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 841.1999999999999
+    },
+    {
+     "text": "18",
+     "value": 18.0,
+     "pixel": 916.0999999999999
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 990.9999999999999
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -5.319148936170213e-05,
+   "b": 0.042659574468085104,
+   "ticks": [
+    {
+     "text": "0.04",
+     "value": 0.04,
+     "pixel": 49.99999999999994
+    },
+    {
+     "text": "0.035",
+     "value": 0.035,
+     "pixel": 143.9999999999999
+    },
+    {
+     "text": "0.03",
+     "value": 0.03,
+     "pixel": 237.99999999999997
+    },
+    {
+     "text": "0.025",
+     "value": 0.025,
+     "pixel": 331.99999999999994
+    },
+    {
+     "text": "0.02",
+     "value": 0.02,
+     "pixel": 425.99999999999994
+    },
+    {
+     "text": "0.015",
+     "value": 0.015,
+     "pixel": 520.0
+    },
+    {
+     "text": "0.01",
+     "value": 0.01,
+     "pixel": 613.9999999999999
+    },
+    {
+     "text": "0.005",
+     "value": 0.005,
+     "pixel": 708.0
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 802.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "ID=10A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 10.0,
+   "usable": true,
+   "n_points": 1145,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 11.2505,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.9934,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "ID=6A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 6.0,
+   "usable": true,
+   "n_points": 899,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 10.7385,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.9402,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 2,
+   "label": "ID=8A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 8.0,
+   "usable": true,
+   "n_points": 1142,
+   "points_csv": "points_c2.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 10.7718,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.9934,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

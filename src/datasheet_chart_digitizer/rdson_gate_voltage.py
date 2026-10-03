@@ -62,6 +62,10 @@ from .diode_forward_voltage import TextLabel, _full_span_grid_lines
 from .find_charts import PageText, group_words_into_lines, line_bbox, line_text
 from .finder_types import Word
 from .numeric_axis import axis_to_json
+from .rdson_gate_voltage_conditions import typical_temperature_note, pulse_conditions
+from .rdson_gate_voltage_evidence import printed_tick_evidence, blank_before_source_start, recover_separate_contact_ink
+from .rdson_gate_voltage_evidence import single_colored_trace_evidence
+from .rdson_gate_voltage_labels import isolated_condition_labels, refine_temperature_subscripts
 from .rdson_gate_voltage_axes import (
     CROP_DPI,
     Calibration,
@@ -114,7 +118,7 @@ MAX_PLAUSIBLE_VGS_AXIS_V = 30.0   # beyond any gate rating: a scale misread (e.g
 # --------------------------------------------------------------------------- driver
 
 
-def digitize_pdf(pdf: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
+def digitize_pdf(pdf: Path, out_dir: Path, *, duplicate_audit: dict | None = None) -> tuple[list[dict], list[dict]]:
     """Locate and digitize every owned RDS(VGS) panel in ``pdf``."""
     # Tesseract's multi-threaded LSTM returned different digit readings for the
     # same tick image from run to run (measured on RQ3E180AJ, 2026-09-28);
@@ -132,6 +136,11 @@ def digitize_pdf(pdf: Path, out_dir: Path) -> tuple[list[dict], list[dict]]:
             row["rendered_from"] = (f"{source} (upright copy: the PDF stores rotated pages, see "
                                     "rdson_gate_voltage_locate.upright_pdf)")
         results.append(row)
+    from .rdson_gate_voltage_duplicates import deduplicate_pdf, write_audit
+    results, audit = deduplicate_pdf(results, pdf, out_dir)
+    write_audit(audit, pdf, out_dir)
+    if duplicate_audit is not None:
+        duplicate_audit.update(audit)
     return results, [r.to_json() | ({"pdf": str(pdf)} if source != pdf else {}) for r in refusals]
 
 
@@ -278,6 +287,22 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
     row["trace_method"] = method
     if not traces:
         raise PanelRefused(f"no_curve_traced ({method})")
+    audit_labels = (_ocr_axis_band_labels(gray, calibration.plot, out_dir, panel, stem + "_audit", tight=True)
+                    if method == "raster" else [])
+    if method == "raster":
+        grid = row["raster_grid_rules_px"]
+        calibration = replace(calibration, grid_x=tuple(grid["x_erased"]), grid_y=tuple(grid["y_erased"]))
+    calibration, evidence, axis_reasons = printed_tick_evidence(calibration, labels + audit_labels)
+    row["calibration"]["printed_tick_evidence"] = evidence
+    for axis in ("x_axis", "y_axis"):
+        row["calibration"][axis] = axis_to_json(getattr(calibration, axis))
+        row["calibration"]["used_tick_span"][axis] = _used_span(getattr(calibration, axis))
+        tick_origins = _tick_origins(getattr(calibration, axis), calibration.plot, axis[0],
+                                     sources + [("axis_band_ocr_audit", audit_labels)])
+        row["calibration"]["tick_origins"][axis] = [
+            {"text": t.text, "value": t.value, "origin": origin}
+            for t, origin in zip(getattr(calibration, axis).ticks, tick_origins)]
+    reasons.extend(axis_reasons)
     extra = None
     if method == "raster":
         extra = (ocr_labels or []) + plot_ocr
@@ -298,9 +323,28 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
             read_legend_boxes(gray, calibration.plot, grid.get("x_erased", []), grid.get("y_erased", []), out_dir, panel, stem),
             ocr_plot_labels_rules_erased(gray, calibration.plot, grid.get("x_erased", []), grid.get("y_erased", []),
                                          out_dir, panel, stem))
+    if method == "raster" and not any("id_a" in l.params for l in plot_labels):
+        recovered = isolated_condition_labels(gray, calibration.plot, out_dir, panel, stem)
+        plot_labels += recovered
+        row["isolated_condition_labels"] = [{"text": l.text, "box_px": [l.x0, l.y0, l.x1, l.y1],
+                                             "params": l.params} for l in recovered]
+    if method == "raster":
+        plot_labels = refine_temperature_subscripts(gray, plot_labels, out_dir, panel, stem)
     binding_notes = bind_labels(traces, plot_labels, swatches, calibration.plot, leaders, transform.scale_x)
+    if len(traces) == 1 and traces[0].binding.get("id_a") == "single_label_may_belong_to_an_untraced_curve":
+        currents = {l.params["id_a"] for l in plot_labels if l.params.get("id_a") is not None}
+        proof = single_colored_trace_evidence(image, traces[0], calibration.plot)
+        row["single_colored_trace_evidence"] = proof
+        if proof is not None and len(currents) == 1:
+            traces[0].params["id_a"] = currents.pop()
+            traces[0].binding["id_a"] = "single_curve_all_chromatic_ink_accounted_for"
     binding_notes.extend(_apply_page_temperature_note(traces, page))
+    traces = recover_separate_contact_ink(traces, gray)
     curves, curve_reasons, refusal = _curves(traces, calibration, scale, gray)
+    conditions = pulse_conditions(words, transform, calibration.plot, (ocr_labels or []) + plot_ocr)
+    row["conditions"] = conditions
+    for curve in curves:
+        curve["conditions"] = conditions
     row["curves"] = curves
     row["label_binding_notes"] = binding_notes
     row["labels_seen"] = [{"text": l.text, "params": l.params} for l in plot_labels if l.params]
@@ -309,6 +353,11 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         raise PanelRefused(refusal)
     reasons.extend(_binding_reasons(curves, plot_labels))
     row["validation"] = validate_against_table(curves, spec_rows, calibration, scale)
+    reasons.extend(f"validation_condition_assumption: {a}" for a in row["validation"]["assumptions"])
+    for anchor in row["validation"]["anchors"]:
+        if anchor.get("condition_match") == "approximate_drain_current":
+            reasons.append(f"approximate_current_anchor_at_{anchor['row']['vgs_v']:g}V: "
+                           f"chart {anchor['chart_id_a']:g} A vs table {anchor['row']['id_a']:g} A")
     reasons.extend(_flag_calibration_span(curves, row["validation"], calibration, scale))
     for note in row["validation"]["diagnostics"]:
         reasons.append(f"curve_{note['curve_index']}_exceeds_table_max_at_{note['vgs_v']:g}V ({note['text']})")
@@ -840,10 +889,11 @@ def _apply_page_temperature_note(traces: list[Trace], page) -> list[str]:
     """
     if any("temperature_c" in trace.params for trace in traces):
         return []
-    notes = {
-        (float(m.group("value")), temperature_kind(m.group("sub"), True))
+    matches = [
+        (float(m.group("value")), temperature_kind(m.group("sub"), True), m.group(0))
         for m in _PAGE_TEMPERATURE_NOTE_RE.finditer(" ".join(page.get_text("text").split()))
-    }
+    ] + typical_temperature_note(page)
+    notes = {(v, k) for v, k, _text in matches}
     if len(notes) != 1:
         return []
     value, kind = notes.pop()
@@ -851,6 +901,8 @@ def _apply_page_temperature_note(traces: list[Trace], page) -> list[str]:
         trace.params["temperature_c"] = value
         trace.params["temperature_kind"] = kind
         trace.binding["temperature_c"] = "page_note_unless_otherwise_noted"
+        trace.binding["temperature_evidence"] = "; ".join(text for v, k, text in matches if (v, k) == (value, kind))
+        trace.binding["temperature_page"] = page.number + 1
     return [f"temperature_c={value:g}_{kind}_from_page_note"]
 
 
@@ -943,7 +995,13 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
             curves.append(curve)
             continue
         curve["vgs_range_v"] = [round(points[0][0], 4), round(points[-1][0], 4)]
+        labelled_max = max(x_values)
+        if calibration.x_axis.model == "log10" and points[-1][0] > labelled_max + 1e-4:
+            reasons.append(f"curve_{index}_served_beyond_labelled_{labelled_max:g}V_frame: "
+                           f"to {points[-1][0]:.5g} V; printed-axis residual, no endpoint clipping")
         open_left, open_right = _open_ends(trace, plot)
+        source_start = open_left and blank_before_source_start(gray, calibration, trace.points_px)
+        curve["source_start_evidence"] = "blank_plot_strip_before_first_ink" if source_start else None
         curve["trace_complete"] = {"left_end_at_frame": not open_left, "right_end_at_frame": not open_right}
         if open_left or open_right:
             ends = [f"starts at {points[0][0]:.2f} V inside the plot"] * open_left + [
@@ -1093,7 +1151,9 @@ def _curves(traces: list[Trace], calibration: Calibration, scale: float, gray=No
                 for v in READOUT_VGS_V
             ]
         else:
-            curve["readouts"] = readouts(points, log_y, curve["gaps"], vgs_per_px(calibration.x_axis), open_left, open_right)
+            curve["readouts"] = readouts(points, log_y, curve["gaps"], vgs_per_px(calibration.x_axis),
+                                        open_left and not source_start, open_right,
+                                        axis_limits=sorted([calibration.x_axis.value(plot.x0), calibration.x_axis.value(plot.x1)]))
         curves.append(curve)
     reasons.extend(_mark_coincident(curves, calibration))
     return curves, reasons, refusal
@@ -1308,23 +1368,27 @@ def main(argv: list[str] | None = None) -> int:
     if not pdfs:
         parser.error("give a charts.json or --pdf")
     args.out.mkdir(parents=True, exist_ok=True)
-    panels, refusals, errors = [], [], []
+    panels, refusals, errors, duplicate_checks, discarded_duplicates = [], [], [], [], []
     for pdf in pdfs:
         print(f"scan {pdf}")
         try:
-            results, refused = digitize_pdf(pdf, args.out)
+            audit = {}
+            results, refused = digitize_pdf(pdf, args.out, duplicate_audit=audit)
         except Exception as error:  # noqa: BLE001 - serialized, not swallowed
             errors.append({"pdf": str(pdf), "error": f"{type(error).__name__}: {error}"})
             print(f"  ERROR {error}")
             continue
         panels.extend(results)
         refusals.extend(refused)
+        duplicate_checks.extend(audit["duplicate_checks"])
+        discarded_duplicates.extend(audit["discarded_duplicates"])
         for result in results:
             print(f"  p{result['page']} fig {result['diagram']}: {result['status']} "
                   f"validation={result.get('validation', {}).get('verdict')} overlay: {args.out / result['overlay']}")
         for refusal in refused:
             print(f"  located-but-refused p{refusal['page']} fig {refusal['diagram']}: {refusal['reason']}")
-    manifest = {"kind": KIND, "panels": panels, "locator_refusals": refusals, "errors": errors}
+    manifest = {"kind": KIND, "panels": panels, "locator_refusals": refusals, "errors": errors,
+                "duplicate_checks": duplicate_checks, "discarded_duplicates": discarded_duplicates}
     path = args.out / "rdson_gate_voltage.json"
     path.write_text(json.dumps(manifest, indent=2) + "\n")
     print(f"wrote {path}")

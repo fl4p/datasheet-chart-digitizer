@@ -61,6 +61,7 @@ def draw_axis_ticks(
     line_aa: bool = False,
     halo: bool = False,
     x_labels_below: bool = False,
+    y_labels_left: bool = False,
 ) -> np.ndarray:
     """Crosshair marker + ``{value:g}{unit}`` label at each calibration tick.
 
@@ -96,5 +97,8 @@ def draw_axis_ticks(
     for pixel, value in y_ticks:
         y = int(round(pixel))
         cv2.drawMarker(image, (x0, y), color, cv2.MARKER_CROSS, *marker_args)
-        _label(f"{value:g}{unit_y}", (x0 + 5, min(y1 - 3, max(y0 + 12, y + 4))))
+        text = f"{value:g}{unit_y}"
+        width = cv2.getTextSize(text, _FONT, font_scale, thickness)[0][0]
+        left = max(2, x0 - width - 8) if y_labels_left else x0 + 5
+        _label(text, (left, min(y1 - 3, max(y0 + 12, y + 4))))
     return image

@@ -61,6 +61,20 @@ def pending_entries() -> dict[str, dict]:
     return {e["part"]: e for e in json.loads(path.read_text())["entries"]} if path.exists() else {}
 
 
+def retirement_entry(part: str) -> tuple[dict | None, bool]:
+    """Only Fab moves a proposal from PENDING to an approved retired entry."""
+    pending = pending_entries().get(part, {})
+    if pending.get("kind") == "retired":
+        return pending, True
+    entries = json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"]
+    approved = [e for e in entries if e.get("fixture", e.get("part")) == part and e.get("kind") == "retired"]
+    return (approved[-1], False) if approved else (None, False)
+
+
+def fixture_fingerprint(panel: dict) -> str:
+    return hashlib.sha256(json.dumps(panel, sort_keys=True).encode()).hexdigest()
+
+
 def _panel_field(panel: dict, name: str, served: bool):
     """A panel-level field, from the frozen fixture or from the served row."""
     if name == "status":
@@ -80,7 +94,8 @@ def load_golden(part: str) -> dict:
     fixture in <part>/<dir>/. It is honoured only while the files it
     supersedes still hash as recorded; path entries listed before it applied
     to the superseded fixture and are skipped."""
-    entries = [e for e in json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"] if e["part"] == part]
+    entries = [e for e in json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"]
+               if e.get("part", e.get("fixture")) == part and e.get("kind") != "retired"]
     base = GOLDEN / part
     refreezes = [i for i, e in enumerate(entries) if e.get("kind") == "refreeze"]
     if refreezes:
@@ -136,12 +151,16 @@ class GoldenTests(unittest.TestCase):
             message = f"GOLDEN NOT CHECKED: {part}: {pdf} SHA-256 differs from the frozen {golden['pdf_sha256']}"
             print("\n*** " + message, file=sys.stderr)
             self.skipTest(message)
-        rows = [r for r in _digitize(pdf) if r["page"] == golden["page"] and str(r["diagram"]) == str(golden["diagram"])]
+        panels = _digitize(pdf)
+        retirement, is_pending = retirement_entry(part)
+        if retirement is not None and self._check_retirement(part, golden, panels, retirement, is_pending):
+            return
+        rows = [r for r in panels if r["page"] == golden["page"] and str(r["diagram"]) == str(golden["diagram"])]
         self.assertEqual(len(rows), 1, f"{part}: panel p{golden['page']} fig {golden['diagram']} not produced")
         row = rows[0]
         self._check_calibration(part, row, golden)
         pending = pending_entries().get(part)
-        if pending is not None:
+        if pending is not None and pending.get("kind") != "retired":
             self._check_ink_only(part, row, golden)
             changed = pending.get("changed_fields")
             if changed is not None:
@@ -155,14 +174,64 @@ class GoldenTests(unittest.TestCase):
         self.assertEqual([(a["row"]["vgs_v"], a["verdict"]) for a in row["validation"]["anchors"]],
                          [(a["vgs_v"], a["verdict"]) for a in golden["anchor_verdicts"]], f"{part}: anchors")
 
+    def _check_retirement(self, part, golden, panels, entry, is_pending):
+        self.assertEqual(entry["fixture"], part)
+        self.assertTrue(entry["reason"] and entry["evidence"] and entry["date"])
+        self.assertEqual(entry["fixture_sha256"], fixture_fingerprint(golden), "stale retired fixture")
+        twin_name = entry["duplicate_of"]
+        self.assertNotEqual(part, twin_name)
+        self.assertIsNone(retirement_entry(twin_name)[0], "retirement chains are forbidden")
+        twin = load_golden(twin_name)
+        self.assertEqual(entry["duplicate_of_sha256"], fixture_fingerprint(twin), "stale kept fixture")
+        self.assertEqual((golden["pdf_name"], golden["pdf_sha256"]), (twin["pdf_name"], twin["pdf_sha256"]))
+        own = lambda r: r["page"] == golden["page"] and str(r["diagram"]) == str(golden["diagram"])
+        copies = [r for r in panels if own(r)]
+        winners = [r for r in panels if r["page"] == twin["page"] and str(r["diagram"]) == str(twin["diagram"])]
+        self.assertEqual(len(winners), 1, "kept twin missing or changed")
+        notes = [n for n in winners[0].get("also_printed_at", []) if own(n)]
+        if copies:
+            self.assertTrue(is_pending, "approved retired duplicate reappeared")
+            self.assertFalse(notes, "duplicate is both served and reported discarded")
+            return False  # still pending: check the copy against its full frozen contract
+        self.assertEqual(len(notes), 1, "retired copy missing from also_printed_at")
+        note = notes[0]
+        self.assertEqual(note["decision"], "duplicate")
+        self.assertEqual(note["checks"], {"visual": "evaluated", "data": "evaluated"})
+        for name in ("visual_score", "max_value_diff"):
+            self.assertTrue(np.isfinite(note[name]), f"unevaluable retirement {name}")
+        self.assertGreaterEqual(note["visual_score"], note["visual_threshold"])
+        self.assertLessEqual(note["max_value_diff"], note["value_relative_tolerance"])
+        self.assertEqual(Path(note["pdf"]).name, golden["pdf_name"])
+        # Informational metadata is not numerically pinned; the kept panel's
+        # calibration, labels, readouts, geometry and verdicts remain pinned.
+        self._check(twin_name)
+        return True
+
     def _check_pending_fields(self, part: str, row: dict, golden: dict, changed: dict) -> None:
         """A pending entry that names its changed fields (batch_all v2 onward)
         pins everything else as for a verified panel: the served curves in
         full unless "curves" is named, and every panel field it does not name.
         A named field must still hold its frozen value in the fixture (else
         the entry is stale) and must now serve exactly the entry's new value."""
+        for name, delta in changed.get("served_metadata", {}).items():
+            value = row
+            for component in name.split("."):
+                value = value.get(component) if isinstance(value, dict) else None
+            self.assertEqual(json.loads(json.dumps(value)), delta["now"], f"{part}: unexpected {name}")
         if "curves" not in changed:
             self._check_served(part, row, golden)
+        elif changed["curves"].get("kind") == "fields_and_points_added":
+            # Explicit metadata changes are pinned in both directions; every
+            # other curve field remains checked. _check_ink_only above still
+            # requires every frozen point and provenance for every addition.
+            import copy
+            restored = copy.deepcopy(row)
+            for field in changed["curves"]["fields"]:
+                i, key = field["curve_index"], field["field"]
+                self.assertEqual(golden["curves"][i][key], field["frozen"], f"{part}: stale frozen {key}")
+                self.assertEqual(row["curves"][i][key], field["now"], f"{part}: unexpected new {key}")
+                restored["curves"][i][key] = field["frozen"]
+            self._check_curves_except_points(part, restored, golden)
         elif changed["curves"].get("kind") == "points_added":
             # only served points were ADDED (F-v2-1 heads): everything else about
             # the curves stays pinned -- count, labels, flags and every readout
@@ -191,6 +260,18 @@ class GoldenTests(unittest.TestCase):
                                          f"{where}: {read['vgs_v']} V")
 
     def _check_calibration(self, part: str, row: dict, golden: dict) -> None:
+        pending = pending_entries().get(part, {}).get("changed_fields", {}).get("calibration")
+        if pending is not None:
+            for axis in ("x_axis", "y_axis"):
+                new = {k: row["calibration"][axis][k] for k in ("model", "m", "b", "ticks")}
+                old = golden["calibration"][axis]
+                self.assertEqual(old, pending["frozen"][axis], f"{part}: stale calibration")
+                self.assertEqual(new, pending["now"][axis], f"{part}: unexpected calibration")
+                for key in ("model", "m", "b"):
+                    self.assertEqual(new[key], old[key], f"{part}: tick inventory must not move the mapping")
+                old_values = {t["value"] for t in old["ticks"]}
+                self.assertTrue(old_values <= {t["value"] for t in new["ticks"]}, f"{part}: consumed tick lost")
+            return
         for axis in ("x_axis", "y_axis"):
             new, old = row["calibration"][axis], golden["calibration"][axis]
             self.assertEqual(new["model"], old["model"], f"{part}: {axis} model")
@@ -257,6 +338,63 @@ class GoldenTests(unittest.TestCase):
                 if read["rds_mohm"] is not None:
                     rel = abs(got["rds_mohm"] - read["rds_mohm"]) / abs(read["rds_mohm"])
                     self.assertLessEqual(rel, READOUT_REL_TOL, f"{where}: {read['vgs_v']} V {got['rds_mohm']} vs {read['rds_mohm']}")
+
+
+class RetirementTests(unittest.TestCase):
+    def test_pending_retirement_and_staleness(self):
+        import copy
+        fixture, entry = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        frozen = load_golden(fixture)
+        rows = copy.deepcopy(_digitize(DS / frozen["pdf_name"]))
+        case = GoldenTests()
+        with patch(__name__ + "._digitize", return_value=rows):
+            case._check(fixture)
+        # Each of these must make retirement fail, not silently waive a golden.
+        for defect in ("note", "twin_identity", "twin_label", "score", "copy_and_note"):
+            bad = copy.deepcopy(rows)
+            if defect == "note": bad[0].pop("also_printed_at")
+            elif defect == "twin_identity": bad[0]["diagram"] = "999"
+            elif defect == "twin_label": bad[0]["curves"][0]["id_a"] = 999
+            elif defect == "score": bad[0]["also_printed_at"][0]["visual_score"] = float("nan")
+            else: bad.append({"page": frozen["page"], "diagram": frozen["diagram"]})
+            with self.subTest(defect=defect), patch(__name__ + "._digitize", return_value=bad):
+                with self.assertRaises(AssertionError):
+                    case._check(fixture)
+        for key in ("fixture_sha256", "duplicate_of_sha256"):
+            with self.assertRaisesRegex(AssertionError, "stale"):
+                case._check_retirement(fixture, frozen, rows, entry | {key: "stale"}, True)
+
+    def test_approved_retirement_schema_and_reappearance(self):
+        import copy
+        import tempfile
+        fixture, proposal = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        frozen = load_golden(fixture)
+        rows = copy.deepcopy(_digitize(DS / frozen["pdf_name"]))
+        saved = GOLDEN
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for directory in saved.iterdir():
+                if directory.is_dir():
+                    (root / directory.name).symlink_to(directory)
+            entries = json.loads((saved / "REBLESSED.json").read_text())
+            entries["entries"].append({k: v for k, v in proposal.items() if k != "pending"})
+            (root / "REBLESSED.json").write_text(json.dumps(entries))
+            (root / "PENDING.json").write_text('{"entries": []}')
+            with patch(__name__ + ".GOLDEN", root), patch(__name__ + "._digitize", return_value=rows):
+                self.assertFalse(retirement_entry(fixture)[1])
+                self.assertEqual(load_golden(fixture), frozen)
+                GoldenTests()._check(fixture)
+                rows.append({"page": frozen["page"], "diagram": frozen["diagram"]})
+                with self.assertRaisesRegex(AssertionError, "reappeared"):
+                    GoldenTests()._check(fixture)
+
+    def test_pending_present_copy_keeps_full_contract(self):
+        fixture, entry = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        frozen, twin = load_golden(fixture), load_golden(entry["duplicate_of"])
+        # A proposal also works before deployment; absence requires a twin
+        # note, presence requires the original golden rather than an ink-only waiver.
+        rows = [{"page": p["page"], "diagram": p["diagram"]} for p in (frozen, twin)]
+        self.assertFalse(GoldenTests()._check_retirement(fixture, frozen, rows, entry, True))
 
 
 class RefreezeTests(unittest.TestCase):

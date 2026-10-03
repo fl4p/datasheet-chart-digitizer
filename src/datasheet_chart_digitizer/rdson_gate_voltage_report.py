@@ -28,7 +28,7 @@ TJ_MATCH_C = 1.0
 
 def readouts(
     points, log_y: bool, gaps: list[tuple[float, float]] | None = None, end_tolerance_v: float = 0.0,
-    open_left: bool = False, open_right: bool = False, targets=READOUT_VGS_V,
+    open_left: bool = False, open_right: bool = False, targets=READOUT_VGS_V, axis_limits=None,
 ) -> list[dict]:
     """Interpolate RDS at the readout VGS values along the curve.
 
@@ -41,6 +41,9 @@ def readouts(
     out = []
     for target in targets:
         entry: dict = {"vgs_v": target, "note": READOUT_NOTE}
+        if axis_limits is not None and not axis_limits[0] <= target <= axis_limits[1]:
+            out.append(dict(entry, rds_mohm=None, status="not_on_chart", detail="outside the calibrated VGS axis"))
+            continue
         # A target within one pixel of a curve end is read AT that end (the
         # trace's last point sits a rounding error short of, e.g., the 10 V
         # frame); anything farther out is off the chart.
@@ -173,6 +176,8 @@ def validate_against_table(curves: list[dict], rows: list[RdsonSpecRow], calibra
         overall, reason = "not_evaluable", "no table row could be matched to a curve"
     elif any(a["verdict"] == "inconsistent" for a in evaluable):
         overall, reason = "inconsistent", "a curve contradicts its table row"
+    elif exact and all(a.get("assumptions") for a in exact):
+        overall, reason = "consistent_at_assumed_conditions", "numerically consistent, but temperature-kind equivalence is unestablished"
     elif exact:
         overall, reason = "verified", f"{len(exact)} table row(s) consistent at the table's own drain current"
     else:
@@ -272,7 +277,7 @@ def condition_mismatch_notes(curves, rows, calibration, per_px) -> list[dict]:
             if reading["status"] != "read":
                 continue
             value = reading["rds_mohm"]
-            if value <= row.max_mohm * (1 + MAX_OVERSHOOT_TOLERANCE) + per_px(value):
+            if value <= row.max_mohm:
                 continue
             differs = [f"curve {temperature:g} C vs row {row.temperature_c:g} C"]
             if curve.get("id_a") is not None and row.id_a is not None and abs(curve["id_a"] / row.id_a - 1.0) > EXACT_ID_TOLERANCE:
@@ -283,10 +288,14 @@ def condition_mismatch_notes(curves, rows, calibration, per_px) -> list[dict]:
                 "vgs_v": row.vgs_v,
                 "chart_mohm": value,
                 "table_max_mohm": row.max_mohm,
+                "excess_mohm": round(value - row.max_mohm, 5),
+                "reading_resolution_mohm_per_px": round(per_px(value), 5),
+                "within_one_pixel": value - row.max_mohm <= per_px(value),
                 "table_temperature_c": row.temperature_c,
                 "curve_temperature_binding": curve.get("parameter_binding", {}).get("temperature_c"),
                 "text": (f"curve {curve['curve_index']} lies above the table max at the table's VGS "
-                         f"({value:.3g} > {row.max_mohm:g} mOhm at {row.vgs_v:g} V), but the conditions differ ("
+                         f"({value:.5g} > {row.max_mohm:g} mOhm at {row.vgs_v:g} V; "
+                         f"excess {value - row.max_mohm:.5g} mOhm, one pixel {per_px(value):.5g} mOhm), but the conditions differ ("
                          + "; ".join(differs) + "): a condition mismatch, not a datasheet contradiction"),
             })
     return out
@@ -467,7 +476,13 @@ def _place_curve_labels(body, curves: list[dict], plot) -> list[dict]:
     """A small direct label per curve, e.g. "c1 Tc=25C" (R3-12): white box,
     curve-coloured border and text, offset from the ink and other labels."""
     placed: list[tuple[int, int, int, int]] = []
-    all_pts = np.concatenate([np.asarray(c["points_px"], dtype=float) for c in curves if c.get("points_px")] or [np.zeros((0, 2))])
+    occupied = np.zeros(body.shape[:2], dtype=np.uint8)
+    for curve in curves:
+        pts, segments = _segments(curve)
+        for a, b in segments:
+            if b-a >= 2:
+                cv2.polylines(occupied, [np.rint(pts[a:b]).astype(np.int32)], False, 255,
+                              2 * LABEL_CLEARANCE_PX + 1)
     out = []
     for curve in sorted(curves, key=lambda c: c["curve_index"]):
         pts, segments = _segments(curve)
@@ -486,9 +501,7 @@ def _place_curve_labels(body, curves: list[dict], plot) -> list[dict]:
                     continue
                 if any(not (box[2] < o[0] or box[0] > o[2] or box[3] < o[1] or box[1] > o[3]) for o in placed):
                     continue
-                if len(all_pts) and ((all_pts[:, 0] >= box[0] - LABEL_CLEARANCE_PX) & (all_pts[:, 0] <= box[2] + LABEL_CLEARANCE_PX)
-                                     & (all_pts[:, 1] >= box[1] - LABEL_CLEARANCE_PX)
-                                     & (all_pts[:, 1] <= box[3] + LABEL_CLEARANCE_PX)).any():
+                if occupied[box[1]:box[3]+1, box[0]:box[2]+1].any():
                     continue
                 choice = (box, (int(ax_), int(ay)))
                 break
@@ -558,7 +571,7 @@ def write_overlay(image, row: dict, out_dir: Path, panel: LocatedPanel, stem: st
             y_ticks=[(t.pixel, t.value) for t in calibration.y_axis.ticks],
             color=(255, 0, 0), font_scale=0.4, marker_size=10, unit_x="V",
             unit_y="mOhm" if unit == "mOhm" else "Ohm" if unit == "Ohm" else "?",
-            line_aa=True, halo=True,
+            line_aa=True, halo=True, x_labels_below=True, y_labels_left=True,
         )
     width_px = body.shape[1] - 8
     header = _header_lines(row, panel, width_px)

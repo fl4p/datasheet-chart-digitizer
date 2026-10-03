@@ -258,11 +258,11 @@ class EndToEndTests(unittest.TestCase):
     def tearDownClass(cls):
         cls._tmp.cleanup()
 
-    def test_ti_figure7_is_ok_and_matches_its_table(self):
+    def test_ti_figure7_matches_table_at_assumed_temperature_kind(self):
         row = _panel(self.results["CSD17306Q5A_TI"], 4, "7")
-        self.assertEqual(row["status"], "ok", row.get("reasons"))
+        self.assertEqual(row["status"], "review_required", row.get("reasons"))
         self.assertEqual(row["trace_method"], "vector")
-        self.assertEqual(row["validation"]["verdict"], "verified")
+        self.assertEqual(row["validation"]["verdict"], "consistent_at_assumed_conditions")
         for anchor in row["validation"]["anchors"]:
             self.assertEqual(anchor["verdict"], "consistent")
             self.assertLess(abs(anchor["residual_vs_typ_mohm"]), 0.05)
@@ -275,7 +275,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_readouts_left_of_the_plotted_span_are_not_on_chart(self):
         row = _panel(self.results["IRLB8748_IFX"], 6, "12")
-        self.assertEqual(row["status"], "ok", row.get("reasons"))
+        self.assertEqual(row["status"], "review_required", row.get("reasons"))  # approximate 4.5 V current anchor
         cold = _curve(row, 25.0)
         self.assertGreater(cold["vgs_range_v"][0], 3.3)
         for vgs in (2.5, 3.3):
@@ -533,7 +533,9 @@ class CliTests(unittest.TestCase):
             manifest = json.loads((Path(tmp) / "rdson_gate_voltage.json").read_text())
         self.assertEqual(code, 0)
         self.assertEqual(manifest["kind"], "rds_on_vgs")
-        self.assertEqual(sorted(p["diagram"] for p in manifest["panels"]), ["7", "t519"])
+        self.assertEqual([p["diagram"] for p in manifest["panels"]], ["7"])
+        self.assertEqual(manifest["panels"][0]["also_printed_at"][0]["diagram"], "t519")
+        self.assertEqual(len(manifest["discarded_duplicates"]), 1)
 
 
 # Unpatched originals, captured once so a patch can wrap the real producer.

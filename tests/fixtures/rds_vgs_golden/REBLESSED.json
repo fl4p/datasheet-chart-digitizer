@@ -140,6 +140,539 @@
    "finding": "F-v3-1 (y axis bound to its printed filled-rectangle rules; axis_ticks_not_bound_to_grid gone; every readout unchanged)",
    "note": "Fab marked it green on the batch_all v4 review packet (rds-vgs/review/rds-vgs-all-v4-001.html), his words 2026-09-30: \"all green\".",
    "date": "2026-09-30"
+  },
+  {
+   "part": "AO3400A_UMW_C347475",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "865d80e238bbabe9d58277db6c0c1d3b4e2792038e2467b6118f24d002c0d66d",
+    "points_c0.csv": "916e8aaf8974aaa979b984b92c922b6f887e629f9bebde9d1fbdc34161d17c94",
+    "points_c1.csv": "3283b9228e81b1fd7ef569be611a0087f0a327b7e696cc1c2ac66f6babd85f29"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "AO3416_AOS",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "5f1a40507138f5a605258068f6cebab9e480aad232d13ac02e8e22aac21e5493",
+    "points_c0.csv": "024dc35c32f561ea07d3bb0599ad813418b061ca13bbe66cddcdd442686b38d5",
+    "points_c1.csv": "a1d258bdaf9a46587d71db171784b56413650bd7d68fa73a4510cd6f25c85652"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "AON7524_AOS",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "28c5b7177057ddbe22f835bf8ea2a495fbf25d79ea6c2b17a4c0d3eefb773781",
+    "points_c0.csv": "e3730bb9408449792b9fea6f4819d3f9656d46a2ecad96b29194db58a4bffc9b",
+    "points_c1.csv": "fe6418bd8be860c5ebc578c2c9a2720449c274cddff863cd9a512b7a7a86101c"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "BRCS020N03RA_LCSC_C22449012",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "622132bf942379844b83c4c1d058bc58b499e681a76131087133f630740378ed",
+    "points_c0.csv": "1c9b61b8e26cfd42bb5fe528aaac94287869108c95605b7a0c9f3ce0edb5465f",
+    "points_c1.csv": "556b0448d37d1ab9d5f3b9f31066af5a69b3387fd2940ef7ba2b33361fe134ec"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17302Q5A_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "e678914d6ac6cfe45c2042a21089868c005d0f4905e8b441eb773ef32dafdda2",
+    "points_c0.csv": "fdc814dac8609e1c354358e6b0836611653cca8b6b8735638572b0f052079012",
+    "points_c1.csv": "b5c1e15b558a2f9a0aba66dee20936192fc68f181a8e44c50c0a38c277d656fc"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17302Q5A_TI__p1_dt525",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "bbaa2cbadffe5c8291eda8354617b5cf3e2d20e38c58e272fc1067bd232a2b62",
+    "points_c0.csv": "7b172f1a5d9a1b1370ec925453c7db8cd9392e1e4d93350f0b245c26c80fe8d4",
+    "points_c1.csv": "d6402d73a94a6a900d38d173675aaeefbbdac9b8a9c03caa2b941af9d144ca50"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17304Q3_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "7f6ef2fc0367c38fdd906ea20399b2d137a0727fb51b884f73ac57dfd384c2e9",
+    "points_c0.csv": "05449b5e4bb717418ada31c18208cfcbbf55533741f89f193e179a2000ddddc7",
+    "points_c1.csv": "2980bea8d43bc5932932f7ead295787b6b01190189aaa0f4e6f7d66d8d664771"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17304Q3_TI__p1_dt512",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "a033c6f47c35b111b3faba867967e227722ab09164e1d380b5664f94f9ae4cd3",
+    "points_c0.csv": "3c30605c1e3388eab4becd75c5bbebcfe6578aedafd80e940998c065ddf10af1",
+    "points_c1.csv": "84cd9503b4fb2d92cf91d55d4c8e428926a19c8f67de4969a66bcd034041abfd"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17306Q5A_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "d8d8aab6bfbd813b1c5d0bfe4ce0f34dfde2435d82117fcb6e1f1c64331b9193",
+    "points_c0.csv": "ea28e0e5d05833451cdec6bd905171975ae6cc316b569675770f8aa0f27fbc47",
+    "points_c1.csv": "fd41d83fd0441df4f7f50caedc8853414076713673a9f8f7c6b3baef4a7775c8"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17306Q5A_TI__p1_dt519",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "69626eda472e493ac231ff2762a8970927aeab007e37175b670cbb188a0391b7",
+    "points_c0.csv": "dc9d991c134655a03a913dc927aa6db8c10a7529105e8dbf2df50455c5e0d635",
+    "points_c1.csv": "dc20b2b419f661235ed4d186b710b61dc9cc742210cd636ebf4ca6b0e3661e9c"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17307Q5A_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "890d7cb5475cabff07cf2fdf46d988902cd5d956c5b08d9e6a924d1107d97821",
+    "points_c0.csv": "97701d6c241fa9a42c447a213990170641619f6e9f8728819d931db9956e8122",
+    "points_c1.csv": "32bd8e84ea74c2ea0a6f14f26ed2d41ed4acfff8d6dcd3dcbbd8753ad096cca4"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17307Q5A_TI__p1_dt525",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "5f843409bbf7a8a49e1712be39cdb0bd6fe350fd5b5191e690f652f6db2f2080",
+    "points_c0.csv": "a7cdac6ad6addc5e16178051c9f1acfc9573590099515f302284088b8a515369",
+    "points_c1.csv": "3bf0b699d4a3ed9f8f40ce810519ffc83f93e37a535da57c28ddb04cd267d439"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17309Q3_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "b532a4e77d29a3231d55be23e33a80e10a7a8303bed80c9df9487bb99c155238",
+    "points_c0.csv": "340091a4d8f79989bd575c1d26cc289f9c8aec9fbeb74bfe57332c077eb00b4a",
+    "points_c1.csv": "24a2945aa3541f41a870a9f3248339147a77f34252c72e1d1b30abc7ec9b7e44"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17309Q3_TI__p1_dt544",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "9a799b9cc78305c1dee638fefb3f48464e3dd260053b95093aee3d4778f7a522",
+    "points_c0.csv": "3653ec02bd468365b8bb40a13ff1b54e23de69e50e3290e1769e9110453a295a",
+    "points_c1.csv": "cf1fca228283ebde69780226f59b84f6dbe01b5af76a4ef6c67a9194cc9e2cc0"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17310Q5A_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "ca2d833573a3aa863ea22e04805f16cffd0111f697e78a6695ff54d0a46665d1",
+    "points_c0.csv": "93c08d291435371f8c35ef13f391234360ed84fe0084ee3958e69b722138c404",
+    "points_c1.csv": "0612ac097349697cdee63acdff7746bbfda86e497c5f2754ede9e8e2cca14233"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17310Q5A_TI__p1_dt537",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "e47a64114a2fdf740050418e09c808f2f4d2e195f885095c4a008d8992972222",
+    "points_c0.csv": "8782331ec901501a52a3bc5c7d871b0d8a92bd59cb9c63ab8f366e65eb3714ca",
+    "points_c1.csv": "8463ec9a81da9ffdf40b1c35b514e96357bb744b2debf8e5a22b2b1ae32f9da1"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17318Q2_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "d1b69b99bde08d601ef91926d875fd3534ac924dbcf2ae6dc1dca61d742a7c93",
+    "points_c0.csv": "ed011b7fba3fb2df0bd6e7fdc9e89e7d18bec1b40e09b3075f250f8e87620cd8",
+    "points_c1.csv": "f35caaac537ea4d11c5cddee16dfe9f1d07d7819cb36b4ecbebfb623186793bc"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD17318Q2_TI__p1_dt693",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "213dbbe83227bd6b1f3d6e24be76c0ba3107285b70fa8ad8221406509c63b367",
+    "points_c0.csv": "057992cf03a532a1feaa82bb56a17861402100be2b7d408b95ca3b44a87f6a30",
+    "points_c1.csv": "8b2c1576d78c8044fe46313ef46f84c05d4c2c55854a9fd0f028db25676d631d"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD18502KCS_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "9a87442e4d633d65efe35337344657bb40654e87d11020d8afc7d7f643fe54d4",
+    "points_c0.csv": "878d724df1e53c9c58b313da2ca7238e324325cfef90b52572c826c53590938a",
+    "points_c1.csv": "8a27be0fcb7d0c214233b4a28fb3bac74a4282882207bb04d28fa0c9d4be3319"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD18502KCS_TI__p1_dt651",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "5c8c0d4dea14baa44c7de509ff0cb6a35cb71363c31444af5550ea256e82aad5",
+    "points_c0.csv": "1d3901c57b47992fd0c6b4573712466cfa381d73482fe1b80c957438c19324c6",
+    "points_c1.csv": "d149e0717ed616397f3e0f972881fd0ddefe709f300a33e8ef0202b9f024553e"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD18536KCS_TI",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "a4057e4cd86e29e98ba78f9b9bc2e0505349a0a30fa9400ee2aa52728447173c",
+    "points_c0.csv": "bd01f6eecfce359bb107e3a3041ab0c6f6d7ed87fa928e893dfe6975d0f679ac",
+    "points_c1.csv": "31c5d0dea45ad02f1b679d4317884e9497043be0c4d667e8bd7efe93f7bd66b1"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "CSD18536KCS_TI__p1_dt651",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "c3ae7ea5764968100fe39a115df6c2c1d05cac55c7316505fb46b7f912ee607f",
+    "points_c0.csv": "8c55d2339211cc8cca3fb11687a26bfdccf8b212ec3307caac8bbb539d3af8cb",
+    "points_c1.csv": "cddc2b9c7573d61058334506f7c7bb1f4a4226cabf4fcbf3c38ecb6b6d4eca1f"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "DMN3023L_Diodes",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "c755a15b212b6dd3cf6f505f590fb8396ddb6cb933e0d182241044370caad786",
+    "points_c0.csv": "0d46de6bda09241e6c333018ef024eb5bb99fd7e57756af0b5b349a20310c2db",
+    "points_c1.csv": "59bbfa37a1a70af76392980e8fa701fcd87815552d57bdb036cd2e842e18d035"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "DMN4008LFG_Diodes",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "916382db2bfee89b54369b477fa5ee7ce1a5f48d8b44639c6f8b903e8a144035",
+    "points_c0.csv": "0e0c5d7cc00030caa501bcee88da849f86e431a2abbb542ce27a5b7cb2ee4d67",
+    "points_c1.csv": "5fd40469bdf4383c1463e14efd7b979a7bcb53bf473ee25e5420ac00867f728e",
+    "points_c2.csv": "647d5330d1e3e49d3de9543d518348dcba37d781bd3954df2222fab03741efe2"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "DMT6009LCT_Diodes",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "07c63efe2bbd446b9e0d23a0f8695e851c214c394b12c8a8969b0e687b2d1c50",
+    "points_c0.csv": "e38ad6a2c1d646645a9cb88bc8a986c5c9d622dbeaf849fc377cf4e7d18be50e"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "FDP8870_onsemi",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "c0dd704581522242c1b7bfa70fd6bfc638acfcc215482f5ff8502488260bb371",
+    "points_c0.csv": "0f2408fca8c8a93864f843851391102995b9e8da146305c3ca87c34aa6e7bc12",
+    "points_c1.csv": "d377d00ffc932bf9ff8362775670310317f5758244f6a81d040032eef8aac6a0"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "HSP4048_LCSC_C701029",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "451df36cc151feba23e8273a37ba0e156853c7b90105d2d458df251e1004eba0",
+    "points_c0.csv": "79f5c529239bf3a4d51f8439f1e4ee81d4d5046077e2f173b7311a345c80e7e2"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLB4132_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "0a862b820448cd1afb7e79f78c86720b8f6deabfcb2120a66aae59e41f3c0fce",
+    "points_c0.csv": "65a7246f5818555495134c894c9c4ee22ec406a81ddfe872fd90207890da78ea",
+    "points_c1.csv": "80413e20e96d0af28c3c1bfb042e797922004054a5e43b5ca23bb9b97238b7ad"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLB8314_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "61579f22719f5b3cc98712a16a7f6b2718263f3cb36dccfbe654c80605893596",
+    "points_c0.csv": "e7b7a155b986d170f68c53e267ecbc1d45c5f87ee7b30bf3a08270d859a23a57",
+    "points_c1.csv": "389a785e49e5d664c084322e2ff77e1384445d424ade2539021ede28776705f5"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLB8721_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "2f5a22f30f402abf5fde11f2882a42c02347b496922807d497834385b1a2727f",
+    "points_c0.csv": "31b4841f18dd1744271cfcf2d0ad48867a280cc19c2b09ea89927f2cdd9159e7",
+    "points_c1.csv": "1486a5260bc28576e607ce2982b5100940cf1ecd86bc09631504810593c66eb7"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLB8743_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "2d7f9bda9f3dc7f84eea9e56e02bc136d2ab85e81f018479bb7c03888cce4e67",
+    "points_c0.csv": "3ce88d2ad9fed8d9f9c56373e3ca91e4a0bc23d47aa6ff0240ee7db950c48f56",
+    "points_c1.csv": "18c67c250a337973c5591242b008ce564a95f00ce2a80fa9a91584906f5348d4"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLB8748_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "be700a5c11851003c547a4544d2b6c6b4f4dfa434c59b85eae8adfb940941fdf",
+    "points_c0.csv": "bf7d2cb9429fddefd569ae8d061963e671fbd96f4d79fd6cebe34f614f6c7656",
+    "points_c1.csv": "0cc5b9e3a2244fb081dea12170614404b221c6852178477561dff51f80dc35c3"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "IRLTS6342_IFX",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "958cba1fecd92ba2ba905b2192466637ea90a0fe698c049e356879b16f93023d",
+    "points_c0.csv": "8ff0ef931aed45c80cb18bf5407f4b20a663061d6dc2489e246c73b5cac5a2db",
+    "points_c1.csv": "59d76dd40672b340b3f6eaaca8073d5bb213c044e9d6f5f8d8e70f2d698811bd"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "ME95N03T_LCSC_C709730",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "c51df0e71462096c70faacd473282901b38c8c7a913001d1875436e00a08f3d2",
+    "points_c0.csv": "4c9f6123aa5b8bc050ef3169a8f1bca95fee7aaa81f1ebb38b180acf5e16e00d"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "RQ3E110AJ_Rohm",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "194bae15025ebafa22c09edb98b830a67c6d2ed569c5af198acbe2a49f6f9907",
+    "points_c0.csv": "741fcf7d74bc1580ca934f6e8a17064dc0051839758e8c86abc7c64c7c3d24d2",
+    "points_c1.csv": "47b05192f06c403ab90ac4f0c07e76f4348983d08ffb8be281fc414c69e768e7"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "RQ3E180AJ_Rohm",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "db20c55c83f5f0f14d73f72a89efc0f5cd6690c8cdc62234e20f22708d1a384f",
+    "points_c0.csv": "388f4ce7cb9c212a19e50756f29f56e9574150ef21340aa018d71b737805d4a6",
+    "points_c1.csv": "f172b1be4596bae487d9e7a959111b138fe124f0de917f19d3b480d5abff3ac4"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "RQ6E080AJ_Rohm",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "977b213a6030d3515fd72d4682928d96f5a20430ecfbdae152516a14c9bec600",
+    "points_c0.csv": "57c447cf80c091cc785663798364a9c50e59557a022cdb69f9f736877b3e9470",
+    "points_c1.csv": "cbe9b882e688e31e455002f900e7540bcc8dbd7a41047a4cdd58b4322339a563",
+    "points_c2.csv": "605deccf41a4f131bbdd6fd1721eafaf78fa17f71b93ee663cdcdd4b8ce096e4"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "SIS176LDN_Vishay",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "9f44b33314495d8243480efa14c3e35126eb1db2bf852a4b56435968e39e20e2",
+    "points_c0.csv": "3b17a5ff6b0881af9cb1167a87cff6e25865418b71ba7a46846f7149687c5caa",
+    "points_c1.csv": "c2e80cc3b37224aab08428a344effd2dde32b31cc70daa6cb765e982d07402ed"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "SISS76LDN_Vishay",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "116b13a87d9aa3f2345395ce5b125bb0f4f256117ca66aa8ecf66eb0b15c6cd3",
+    "points_c0.csv": "3dbae97b5bfc4ed1a176e5fbe673b20d0182b5abbf7387f59f2a1ba4b067b492",
+    "points_c1.csv": "20397abfdc2413d450fa48fc88a9d00093a2a785966ea315cb2b95a82350ca9e"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "VBZM150N03_LCSC_C700703",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "fd064ab31a8c45805305aa6e8b14a7cc7351844ef5302c08da90108f290c52ab",
+    "points_c0.csv": "7f6692360fbd08994fb78bef03d9bb83c081d08a96102ff15dc8ec0a3df438a5",
+    "points_c1.csv": "1f20b0c143ad3596ab18364bd68a7ffe9faa73e82ada0f982b45050b645c65ea"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
+  },
+  {
+   "part": "WSR3090_LCSC_C719278",
+   "kind": "refreeze",
+   "dir": "batch_all_v5",
+   "superseded_sha256": {
+    "panel.json": "97a526891a14daeeffb6b0947cd2d9e086bcd14fca28cf3cdd9db02486d58205",
+    "points_c0.csv": "8c79c27dcdcbfb8fbfa425cfc7ebdb5fac384f84c44af9b2499a441401377327",
+    "points_c1.csv": "de2b4b81a4a8b7035d0a96950a18a44f6d69c5dce1f9e52b403e2f46c5653bd8",
+    "points_c2.csv": "b430b69e916da959442929763b63c97d6c2063eccf72c4d02d431b056b34ee94"
+   },
+   "finding": "Fab review of batch_all_v5 F01-F12; no re-blessing",
+   "note": "Fab marked every card green on the batch_all v5 review packets (rds-vgs/review-html/rds-vgs-all-v5/rds-vgs-all-v5-001.html and -002.html, 42 cards), his words 2026-10-01: \"all green\". Frozen from batch_all_v5 (dsdig 8a9def0, the GPT Astra review fixes F01-F12). No traced point, readout or axis map changed vs the superseded fixture; the changed served fields are the ones the PENDING entry named.",
+   "date": "2026-10-01"
   }
  ]
 }

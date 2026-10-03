@@ -66,7 +66,7 @@ _RDS_LABEL_RE = re.compile(
 )
 _KIND_BY_CONDITION = {"TJ": "Tj", "TC": "Tc", "TA": "Ta"}
 # "(Ta = 25°C unless ...)", "@ TJ = 25°C", "Electrical Characteristics(Ta=25℃)", "(at Tamb = 25°C ...)"
-_HEADING_TEMPERATURE_RE = re.compile(r"\bT\s*([JjCcAa])(?:mb)?\s*=\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)")
+_HEADING_TEMPERATURE_RE = re.compile(r"\bT\s*([JjCcAa])(?:mb)?\s*=\s*\+?\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)")
 _EXCLUDED_CONDITIONS = {"VDS", "VDD", "RG", "RGEN", "IS", "ISD", "IF", "F", "RL"}
 _HEADER_TOKENS = {
     "min": re.compile(r"^min(?:imum)?\.?$", re.I),

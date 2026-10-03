@@ -32,6 +32,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import numpy as np
+import re
 
 from datasheet_chart_digitizer import rdson_gate_voltage as rgv
 from datasheet_chart_digitizer import rdson_gate_voltage_axes as axes
@@ -40,6 +41,9 @@ from datasheet_chart_digitizer import rdson_gate_voltage_locate as loc
 from datasheet_chart_digitizer import rdson_gate_voltage_report as report
 from datasheet_chart_digitizer import rdson_gate_voltage_traces as traces
 from datasheet_chart_digitizer import rdson_spec_table as spec
+from datasheet_chart_digitizer import rdson_gate_voltage_conditions as conditions
+from datasheet_chart_digitizer import rdson_gate_voltage_evidence as evidence
+from datasheet_chart_digitizer import rdson_gate_voltage_duplicates as duplicates
 
 import test_rdson_gate_voltage_golden as golden
 import test_rdson_gate_voltage_review as review
@@ -120,7 +124,8 @@ class _source_mutant:
             source = source.replace(old, new)
         scope = dict(vars(module))
         exec(compile(source, f"<mutant {name}>", "exec"), scope)
-        holders = [m for m in (rgv, report, traces, axes, spec, labels, loc) if getattr(m, name, None) is original]
+        holders = [m for m in (rgv, report, traces, axes, spec, labels, loc, conditions, evidence, duplicates)
+                   if getattr(m, name, None) is original]
         self._patches = [patch.object(m, name, scope[name]) for m in holders]
         self._stack = None
 
@@ -356,14 +361,8 @@ MUTANTS = {
     "TJ_MATCH_1.5": ([patch.object(report, "TJ_MATCH_C", 1.5)], [B + "test_temperature_match_window"]),
     "exact_outranks_inconsistent (verdict kind)": (
         [_source_mutant(report, "validate_against_table", (
-            '''    elif any(a["verdict"] == "inconsistent" for a in evaluable):
-        overall, reason = "inconsistent", "a curve contradicts its table row"
-    elif exact:
-        overall, reason = "verified", f"{len(exact)} table row(s) consistent at the table's own drain current"''',
-            '''    elif exact:
-        overall, reason = "verified", f"{len(exact)} table row(s) consistent at the table's own drain current"
-    elif any(a["verdict"] == "inconsistent" for a in evaluable):
-        overall, reason = "inconsistent", "a curve contradicts its table row"'''))],
+            'elif any(a["verdict"] == "inconsistent" for a in evaluable):',
+            'elif not exact and any(a["verdict"] == "inconsistent" for a in evaluable):'))],
         [B + "test_an_inconsistent_anchor_outranks_an_exact_consistent_one"]),
     "approximate_counts_as_verified (verdict kind)": (
         [_source_mutant(report, "validate_against_table", ('exact = [a for a in evaluable if a.get("condition_match") == "exact"]',
@@ -839,6 +838,159 @@ MUTANTS = {
         [patch.object(axes, "_rule_source", lambda axis, vector_rules, all_rules: all_rules)],
         [V4 + "test_f_v3_1_sweep_ir_panels_bind_on_their_filled_rules"]),
 }
+
+
+V5 = "BatchAllV5Tests."
+MUTANTS.update({
+    "v5_f01_assumptions_verify": (
+        [_source_mutant(report, "validate_against_table", ('elif exact and all(a.get("assumptions") for a in exact):', 'elif False:'))],
+        [V5 + "test_f01_assumed_temperature_cannot_verify"]),
+    "v5_f01_assumptions_not_panel_reasons": (
+        [_source_mutant(rgv, "_digitize", ('reasons.extend(f"validation_condition_assumption: {a}" for a in row["validation"]["assumptions"])', 'pass'))],
+        [V5 + "test_f01_assumed_temperature_cannot_verify"]),
+    "v5_f02_no_isolated_current_reader": (
+        [patch.object(rgv, "isolated_condition_labels", lambda *a: [])], [V5 + "test_f02_printed_currents"]),
+    "v5_f02_ocr_disagreement_accepted": (
+        [_source_mutant(labels, "isolated_condition_labels", ('and votes[0][1] == votes[1][1]', 'and True'))],
+        [V5 + "test_f02_ocr_disagreement_and_blank_refuse"]),
+    "v5_f02_no_color_ownership": (
+        [patch.object(rgv, "single_colored_trace_evidence", lambda *a: None)], [V5 + "test_f02_printed_currents"]),
+    "v5_f02_unexplained_color_accepted": (
+        [_source_mutant(evidence, "single_colored_trace_evidence", ('if cv2.connectedComponents(mask, 8)[0] != 2:', 'if False:'),
+                        ('if not np.isfinite(distance).all() or float(distance.max()) > 10:', 'if False:'))],
+        [V5 + "test_f02_colored_ownership_rejects_missing_or_extra_curve"]),
+    "v5_f03_no_typical_page_heading": (
+        [patch.object(rgv, "typical_temperature_note", lambda *a: [])], [V5 + "test_f03_page_scope_and_f07_table_heading"]),
+    "v5_f04_no_subscript_reader": (
+        [patch.object(rgv, "refine_temperature_subscripts", lambda gray, ll, *a: ll)], [V5 + "test_f04_printed_kind_and_source_start"]),
+    "v5_f04_no_source_start_proof": (
+        [patch.object(rgv, "blank_before_source_start", lambda *a: False)], [V5 + "test_f04_printed_kind_and_source_start"]),
+    "v5_f04_ink_ignored_before_start": (
+        [_source_mutant(evidence, "blank_before_source_start", ('return not bool(np.any(ink))', 'return True'))],
+        [V5 + "test_f04_printed_kind_and_source_start"]),
+    "v5_f04_outside_axis_claims_lost_trace": (
+        [_source_mutant(report, "readouts", ('if axis_limits is not None and not axis_limits[0] <= target <= axis_limits[1]:', 'if False:'))],
+        [V5 + "test_f04_printed_kind_and_source_start"]),
+    "v5_f05_residual_muted": (
+        [_source_mutant(evidence, "printed_tick_evidence", ('elif worst > 1.0 + 1e-9:', 'elif False:'))],
+        [V5 + "test_f05_f06_all_printed_residuals_and_no_map_change"]),
+    "v5_f05_empty_rules_claim_clean": (
+        [patch.object(evidence, "printed_tick_evidence", lambda c, ll: (c, {"x": {"added_span_ticks": []}}, []))],
+        [V5 + "test_f05_rule_evidence_known_bads"]),
+    "v5_f05_vector_rules_deferred_to_projection": (
+        [_source_mutant(evidence, "printed_tick_evidence", ('physical = [r for r in vector if r in near]', 'physical = []'))],
+        [V5 + "test_f05_f06_all_printed_residuals_and_no_map_change"]),
+    "v5_f05_competing_vector_rules_accepted": (
+        [_source_mutant(evidence, "printed_tick_evidence", ('near = physical', 'near = physical[:1]'))],
+        [V5 + "test_f05_rule_evidence_known_bads"]),
+    "v5_f05_log_minor_rule_owns_label": (
+        [_source_mutant(evidence, "printed_tick_evidence", ('if axis.model == "log10" and seated:', 'if False:'))],
+        [V5 + "test_f05_f06_all_printed_residuals_and_no_map_change"]),
+    "v5_f05_no_printed_decimal": (
+        [patch.object(axes, "_printed_decimal", lambda *a: None)], [V5 + "test_f05_decimal_needs_printed_dot"]),
+    "v5_f05_invent_decimal": (
+        [patch.object(axes, "_printed_decimal", lambda im, s: s[0]+'.'+s[1:])], [V5 + "test_f05_decimal_needs_printed_dot"]),
+    "v5_f06_vector_frame_ignored": (
+        [_source_mutant(evidence, "printed_tick_evidence", ('near = close if len(close) == 1 else physical', 'near = seated'))],
+        [V5 + "test_f05_f06_all_printed_residuals_and_no_map_change"]),
+    "v5_f06_frame_excess_muted": (
+        [_source_mutant(rgv, "_curves", ('if calibration.x_axis.model == "log10" and points[-1][0] > labelled_max + 1e-4:', 'if False:'))],
+        [V5 + "test_f05_f06_all_printed_residuals_and_no_map_change"]),
+    "v5_f07_positive_heading_lost": (
+        [patch.object(spec, "_HEADING_TEMPERATURE_RE", re.compile(r"\bT\s*([JjCcAa])(?:mb)?\s*=\s*25\s*(?:°|º|o)?\s*(?:C\b|℃)"))],
+        [V5 + "test_f03_page_scope_and_f07_table_heading"]),
+    "v5_f08_colliding_labels": (
+        [_source_mutant(report, "write_overlay", ('x_labels_below=True, y_labels_left=True', 'x_labels_below=False, y_labels_left=False'))],
+        [V5 + "test_f08_overlay_label_placement"]),
+    "v5_f08_sparse_segments_ignored": (
+        [_source_mutant(report, "_place_curve_labels", ('if occupied[box[1]:box[3]+1, box[0]:box[2]+1].any():', 'if False:'))],
+        [V5 + "test_f08_sparse_steep_segments_are_occupied"]),
+    "v5_f09_small_excess_suppressed": (
+        [_source_mutant(report, "condition_mismatch_notes", ('if value <= row.max_mohm:', 'if value <= row.max_mohm * 1.05 + per_px(value):'))],
+        [V5 + "test_f09_small_excess_is_inventory_not_contradiction"]),
+    "v5_f10_no_pulse_conditions": (
+        [patch.object(rgv, "pulse_conditions", lambda *a: [])], [V5 + "test_f10_pulse_inventory_and_local_scope"]),
+    "v5_f10_neighbour_pulse_imported": (
+        [_source_mutant(conditions, "pulse_conditions", ('if plot.x0 <= l.cx <= plot.x1 and plot.y0 <= l.cy <= plot.y1', 'if True'))],
+        [V5 + "test_f10_pulse_inventory_and_local_scope"]),
+    "v5_f11_no_separate_contact_ink": (
+        [patch.object(rgv, "recover_separate_contact_ink", lambda tt, gray: tt)], [V5 + "test_f11_separate_ink_is_added_contact_retained"]),
+    "v5_f11_touching_band_accepted": (
+        [_source_mutant(evidence, "recover_separate_contact_ink", ('and len(r) <= 5', 'and True'))],
+        [V5 + "test_f11_missing_wide_or_competing_ink_stays_contact"]),
+    "v5_f11_shared_band_accepted": (
+        [_source_mutant(evidence, "recover_separate_contact_ink", ('if shared:', 'if False:'))],
+        [V5 + "test_f11_missing_wide_or_competing_ink_stays_contact"]),
+    "v5_f12_approximate_reason_muted": (
+        [_source_mutant(rgv, "_digitize", ('if anchor.get("condition_match") == "approximate_drain_current":', 'if False:'))],
+        [V5 + "test_f12_approximate_rows_have_panel_reasons"]),
+})
+
+
+# Duplicate selection: one disabled condition per mutant, on real PDF panels
+# or deliberately altered copies of those panels (no fabricated curves).
+_D = "test_rdson_gate_voltage_v5.DuplicateTests."
+for _label, _patch, _test in [
+    ("SCOPE", _source_mutant(duplicates, "compare_panels",
+         ('Path(a["pdf"]).resolve() != Path(b["pdf"]).resolve()', 'False')), "test_cross_pdf_identical_plots_kept"),
+    ("VISUAL", patch.object(duplicates, "VISUAL_MIN", -1.0), "test_changed_plot_keeps_identical_data"),
+    ("VALUES", patch.object(duplicates, "VALUE_REL_TOL", 2.0), "test_curve_values_all_samples_and_far_tail"),
+    ("READOUTS", patch.object(duplicates, "_readout_diff", return_value=0.0), "test_readout_values_and_states"),
+    ("SAMPLE_ALL", patch.object(duplicates, "_directed_value_diff", return_value=0.0), "test_curve_values_all_samples_and_far_tail"),
+    ("X_BOUND", patch.object(duplicates, "X_SPAN_TOL", 1.0), "test_curve_domain"),
+    ("REFUSAL", _source_mutant(duplicates, "data_evidence",
+         ('if any(r.get("status") not in ("ok", "review_required") for r in (a, b)):', 'if False:')),
+         "test_refused_or_unusable"),
+    ("VERDICT", _source_mutant(duplicates, "data_evidence",
+         ('if a["status"] != b["status"] or a["validation"]["verdict"] != b["validation"]["verdict"]:', 'if False:')),
+         "test_status_and_verdict_conflict"),
+    ("GRID", _source_mutant(duplicates, "_axes",
+         ('if cal["grid_binding"] != "snapped_to_full_span_grid":', 'if False:')), "test_calibration_missing_and_unbound"),
+    ("MODEL", _source_mutant(duplicates, "data_evidence", ('if am != bm:', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("RANGES", patch.object(duplicates, "AXIS_RANGE_TOL", 100), "test_axis_model_ranges_units_and_ticks"),
+    ("TICKS", _source_mutant(duplicates, "data_evidence",
+         ('if len(at) != len(bt) or not np.allclose(at, bt, rtol=1e-9, atol=1e-10):', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("UNITS", _source_mutant(duplicates, "data_evidence", ('if sa != sb:', 'if False:')),
+         "test_axis_model_ranges_units_and_ticks"),
+    ("COUNT", _source_mutant(duplicates, "data_evidence", ('if len(left) != len(right):', 'if False:')),
+         "test_curve_count_and_ambiguity"),
+    ("AMBIGUITY", _source_mutant(duplicates, "data_evidence",
+         ('if len(lc) != len(left) or len(rc) != len(right):', 'if False:')), "test_curve_count_and_ambiguity"),
+    ("ID", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (0, curve["temperature_c"], curve["temperature_kind"])')), "test_bound_labels"),
+    ("TEMP", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (curve["id_a"], 0, curve["temperature_kind"])')), "test_bound_labels"),
+    ("KIND", _source_mutant(duplicates, "_curve_key",
+         ('return tuple(curve[k] for k in ("id_a", "temperature_c", "temperature_kind"))',
+          'return (curve["id_a"], curve["temperature_c"], "ignored")')), "test_bound_labels"),
+    ("BOUND", _source_mutant(duplicates, "_curve_key",
+         ('if curve.get(key) is None or not curve.get("parameter_binding", {}).get(key):', 'if False:')),
+         "test_unbound_labels"),
+    ("FINITE", _source_mutant(duplicates, "_finite", ('if not np.isfinite(result).all():', 'if False:')),
+         "test_nonfinite_data"),
+    ("SAMPLES", patch.object(duplicates, "MIN_SAMPLES", 2), "test_sample_count_gaps_and_missing"),
+    ("GAPS", _source_mutant(duplicates, "_points",
+         ('if not curve["usable"] or curve.get("gaps") or curve.get("untraced_section_reasons"):', 'if False:')),
+         "test_sample_count_gaps_and_missing"),
+    ("BLANK", _source_mutant(duplicates, "_plot_ink",
+         ('if not 0.002 < float(ink.mean()) < 0.8 or float(ink.std()) < 0.01:', 'if False:')),
+         "test_visual_missing_blank_corrupt_and_box"),
+    ("EXCEPTIONS", _source_mutant(duplicates, "compare_panels",
+         ('decision = "unevaluable"', 'decision = "duplicate"')), "test_probe_exception_keeps_both"),
+    ("NUMBERED", _source_mutant(duplicates, "_preference", ('return (not numbered, -area,', 'return (numbered, -area,')),
+         "test_real_pair_keeps_numbered_and_served_data"),
+    ("AREA", _source_mutant(duplicates, "_preference", ('return (not numbered, -area,', 'return (not numbered, area,')),
+         "test_resolution_preference_and_deterministic_order"),
+    ("LINKAGE", _source_mutant(duplicates, "deduplicate_pdf", ('if all(lookup[', 'if any(lookup[')),
+         "test_no_transitive_merge"),
+    ("PRODUCER", _source_mutant(rgv, "digitize_pdf", ('results, audit = deduplicate_pdf(results, pdf, out_dir)',
+         '_, audit = deduplicate_pdf(results, pdf, out_dir)')), "test_producer_and_cli_record_evidence"),
+]:
+    MUTANTS["DUP_" + _label] = ([_patch], [_D + _test])
 
 
 # Mutants that change NO output on any of the 15 real panels (checked by

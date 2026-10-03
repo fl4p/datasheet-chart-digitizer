@@ -1,0 +1,175 @@
+{
+ "part": "ZVNL120A_Diodes",
+ "pdf_name": "ZVNL120A_Diodes.pdf",
+ "pdf_sha256": "162fefc62ffafdd8568e0ea7eb51446503d1340e5d8ff99d41ea978aa95e02ba",
+ "page": 3,
+ "diagram": "t394",
+ "title": "On-resistance vs gate-source voltage",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 5.0,
+   "id_a": 0.25,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 3.0,
+   "id_a": 0.125,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "x_axis_printed_rule_residual_4.069px: single log10 map does not seat every printed tick",
+  "y_axis_printed_rule_residual_9.414px: single log10 map does not seat every printed tick",
+  "curve_0_served_beyond_labelled_20V_frame: to 20.086 V; printed-axis residual, no endpoint clipping",
+  "curve_1_served_beyond_labelled_20V_frame: to 20.349 V; printed-axis residual, no endpoint clipping",
+  "curve_2_served_beyond_labelled_20V_frame: to 20.42 V; printed-axis residual, no endpoint clipping",
+  "curve_0_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_1_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_2_temperature_c_unknown (no temperature label read on the panel or page)",
+  "curve_0_exceeds_table_max_at_5V (curve 0 exceeds table max at the table's VGS (1.31e+04 > 10000 mOhm at 5 V); temperature binding unknown; chart ID 1 A vs table ID 0.25 A)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 199,
+  "y0": 50,
+  "x1": 734,
+  "y1": 440
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "log10",
+   "m": 0.0024402210627031177,
+   "b": -0.4841166651070938,
+   "ticks": [
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 199.82851619228416
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 607.294485552095
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 734.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "log10",
+   "m": -0.005119536071102362,
+   "b": 2.2557703611172237,
+   "ticks": [
+    {
+     "text": "100",
+     "value": 100.0,
+     "pixel": 50.104935515776674
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 245.0
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 440.7646884168622
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1000.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "ID=1A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 1.0,
+   "usable": true,
+   "n_points": 447,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 15253.2307,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "ID=0.5A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 0.5,
+   "usable": true,
+   "n_points": 521,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 7767.5983,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 2,
+   "label": "ID=0.1A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 0.1,
+   "usable": true,
+   "n_points": 609,
+   "points_csv": "points_c2.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 8754.5603,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 6372.2863,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 5632.3647,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

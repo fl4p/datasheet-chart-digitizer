@@ -1,0 +1,210 @@
+{
+ "part": "CSD18536KCS_TI",
+ "pdf_name": "CSD18536KCS_TI.pdf",
+ "pdf_sha256": "758f69698b7bfd64196cdb23c03f598d1be8097a53ef1305dd1ca581b2956fae",
+ "page": 5,
+ "diagram": "4-7",
+ "title": "On-State Resistance vs Gate-to-Source Voltage",
+ "status": "review_required",
+ "validation_verdict": "consistent_at_assumed_conditions",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 4.5,
+   "id_a": 100.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 1.6936
+  },
+  {
+   "vgs_v": 10.0,
+   "id_a": 100.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 1.3059
+  }
+ ],
+ "reasons_at_freeze": [
+  "validation_condition_assumption: chart Tc taken as table Ta (both 25 C); equivalence not established by the datasheet",
+  "validation_consistent_at_assumed_conditions"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 237,
+  "y0": 50,
+  "x1": 1028,
+  "y1": 608
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.025284450063211124,
+   "b": -5.992414664981037,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 237.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 316.1
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 395.20000000000005
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 474.30000000000007
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 553.4000000000001
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 632.5000000000001
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 711.6
+    },
+    {
+     "text": "14",
+     "value": 14.0,
+     "pixel": 790.7
+    },
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 869.8000000000001
+    },
+    {
+     "text": "18",
+     "value": 18.0,
+     "pixel": 948.9000000000001
+    },
+    {
+     "text": "20",
+     "value": 20.0,
+     "pixel": 1028.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.007168458781362007,
+   "b": 4.358422939068101,
+   "ticks": [
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 50.000000000000036
+    },
+    {
+     "text": "3.5",
+     "value": 3.5,
+     "pixel": 119.75000000000004
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 189.50000000000003
+    },
+    {
+     "text": "2.5",
+     "value": 2.5,
+     "pixel": 259.25000000000006
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 329.00000000000006
+    },
+    {
+     "text": "1.5",
+     "value": 1.5,
+     "pixel": 398.75000000000006
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 468.50000000000006
+    },
+    {
+     "text": "0.5",
+     "value": 0.5,
+     "pixel": 538.25
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 608.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tc=125C, ID=100A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tc",
+   "id_a": 100.0,
+   "usable": true,
+   "n_points": 866,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 2.434,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tc=25C, ID=100A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tc",
+   "id_a": 100.0,
+   "usable": true,
+   "n_points": 968,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 1.6936,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,143 @@
+{
+ "part": "HSP4048_LCSC_C701029",
+ "pdf_name": "HSP4048_LCSC_C701029.pdf",
+ "pdf_sha256": "75b3c20c652d397424c3c6585ed35a83271c4d85a546c7c234d17af2b86492cd",
+ "page": 3,
+ "diagram": "2",
+ "title": "On-Resistance vs G-S Voltage",
+ "status": "review_required",
+ "validation_verdict": "not_evaluable",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 10.0,
+   "id_a": 20.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 20.0,
+   "temperature_c": 25.0,
+   "verdict": "not_evaluable",
+   "chart_mohm": null
+  }
+ ],
+ "reasons_at_freeze": [
+  "curve_0_temperature_c_unknown (no temperature label read on the panel or page)",
+  "validation_not_evaluable"
+ ],
+ "trace_method": "raster",
+ "plot_box_px": {
+  "x0": 245,
+  "y0": 50,
+  "x1": 1036,
+  "y1": 732
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.010113780025284451,
+   "b": -0.47787610619469056,
+   "ticks": [
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 245.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 442.75
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 640.5
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 838.25
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 1036.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.017595307917888565,
+   "b": 12.879765395894427,
+   "ticks": [
+    {
+     "text": "12.00",
+     "value": 12.0,
+     "pixel": 49.99999999999995
+    },
+    {
+     "text": "10.00",
+     "value": 10.0,
+     "pixel": 163.6666666666666
+    },
+    {
+     "text": "8.00",
+     "value": 8.0,
+     "pixel": 277.33333333333326
+    },
+    {
+     "text": "6.00",
+     "value": 6.0,
+     "pixel": 390.99999999999994
+    },
+    {
+     "text": "4.00",
+     "value": 4.0,
+     "pixel": 504.6666666666666
+    },
+    {
+     "text": "2.00",
+     "value": 2.0,
+     "pixel": 618.3333333333333
+    },
+    {
+     "text": "0.00",
+     "value": 0.0,
+     "pixel": 731.9999999999999
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "ID=20A",
+   "temperature_c": null,
+   "temperature_kind": null,
+   "id_a": 20.0,
+   "usable": true,
+   "n_points": 816,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": null,
+     "status": "not_on_chart"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 2.9378,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 1.969,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}

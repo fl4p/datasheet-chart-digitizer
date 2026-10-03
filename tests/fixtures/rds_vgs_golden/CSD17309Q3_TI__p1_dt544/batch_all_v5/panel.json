@@ -1,0 +1,217 @@
+{
+ "part": "CSD17309Q3_TI",
+ "pdf_name": "CSD17309Q3_TI.pdf",
+ "pdf_sha256": "5aafe580fe1e5744a2176a4c9d90835f7f82ae6ab536e6ae659518b076dde9fd",
+ "page": 1,
+ "diagram": "t544",
+ "title": "R DS(on) vs V GS",
+ "status": "review_required",
+ "validation_verdict": "consistent_at_assumed_conditions",
+ "anchor_verdicts": [
+  {
+   "vgs_v": 3.0,
+   "id_a": 18.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 5.8653
+  },
+  {
+   "vgs_v": 4.5,
+   "id_a": 18.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 4.8359
+  },
+  {
+   "vgs_v": 8.0,
+   "id_a": 18.0,
+   "temperature_c": 25.0,
+   "verdict": "consistent",
+   "chart_mohm": 4.1811
+  }
+ ],
+ "reasons_at_freeze": [
+  "validation_condition_assumption: chart Tc taken as table Ta (both 25 C); equivalence not established by the datasheet",
+  "validation_consistent_at_assumed_conditions"
+ ],
+ "trace_method": "vector",
+ "plot_box_px": {
+  "x0": 242,
+  "y0": 50,
+  "x1": 1042,
+  "y1": 618
+ },
+ "calibration": {
+  "x_axis": {
+   "model": "linear",
+   "m": 0.0125,
+   "b": -3.0250000000000004,
+   "ticks": [
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 242.00000000000003
+    },
+    {
+     "text": "1",
+     "value": 1.0,
+     "pixel": 322.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 402.0
+    },
+    {
+     "text": "3",
+     "value": 3.0,
+     "pixel": 482.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 562.0
+    },
+    {
+     "text": "5",
+     "value": 5.0,
+     "pixel": 642.0
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 722.0
+    },
+    {
+     "text": "7",
+     "value": 7.0,
+     "pixel": 802.0
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 882.0
+    },
+    {
+     "text": "9",
+     "value": 9.0,
+     "pixel": 962.0
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 1042.0
+    }
+   ]
+  },
+  "y_axis": {
+   "model": "linear",
+   "m": -0.028169014084507043,
+   "b": 17.408450704225352,
+   "ticks": [
+    {
+     "text": "16",
+     "value": 16.0,
+     "pixel": 49.99999999999999
+    },
+    {
+     "text": "14",
+     "value": 14.0,
+     "pixel": 121.0
+    },
+    {
+     "text": "12",
+     "value": 12.0,
+     "pixel": 192.0
+    },
+    {
+     "text": "10",
+     "value": 10.0,
+     "pixel": 263.0
+    },
+    {
+     "text": "8",
+     "value": 8.0,
+     "pixel": 334.0
+    },
+    {
+     "text": "6",
+     "value": 6.0,
+     "pixel": 405.0
+    },
+    {
+     "text": "4",
+     "value": 4.0,
+     "pixel": 476.0
+    },
+    {
+     "text": "2",
+     "value": 2.0,
+     "pixel": 547.0
+    },
+    {
+     "text": "0",
+     "value": 0.0,
+     "pixel": 618.0
+    }
+   ]
+  }
+ },
+ "y_to_mohm": 1.0,
+ "curves": [
+  {
+   "curve_index": 0,
+   "label": "Tc=125C, ID=18A",
+   "temperature_c": 125.0,
+   "temperature_kind": "Tc",
+   "id_a": 18.0,
+   "usable": true,
+   "n_points": 869,
+   "points_csv": "points_c0.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 10.6457,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 7.5017,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 6.331,
+     "status": "read"
+    }
+   ]
+  },
+  {
+   "curve_index": 1,
+   "label": "Tc=25C, ID=18A",
+   "temperature_c": 25.0,
+   "temperature_kind": "Tc",
+   "id_a": 18.0,
+   "usable": true,
+   "n_points": 946,
+   "points_csv": "points_c1.csv",
+   "readouts": [
+    {
+     "vgs_v": 2.5,
+     "rds_mohm": 8.3153,
+     "status": "read"
+    },
+    {
+     "vgs_v": 3.3,
+     "rds_mohm": 5.4426,
+     "status": "read"
+    },
+    {
+     "vgs_v": 4.5,
+     "rds_mohm": 4.8359,
+     "status": "read"
+    }
+   ]
+  }
+ ]
+}
