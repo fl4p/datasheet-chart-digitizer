@@ -82,7 +82,13 @@ class ToshibaRasterEndToEndTests(unittest.TestCase):
         self.assertEqual(calibration["x_value_transform"], "abs_source_negative_vds")
         self.assertEqual(calibration["x_gridline_px"], [102.5, 229.0, 355.5, 481.5])
         self.assertLessEqual(calibration["x_grid_residual_px"], 1.0)
-        self.assertGreater(calibration["x_label_to_grid_max_px"], 2.0)
+        # The OCR label centers sit right of the rails (2.5 px with the July
+        # OCR, 1.85 px since 14f22ad); the served map follows the rails, and
+        # the label offset is well above the fit's own error.
+        self.assertTrue(calibration["x_source"].endswith(("_grid_anchored", "_grid_seated")))
+        self.assertGreater(
+            calibration["x_label_to_grid_max_px"], 5 * calibration["x_grid_residual_px"]
+        )
         self.assertEqual(result["status"], "ok")
         self.assertTrue(result["physical_output_available"])
         self.assertEqual(result["trace_validation_status"], "pass")

@@ -21,6 +21,11 @@ SHARED_CISS_COSS_MIN_SPAN_FRACTION = 0.04
 SHARED_CISS_COSS_MIN_POINTS = 12
 SHARED_CISS_COSS_MAX_COLUMN_GAP_PX = 2
 COLUMN_RUN_CLUSTER_GAP_PX = 6.0
+# _split_touching_bottom_pair: a bottom run this many single strokes tall may
+# be two touching strokes, if a clean column this close confirms the spacing.
+SPLIT_MIN_STROKES = 1.6
+SPLIT_MAX_STROKES = 3.2
+SPLIT_MAX_DISTANCE_PX = 40
 UPPER_PAIR_MIN_SEPARATION_PX = 4.0
 CISS_COSS_IDENTITY_MIN_RANGE_RATIO = 1.5
 CISS_COSS_IDENTITY_MIN_RANGE_GAP_FRACTION = 0.03
@@ -405,6 +410,7 @@ def extract_trace_components(
     mask, centers_by_x = _raster_source_centers_by_x(
         gray, plot, preserve_close_upper_pair=joint_pair_tracking
     )
+    centers_by_x = _split_touching_bottom_pair(mask, centers_by_x)
 
     band_samples = [[], [], []]
     for centers in centers_by_x:
@@ -494,6 +500,98 @@ def _raster_source_centers_by_x(
         for x in range(mask.shape[1])
     ]
     return mask, centers_by_x
+
+
+def _column_runs(column: np.ndarray) -> list[tuple[int, int]]:
+    """(top, bottom) of each contiguous ink run, inclusive, top to bottom."""
+    ys = np.flatnonzero(column)
+    if len(ys) == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(ys) > 1)
+    starts = np.concatenate(([ys[0]], ys[breaks + 1]))
+    ends = np.concatenate((ys[breaks], [ys[-1]]))
+    return [(int(a), int(b)) for a, b in zip(starts, ends)]
+
+
+def _split_touching_bottom_pair(
+    mask: np.ndarray, centers_by_x: list[list[float]]
+) -> list[list[float]]:
+    """Resolve Coss and Crss where they converge to about one stroke apart.
+
+    Two curves ~6 px apart reach `_cluster_column_runs` as two separate runs
+    with a 1-2 px gap, which its antialias-fragment rule
+    (COLUMN_RUN_CLUSTER_GAP_PX) fuses into one center; where the gap closes in
+    the mask they are one run about two strokes tall. Either way the column has
+    two centers, Coss takes the bottom one and Crss is withheld
+    (`_drop_reserved_candidates`), so a Crss printed to the end of the plot is
+    served short. TPCC8105: both curves end at -30 V, Crss stopped at -20 V,
+    and the zoomed source shows two strokes throughout.
+
+    The bottom center is replaced by two only when a clean three-stroke column
+    within SPLIT_MAX_DISTANCE_PX showed the bottom pair at a spacing the
+    column reproduces (within tolerance), and either (a) two separate runs,
+    each at least 0.6 stroke tall, fused into that center, or (b) one run
+    1.6-3.2 strokes tall, split one half-stroke inside each edge. Every new
+    center lies on ink. When Crss instead decays into the axis and vanishes
+    (GT045N10T) no nearby spacing matches, nothing is split, and the refusal
+    stands.
+    """
+
+    clean_heights = []
+    for x, centers in enumerate(centers_by_x):
+        if len(centers) == 3:
+            clean_heights.extend(
+                b - a + 1 for a, b in _column_runs(mask[:, x]) if b - a + 1 <= 12
+            )
+    if len(clean_heights) < 30:
+        return centers_by_x
+    stroke = float(np.median(clean_heights))
+    if stroke < 2:
+        return centers_by_x
+
+    # spacing of the bottom pair in each clean column
+    spacing = {
+        x: centers[2] - centers[1]
+        for x, centers in enumerate(centers_by_x)
+        if len(centers) == 3
+    }
+    clean_xs = np.array(sorted(spacing))
+    out = [list(c) for c in centers_by_x]
+    for x, centers in enumerate(centers_by_x):
+        if len(centers) != 2:
+            continue
+        nearest = clean_xs[np.argmin(np.abs(clean_xs - x))]
+        if abs(int(nearest) - x) > SPLIT_MAX_DISTANCE_PX:
+            continue
+        expected = spacing[int(nearest)]
+        tolerance = max(2.0, 0.35 * expected)
+        runs = [r for r in _column_runs(mask[:, x]) if r[1] - r[0] + 1 >= 2]
+        if not runs:
+            continue
+        pair: tuple[float, float] | None = None
+        upper, lower = (runs[-2], runs[-1]) if len(runs) >= 2 else (None, runs[-1])
+        if (
+            upper is not None
+            and upper[0] > centers[0]
+            and min(r[1] - r[0] + 1 for r in (upper, lower)) >= 0.6 * stroke
+            and abs((upper[0] + upper[1] + lower[0] + lower[1]) / 4 - centers[-1]) <= 2.0
+        ):
+            # two separate runs that the cluster step fused into one center
+            pair = ((upper[0] + upper[1]) / 2, (lower[0] + lower[1]) / 2)
+        else:
+            # one run: the gap between the strokes closed in the mask
+            top, bottom = lower
+            height = bottom - top + 1
+            if (
+                SPLIT_MIN_STROKES * stroke <= height <= SPLIT_MAX_STROKES * stroke
+                and abs((top + bottom) / 2 - centers[-1]) <= 2.0
+            ):
+                half = (stroke - 1) / 2
+                pair = (top + half, bottom - half)
+        if pair is None or abs((pair[1] - pair[0]) - expected) > tolerance:
+            continue
+        out[x] = [centers[0], pair[0], pair[1]]
+    return out
 
 
 def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, object]:
