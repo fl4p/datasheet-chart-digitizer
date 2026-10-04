@@ -62,6 +62,10 @@ class CapacitanceCropTransformIntegrationTests(unittest.TestCase):
             def get_drawings(self):
                 return []
 
+            def get_text(self, option):
+                # a real fitz.Page always has it; the legend binder reads words
+                return []
+
         class Doc:
             def __getitem__(self, index):
                 return Page()

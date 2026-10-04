@@ -536,6 +536,7 @@ class AxisCalibrationTests(unittest.TestCase):
                     "vint_v": None,
                     "coer_pf": None,
                     "coer_vint_v": None,
+                    "cotr_vint_v": None,
                     "cotr_pf": None,
                 },
                 result["output_charge_reference"],

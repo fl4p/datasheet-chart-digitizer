@@ -79,7 +79,8 @@ class AnnotatePdfTests(unittest.TestCase):
         self.assertRegex(manifest["source_pdf_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(manifest["extractor_git_commit"], r"^[0-9a-f]{40}$")
         self.assertRegex(manifest["extractor_source_sha256"], r"^[0-9a-f]{64}$")
-        self.assertTrue(manifest["extractor_git_dirty"])
+        # True or False depending on the checkout; None would mean the probe failed
+        self.assertIsInstance(manifest["extractor_git_dirty"], bool)
         self.assertGreater(len(manifest["extractor_source_files"]), 10)
         self.assertEqual(
             [
@@ -158,11 +159,20 @@ class AnnotatePdfTests(unittest.TestCase):
                 by_kind["transfer"]["embedding_reason"],
                 "status_not_embeddable:overlay-review-required",
             )
+            # HXY curves are shared templates, not part measurements
+            # (curve_provenance.py): gate charge is refused, never embedded.
+            gate = by_kind["gate_charge"]
+            self.assertFalse(gate["embedded"])
+            self.assertEqual(gate["status"], "source_untrusted")
+            self.assertIn("shared_curve_template_provenance_untrusted", gate["diagnostics"])
+            self.assertEqual(
+                gate["embedding_reason"], "status_not_embeddable:source_untrusted"
+            )
             self.assertTrue(
                 all(
                     row["embedded"]
                     for kind, row in by_kind.items()
-                    if kind != "transfer"
+                    if kind not in ("transfer", "gate_charge")
                 )
             )
             diode = by_kind["body_diode"]
