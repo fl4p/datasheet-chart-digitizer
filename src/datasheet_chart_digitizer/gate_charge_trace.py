@@ -443,17 +443,21 @@ def _repair_leading_axis_capture(
     return candidate if candidate and candidate[0][0] == 0 else ordered
 
 
-def _trace_gate_curve(
+def gate_ink_mask(
     crop: Image.Image,
     plot_box: tuple[int, int, int, int],
     *,
     gray_threshold: int = 115,
-) -> list[tuple[int, int]]:
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """(curve-ink mask, gray) of the plot ROI, frame/grid rules removed.
+
+    The mask the raster gate tracer follows; ROI coordinates (plot_box origin).
+    """
     rgb = np.asarray(crop.convert("RGB"))
     x0, y0, x1, y1 = plot_box
     roi = rgb[y0 : y1 + 1, x0 : x1 + 1]
     if roi.size == 0:
-        return []
+        return None
 
     gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
     hsv = cv2.cvtColor(roi, cv2.COLOR_RGB2HSV)
@@ -478,6 +482,21 @@ def _trace_gate_curve(
         cv2.MORPH_CLOSE,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
     )
+    return mask, gray
+
+
+def _trace_gate_curve(
+    crop: Image.Image,
+    plot_box: tuple[int, int, int, int],
+    *,
+    gray_threshold: int = 115,
+) -> list[tuple[int, int]]:
+    ink = gate_ink_mask(crop, plot_box, gray_threshold=gray_threshold)
+    if ink is None:
+        return []
+    mask, gray = ink
+    x0, y0, _x1, _y1 = plot_box
+    h, w = mask.shape
 
     candidates: list[tuple[float, list[tuple[int, int]]]] = []
     for candidate_mask in _candidate_masks(mask):
