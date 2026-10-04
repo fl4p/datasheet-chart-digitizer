@@ -30,6 +30,7 @@ from .capacitance_vector import (
     _vector_curve_edges,
 )
 from .crop_transform import CropTransform
+from .curve_coverage import served_curve_coverage
 from .diode_legend_color import colored_temperature_bindings
 from .diode_temperature_assignment import (
     ORDER_BOUND,
@@ -57,6 +58,7 @@ from .numeric_axis import (
     NumericAxis,
     fit_axis_ticks,
     fit_numeric_axis,
+    parse_tick_text,
     tick_aligned_plot,
 )
 from .overlay import draw_axis_ticks, draw_plot_frame
@@ -256,9 +258,20 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         # unevaluable is not a pass: the served axes were not checked on
         # their gridlines, so the panel is not reported ok
         diagnostics.append("axis_grid_check_unverified")
+    coverage = _served_coverage(panel, crop_path, calibration, curves_px)
+    if coverage.status == "truncated":
+        # accurate where it exists, but the print continues past the served
+        # end: a short curve is not served as complete
+        diagnostics.append("served_curve_truncated_before_source_end")
+    elif coverage.status == "unverified":
+        diagnostics.append("curve_coverage_unverified")
+    if coverage.notes:
+        diagnostics.append("source_curve_continues_past_last_labelled_tick_not_extrapolated")
+    coverage_ok = coverage.status == "verified"
     return {
-        "status": "unverified" if grid_unverified else "ok",
+        "status": "ok" if not grid_unverified and coverage_ok else "unverified",
         "diagnostics": diagnostics,
+        "coverage_check": coverage.payload(),
         "grid_check": served_axis_guard.payload(calibration.grid_checks),
         "point_columns": ["vsd_v", "current_a"],
         "panel": asdict(panel),
@@ -271,6 +284,42 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         "crossover_current_a": crossover,
         "overlay": str(overlay_path.relative_to(out_dir)),
     }
+
+
+def _served_coverage(panel: ChartPanel, crop_path: Path, calibration: PanelCalibration, curves_px):
+    """Run the coverage guard on the served pixel curves (tri-state)."""
+    gray = cv2.imread(str(crop_path), cv2.IMREAD_GRAYSCALE)
+    if gray is None:
+        raise RuntimeError(f"could not read crop: {crop_path}")
+    transform = CropTransform.for_chart(asdict(panel), gray.shape)
+    plot = calibration.plot
+    with pymupdf.open(panel.pdf) as doc:
+        page = doc[panel.page - 1]
+        labels = _page_labels(page, transform)
+
+        def label_beyond(edge: str, extent: float) -> bool:
+            """A printed tick of this axis lies past *edge*, within reach."""
+            axis = calibration.y_axis if edge in ("top", "bottom") else calibration.x_axis
+            pixels = sorted(tick.pixel for tick in axis.ticks)
+            pitch = float(np.median(np.diff(pixels))) if len(pixels) >= 2 else 0.0
+            reach = extent + max(4.0, 0.35 * pitch)
+            for label in labels:
+                value = parse_tick_text(label.text)
+                if value is None:
+                    continue
+                if edge in ("top", "bottom"):
+                    if not plot.x0 - 0.28 * plot.width <= label.x1 <= plot.x0 + 4:
+                        continue
+                    beyond = plot.y0 - label.cy if edge == "top" else label.cy - plot.y1
+                else:
+                    if not plot.y1 - 4 <= label.cy <= plot.y1 + 0.25 * plot.height:
+                        continue
+                    beyond = plot.x0 - label.cx if edge == "left" else label.cx - plot.x1
+                if 0.25 * pitch <= beyond <= reach:
+                    return True
+            return False
+
+        return served_curve_coverage(page, transform, gray, plot, curves_px, label_beyond)
 
 
 def _crop_transform(panel: ChartPanel, crop_path: Path) -> CropTransform:
@@ -338,6 +387,10 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     y_axis = _snap_axis_to_grid(raw_y, major_y, "Y axis", authoritative=True)
     x_axis = _snap_axis_to_grid(raw_x, periodic_x, "X axis") if x_axis is raw_x else x_axis
     y_axis = _snap_axis_to_grid(raw_y, periodic_y, "Y axis") if y_axis is raw_y else y_axis
+    if x_axis is not raw_x:
+        x_axis, raw_x = _extend_rule_bound_axis(labels, x_axis, raw_x, "x", hint, image)
+    if y_axis is not raw_y:
+        y_axis, raw_y = _extend_rule_bound_axis(labels, y_axis, raw_y, "y", hint, image)
     physical_hint = _physical_plot_hint(hint, x_axis, y_axis, major_x, major_y)
     if x_axis is raw_x:
         x_axis = _anchor_linear_axis_to_plot_frame(x_axis, physical_hint, "x")
@@ -353,6 +406,123 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
         image, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "body diode"
     )
     return PanelCalibration(plot, x_axis, y_axis, hint, hint_source, grid_checks)
+
+
+def _extend_rule_bound_axis(
+    labels: list[TextLabel],
+    axis: NumericAxis,
+    raw_axis: NumericAxis,
+    orientation: str,
+    hint: PlotBox,
+    image: np.ndarray,
+) -> tuple[NumericAxis, NumericAxis]:
+    """Add the next printed tick at each end of a grid-bound ladder.
+
+    The label window in :func:`_select_axis` is anchored on the detector hint.
+    When the hint stops one grid pitch inside the frame (TMB160N08A: the
+    regular-grid detector stopped at the 10^1 line of a 1e-4..1e2 log axis),
+    the outermost label falls outside the window, the plot box is derived
+    from the shortened ladder, and every curve is served cut at that line.
+
+    The extension is bound the way every served tick is: the POSITION is a
+    printed full-span rule within 2 px of where the grid-bound mapping puts
+    the next ladder value, and the label only supplies IDENTITY: a label of
+    exactly that value in the ladder's label column, within 0.35 pitch of the
+    rule. The refit on rules must stay as tight as the original.
+
+    Returns (served axis, label axis); the label axis gains the label-centre
+    tick so the served-axis grid guard checks the new tick like every other.
+    """
+    ticks = sorted(axis.ticks, key=lambda tick: tick.pixel)
+    if len(ticks) < 3 or axis.m == 0:
+        return axis, raw_axis
+
+    def coordinate(value: float) -> float:
+        return math.log10(value) if axis.model == "log10" else value
+
+    coordinates = [coordinate(tick.value) for tick in ticks]
+    steps = np.diff(coordinates)
+    step = float(np.median(steps))
+    if step == 0 or np.any(np.abs(steps - step) > 1e-6 * max(1.0, abs(step))):
+        return axis, raw_axis  # only a uniform ladder has a defined "next" tick
+    pitch = abs(step / axis.m)
+    position = (lambda label: label.cy) if orientation == "y" else (lambda label: label.cx)
+    column_of = (lambda label: label.x1) if orientation == "y" else (lambda label: label.cy)
+    column_tolerance = 9.0 if orientation == "y" else 5.0
+    used = [
+        label for label in labels
+        if any(
+            label.text == tick.text and abs(position(label) - tick.pixel) <= 0.35 * pitch
+            for tick in raw_axis.ticks
+        )
+    ]
+    if len(used) < 2:
+        return axis, raw_axis
+    column = float(np.median([column_of(label) for label in used]))
+    limit = image.shape[0] if orientation == "y" else image.shape[1]
+    added: list[AxisTick] = []
+    added_labels: list[AxisTick] = []
+    for end, sign in ((coordinates[0], -1.0), (coordinates[-1], 1.0)):
+        next_coordinate = end + sign * step
+        value = 10.0**next_coordinate if axis.model == "log10" else next_coordinate
+        predicted = (next_coordinate - axis.b) / axis.m
+        if not 0 <= predicted < limit:
+            continue
+        rule = _full_span_rule_center(image, hint, orientation, predicted)
+        if rule is None or abs(rule - predicted) > 2.0:
+            continue
+        matches = []
+        for label in labels:
+            if abs(column_of(label) - column) > column_tolerance:
+                continue
+            parsed = parse_tick_text(label.text)
+            if parsed is None or not math.isclose(parsed, value, rel_tol=1e-6, abs_tol=1e-12):
+                continue
+            if abs(position(label) - rule) <= 0.35 * pitch:
+                matches.append(label)
+        if len(matches) != 1:
+            continue
+        added.append(AxisTick(matches[0].text, value, float(rule)))
+        added_labels.append(AxisTick(matches[0].text, value, float(position(matches[0]))))
+    if not added:
+        return axis, raw_axis
+    try:
+        extended = fit_axis_ticks([*ticks, *added], "axis", model=axis.model)
+    except RuntimeError:
+        return axis, raw_axis
+    if extended.residual_px > max(1.0, axis.residual_px + 0.5):
+        return axis, raw_axis
+    raw_extended = NumericAxis(
+        raw_axis.model, raw_axis.m, raw_axis.b,
+        tuple(sorted([*raw_axis.ticks, *added_labels], key=lambda tick: tick.pixel)),
+        raw_axis.residual_px, raw_axis.candidate_residuals_px,
+    )
+    return extended, raw_extended
+
+
+def _full_span_rule_center(
+    image: np.ndarray, hint: PlotBox, orientation: str, pixel: float, window: int = 4
+) -> float | None:
+    """Centre of the printed full-span rule nearest *pixel*, or None."""
+    centre = int(round(pixel))
+    lo = max(0, centre - window)
+    if orientation == "y":
+        band = image[lo: centre + window + 1, hint.x0: hint.x1 + 1]
+        fractions = (band < 210).mean(axis=1) if band.size else np.zeros(0)
+    else:
+        band = image[hint.y0: hint.y1 + 1, lo: centre + window + 1]
+        fractions = (band < 210).mean(axis=0) if band.size else np.zeros(0)
+    rows = [lo + index for index, fraction in enumerate(fractions) if fraction >= 0.55]
+    if not rows:
+        return None
+    runs: list[list[int]] = []
+    for row in rows:
+        if runs and row == runs[-1][-1] + 1:
+            runs[-1].append(row)
+        else:
+            runs.append([row])
+    best = min(runs, key=lambda run: abs(float(np.mean(run)) - pixel))
+    return float(np.mean(best))
 
 
 def _voltage_on_y_axis(calibration: PanelCalibration) -> bool:

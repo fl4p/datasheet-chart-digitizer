@@ -29,6 +29,7 @@ from .capacitance_vector import (
 )
 from .crop_transform import CropTransform
 from .chart_classifier import is_rdson_chart_title, rdson_formula_direction
+from .text_dashes import normalize_dashes
 from .diode_forward_voltage import (
     TextLabel,
     _full_span_grid_lines,
@@ -90,6 +91,9 @@ DIAG_LEGEND_TRACE_MISMATCH = "legend_trace_style_mismatch"
 DIAG_ABSOLUTE_LIMIT_LABELS = "absolute_rds_typ_max_labels_unverified"
 DIAG_ABSOLUTE_LIMIT_ORDER = "absolute_rds_typ_max_curve_order_unverified"
 DIAG_ABSOLUTE_SPAN = "absolute_rds_span_below_threshold"
+PANEL_OWNERSHIP_UNPROVEN = "rdson_temperature_panel_ownership_unproven"
+# Depth below the panel box searched for its "R=f(T)" formula line (pt).
+FORMULA_STRIP_PT = 24.0
 
 _RDS_TITLE_RE = re.compile(
     r"(?:normalized\s+(?:drain(?:-|\s+to\s+)source\s+)?)?"
@@ -240,6 +244,22 @@ def _digitize_rds_family(
                         pdf, out_dir, page, page_png, title, crop_group=crop_group
                     )
                     if panel_selector is not None and not panel_selector(panel):
+                        # A caption this family matched must not vanish: the
+                        # refusal is the status (fail-closed *visible*).
+                        if errors is not None:
+                            errors.append({
+                                "kind": error_kind,
+                                "page": page.page_num,
+                                "diagram": title.number,
+                                "status": "refused",
+                                "reason": PANEL_OWNERSHIP_UNPROVEN,
+                                "error": (
+                                    f"{PANEL_OWNERSHIP_UNPROVEN}: caption "
+                                    f"{title.title!r} matched, but the panel lacks "
+                                    "owned direction evidence (title, Tj axis or "
+                                    "RDS(on)=f(Tj) formula)"
+                                ),
+                            })
                         continue
                     calibration = calibrate_panel(panel, crop_path, region)
                     results.append(_digitize_rds_panel(
@@ -431,7 +451,7 @@ def _rdson_temperature_titles(page: PageText) -> list[DiagramTitle]:
         title
         for title in _rdson_titles_matching(page, _RDS_NORMALIZED_TITLE_STEM_RE)
         if title.number < 9000
-        and _RDS_DIRECTION_CLAUSE_RE.search(title.title) is None
+        and _RDS_DIRECTION_CLAUSE_RE.search(normalize_dashes(title.title)) is None
     ]
     relaxed.extend(
         title for title in find_caption_titles(page)
@@ -453,17 +473,21 @@ def _rdson_temperature_panel_owned(panel: ChartPanel) -> bool:
 
     if panel.kind != "rds_on":
         return False
-    if _RDS_TITLE_RE.search(panel.title):
+    title = normalize_dashes(panel.title)
+    if _RDS_TITLE_RE.search(title):
         return True
-    if rdson_formula_direction(panel.title) == "temperature":
+    if rdson_formula_direction(title) == "temperature":
         return True
-    if _RDS_TEMPERATURE_FORMULA_RE.search(panel.text):
+    if _RDS_TEMPERATURE_FORMULA_RE.search(panel.text) or _RDS_TEMPERATURE_FORMULA_RE.search(panel.formula):
         return True
-    local = panel.text.replace("º", "°")
+    local = normalize_dashes(panel.text.replace("º", "°"))
     return bool(
-        _RDS_NORMALIZED_TITLE_STEM_RE.search(panel.title)
+        _RDS_NORMALIZED_TITLE_STEM_RE.search(title)
         and _TEMPERATURE_AXIS_RE.search(local)
-        and _RDS_TEMPERATURE_FORMULA_RE.search(local)
+        and (
+            _RDS_TEMPERATURE_FORMULA_RE.search(local)
+            or _RDS_TEMPERATURE_FORMULA_RE.search(panel.formula)
+        )
     )
 
 
@@ -519,7 +543,7 @@ def _rdson_titles_matching(
         for start, end in zip(starts, starts[1:]):
             segment = line[start:end]
             segment_bbox = line_bbox(segment)
-            text = line_text(segment)
+            text = normalize_dashes(line_text(segment))
             match = re.match(
                 r"(?i)^(?:Figure|Fig\.?|Diagram)\s+(\d+(?:[.-]\d+)?)[\.:]?\s+(.+)$",
                 text,
@@ -546,9 +570,9 @@ def _rdson_titles_matching(
                             max(segment_bbox[2], local_bbox[2]),
                             local_bbox[3],
                         )
-                text = " ".join(
+                text = normalize_dashes(" ".join(
                     filter(None, (line_text(segment), line_text(continuation)))
-                )
+                ))
                 match = re.match(
                     r"(?i)^(?:Figure|Fig\.?|Diagram)\s+(\d+(?:[.-]\d+)?)[\.:]?\s+(.+)$",
                     text,
@@ -583,7 +607,7 @@ def _rdson_titles_matching(
             ]
             if not local:
                 continue
-            text = line_text(local).strip()
+            text = normalize_dashes(line_text(local).strip())
             if title_pattern.fullmatch(text) is None:
                 continue
             bbox = line_bbox(local)
@@ -651,7 +675,7 @@ def _build_panel(
     formula_direction, formula_side = _nearby_rdson_formula_evidence(page, title)
     if direction is None and formula_direction is not None:
         direction = formula_side
-    if direction is None and _RDS_NORMALIZED_TITLE_STEM_RE.search(title.title):
+    if direction is None and _RDS_NORMALIZED_TITLE_STEM_RE.search(normalize_dashes(title.title)):
         for region in candidates:
             if region[1] < title.bbox_pt[3]:
                 continue
@@ -716,6 +740,15 @@ def _build_panel(
         word.text for word in words_in_bbox(page.words, identity_bbox)
     )
     text = f"{title.title} {local_text}"
+    # The formula line sits just under the x-axis title, which can fall below
+    # the identity box; only lines carrying "=f(" are read from that strip.
+    formula = _subscript_merged_formula_text(
+        page.words,
+        (
+            identity_bbox[0], identity_bbox[1], identity_bbox[2],
+            min(page.height_pt, identity_bbox[3] + FORMULA_STRIP_PT),
+        ),
+    )
     panel = ChartPanel(
         pdf=str(pdf),
         part=pdf.stem,
@@ -727,11 +760,41 @@ def _build_panel(
         crop_box_pt=effective,
         crop_png=str(crop_path.relative_to(out_dir)),
         text=text,
-        formula="",
+        formula=formula,
         mentions=[],
         text_source=page.text_source,
     )
     return panel, crop_path, region
+
+
+def _subscript_merged_formula_text(
+    words: list, bbox: tuple[float, float, float, float]
+) -> str:
+    """Formula lines in *bbox* with subscripts kept beside their base symbol.
+
+    Infineon prints "R_DS(on)=f(T_j)" with each subscript on a lower baseline;
+    the text layer then splits it into "R =f( T )..." and "DS(on) j ..." lines
+    and the formula regex never sees "RDS(on)=f(Tj)" (ISC040N10NM8,
+    IPP050N03LF2S Diagram 9).  Words whose vertical extents overlap by at
+    least half the smaller height form one line, read left to right.
+    """
+    local = sorted(words_in_bbox(words, bbox), key=lambda word: (word.y0, word.x0))
+    lines: list[list] = []
+    for word in local:
+        for line in lines:
+            top = max(word.y0, min(item.y0 for item in line))
+            bottom = min(word.y1, max(item.y1 for item in line))
+            height = min(word.y1 - word.y0, max(item.y1 for item in line) - min(item.y0 for item in line))
+            if height > 0 and bottom - top >= 0.5 * height:
+                line.append(word)
+                break
+        else:
+            lines.append([word])
+    texts = [
+        " ".join(word.text for word in sorted(line, key=lambda item: item.x0))
+        for line in lines
+    ]
+    return " ".join(text for text in texts if "=f(" in text.replace(" ", ""))
 
 
 def _region_has_temperature_axis(
@@ -1361,8 +1424,9 @@ def _absolute_validation_reasons(
     x_ticks = [tick.value for tick in calibration.x_axis.ticks]
     y_ticks = [tick.value for tick in calibration.y_axis.ticks]
     title_identity = bool(
-        _RDS_TITLE_RE.search(panel.title)
+        _RDS_TITLE_RE.search(normalize_dashes(panel.title))
         or _RDS_TEMPERATURE_FORMULA_RE.search(panel.text)
+        or _RDS_TEMPERATURE_FORMULA_RE.search(panel.formula)
     )
     if not (
         calibration.x_axis.model == "linear"
@@ -1414,8 +1478,9 @@ def _validation_reasons(
     x_ticks = [tick.value for tick in calibration.x_axis.ticks]
     y_ticks = [tick.value for tick in calibration.y_axis.ticks]
     title_identity = bool(
-        _RDS_TITLE_RE.search(panel.title)
+        _RDS_TITLE_RE.search(normalize_dashes(panel.title))
         or _RDS_TEMPERATURE_FORMULA_RE.search(panel.text)
+        or _RDS_TEMPERATURE_FORMULA_RE.search(panel.formula)
     )
     if not (
         calibration.x_axis.model == "linear"

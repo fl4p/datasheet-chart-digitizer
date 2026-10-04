@@ -33,6 +33,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from .text_dashes import normalize_dashes
 from .breakdown_voltage import (
     _vector_plot_frame,
     _words_in_crop_px,
@@ -906,8 +907,8 @@ def _validate_transfer_panel_semantics(
         or "currentdraintosource" in alpha_compact
     )
     if owned_titles is not None:
-        has_gate_axis = has_gate_axis or bool(titles.TRANSFER_X_TITLE_RE.search(owned_titles[0]))
-        has_current_axis = has_current_axis or bool(titles.TRANSFER_Y_TITLE_RE.search(owned_titles[1]))
+        has_gate_axis = has_gate_axis or bool(titles.TRANSFER_X_TITLE_RE.search(normalize_dashes(owned_titles[0])))
+        has_current_axis = has_current_axis or bool(titles.TRANSFER_Y_TITLE_RE.search(normalize_dashes(owned_titles[1])))
     if not (has_gate_axis and has_current_axis):
         raise RuntimeError(
             "transfer panel lacks owned VGS and ID axis evidence; refusing curve-shape inference"
