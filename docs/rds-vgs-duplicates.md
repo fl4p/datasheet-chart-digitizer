@@ -110,12 +110,12 @@ kept twin's `also_printed_at`, and rechecks that twin's full golden contract.
 Changing either frozen fixture or the served twin fails; approved copies that
 reappear fail. Retirement chains and self-retirement are forbidden.
 
-The nine proposed entries are **only in PENDING.json**, with
-`pending: "retire: duplicate of <fixture>"`. No approval is fabricated in
-REBLESSED.json. Pending permits the old copy to remain only under its full old
-golden contract, or permits absence only with the checked twin note. It never
-permits a copy both to be served and reported discarded. Only Fab promotes these
-entries to approved retirements; no fixture directory was edited.
+The nine entries were proposed in PENDING.json with
+`pending: "retire: duplicate of <fixture>"`. Pending permits the old copy to remain
+only under its full old golden contract, or permits absence only with the checked
+twin note. It never permits a copy both to be served and reported discarded. Fab
+approved all nine on 2026-10-04 ("all green" on the v6 packet); they are now
+approved retirements in REBLESSED.json, and no fixture directory was edited.
 
 ## Guard review checklist
 

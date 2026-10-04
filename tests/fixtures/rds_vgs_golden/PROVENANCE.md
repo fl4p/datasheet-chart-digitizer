@@ -201,6 +201,23 @@ changed served metadata only. No traced point, readout or axis map moved:
 `PENDING.json` is empty. There are 42 golden panels. TI's page-1 copies remain separate
 fixtures: their served values agree with the numbered figure within 0.4 %.
 
+## batch_all v6 (Fab's review of the duplicate pairs, 2026-10-04)
+
+**Human-verified by Fab** on `rds-vgs/review/rds-vgs-all-v6-001.html` (9 cards, one per TI
+part), in his words: "all green".
+
+v6 is dsdig e215bff: a chart printed twice in one PDF is served once. The numbered figure
+is kept and lists the copy in `also_printed_at`; see `docs/rds-vgs-duplicates.md`.
+
+- **Nine TI page-1 copies are retired** (`kind: retired` in `REBLESSED.json`):
+  CSD17302Q5A, CSD17304Q3, CSD17306Q5A, CSD17307Q5A, CSD17309Q3, CSD17310Q5A,
+  CSD17318Q2, CSD18502KCS and CSD18536KCS. Their fixture directories are untouched.
+  A retired copy passes only while it is absent, listed exactly once in its kept
+  twin's `also_printed_at`, and the twin still meets its full golden contract.
+- No other panel changed.
+
+`PENDING.json` is empty. There are 42 golden fixtures: 33 served panels and 9 retired copies.
+
 ## Per panel
 
 - `panel.json`: status, validation verdict and anchor verdicts, plot box, and the
