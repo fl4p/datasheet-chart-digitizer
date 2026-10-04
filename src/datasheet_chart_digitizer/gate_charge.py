@@ -47,6 +47,17 @@ from .gate_charge_trace import (
     _trace_monotone_upper_gate_curve,
     _trace_vector_gate_curve,
     _trim_terminal_branch_hop,
+    gate_ink_mask,
+)
+from .gate_charge_per_vdd import (
+    analyse as _analyse_per_vdd,
+    build_safely as _build_per_vdd,
+    curve_gates as _per_vdd_curve_gates,
+    finalize as _finalize_per_vdd,
+    legacy_fit as _legacy_per_vdd_fit,
+    lowest_curve as _lowest_per_vdd_curve,
+    plateau_shared as _per_vdd_plateau_shared,
+    serialize as _serialize_per_vdd,
 )
 from .gate_charge_blend import BLEND_DIAGNOSTIC, served_curve_blend
 from .gate_charge_trims import (  # noqa: F401  (re-exported: tests use gate._trim_*)
@@ -105,6 +116,8 @@ class GateChargeResult:
     y_tick_unit: str = "V"
     # gate_charge_grid_anchor: VGS ticks seated on their rules + served check
     y_grid: dict | None = None
+    # gate_charge_per_vdd: one curve per VDD/VDS with its bound label
+    per_vdd: dict | None = None
 
     def to_manifest(self) -> dict[str, object]:
         payload = asdict(self)
@@ -118,6 +131,7 @@ class GateChargeResult:
             payload["vpl"] = None
             payload["curve_px"] = ()
             payload["vpl_y_px"] = None
+        payload["per_vdd"] = _serialize_per_vdd(self.per_vdd, physical_output_available)
         return payload
 
 
@@ -260,7 +274,11 @@ def digitize_gate_charge(
                         ):
                             result = ocr_result
                 if result is not None:
-                    results.append(enforce_curve_provenance(pdf, result))
+                    result = enforce_curve_provenance(pdf, result)
+                    if getattr(result, "per_vdd", None):
+                        # per-VDD statuses and values from the FINAL ticks/status
+                        result = replace(result, per_vdd=_finalize_per_vdd(result))
+                    results.append(result)
                 elif _errors is not None:
                     # a finder gate-charge panel never vanishes without a status
                     _errors.append({
@@ -739,8 +757,41 @@ def _digitize_panel(
     curve = _trim_after_upper_axis_reach(curve, plot_box)
     curve = _trim_terminal_branch_hop(curve, plot_box)
     curve, branch_cut_short = cut_at_branch_hop(curve, plot_box)
+    trace_gray = np.asarray(trace_crops[0].convert("L"))
+    per_vdd_analysis, per_vdd_error = None, None
+    legacy_rule = "unchanged"
+    traced_curve = curve
+    try:
+        # Separate the panel's source curves (one per VDD/VDS). A legacy trace
+        # that runs between two of them is replaced by the leftmost one
+        # (lowest VDD by physics): a real stroke, chosen without a label.
+        per_vdd_analysis = _analyse_per_vdd(
+            page, crop_rect, scale, plot_box, trace_crops[0], curve,
+            lambda c: _trim_like_legacy(c, plot_box), gate_ink_mask,
+        )
+        if per_vdd_analysis.separated and _legacy_per_vdd_fit(per_vdd_analysis, curve)[1] == "off_curve":
+            pre_blend = (
+                served_curve_blend(page, crop_rect, scale, plot_box, curve)
+                if vector_curve and trace_source == "vector" else None
+            )
+            if pre_blend is not None and pre_blend.blended:
+                legacy_rule = "blend_replaced_by_leftmost_curve"
+            elif _per_vdd_plateau_shared(per_vdd_analysis, plot_box):
+                # switches strokes after a shared plateau: same Vpl, real curve
+                legacy_rule = "switching_trace_replaced_by_leftmost_curve"
+            else:
+                legacy_rule = "legacy_curve_switches_source_curves"
+            if legacy_rule.endswith("leftmost_curve"):
+                index = _lowest_per_vdd_curve(per_vdd_analysis)
+                curve = per_vdd_analysis.curves[index]
+                branch_cut_short = per_vdd_analysis.cut_short[index]
+    except Exception as error:  # never lets the new block cost the legacy result
+        per_vdd_error = f"per_vdd_error:{type(error).__name__}:{error}"[:200]
+    # A switching trace replaced under a shared plateau keeps the plateau it
+    # was read on: same plateau, so the served Vpl must not move.
     vpl, vpl_y_px = _estimate_vpl_from_curve(
-        curve, panel, crop_rect, scale, plot_box, local_y_ticks
+        traced_curve if legacy_rule.startswith("switching") else curve,
+        panel, crop_rect, scale, plot_box, local_y_ticks,
     )
     if vpl is not None and not math.isfinite(vpl):
         vpl = None
@@ -893,6 +944,15 @@ def _digitize_panel(
         y_ticks_px=y_ticks_px,
         x_tick_unit=x_tick_unit,
         y_grid=None if y_grid is None else y_grid.payload(),
+        per_vdd=_build_per_vdd(
+            per_vdd_analysis, per_vdd_error, legacy_curve=curve, legacy_vpl_y_px=vpl_y_px,
+            legacy_rule=legacy_rule, text_page=text_page, rect=crop_rect, scale=scale,
+            plot_box=plot_box, gates=lambda c, cut: _per_vdd_curve_gates(
+                c, cut, plot_box=plot_box, gray=trace_gray, frame=aligned_frame,
+                monotone=_gate_curve_is_monotone, missing_ramp=_curve_missing_initial_ramp,
+                clipped=_curve_clipped_by_plot_box,
+            ),
+        ),
     )
     if non_gate_reason is not None and mixed_gate_context and (
         low_trace_confidence or not _vpl_is_plausible(vpl)
@@ -910,6 +970,14 @@ def _digitize_panel(
             ),
         )
     return result
+
+
+def _trim_like_legacy(curve, plot_box):
+    """The legacy trace's trim chain, for one separated source curve."""
+    curve = _trim_terminal_flat_grid_capture(curve, plot_box)
+    curve = _trim_after_upper_axis_reach(curve, plot_box)
+    curve = _trim_terminal_branch_hop(curve, plot_box)
+    return cut_at_branch_hop(curve, plot_box)
 
 
 def _result_crop_gray(page: pymupdf.Page, result: GateChargeResult) -> np.ndarray:

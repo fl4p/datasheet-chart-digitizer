@@ -20,6 +20,13 @@ FDP16 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/onsemi/FDP16AN08A0.pdf
 PSMN5R3 = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/nxp/PSMN5R3-25MLD.pdf")
 
 
+def _page_of(result):
+    import pymupdf
+
+    doc = pymupdf.open(result.pdf)
+    return doc[result.panel.page - 1], pymupdf.Rect(result.crop_box_pt)
+
+
 def _pt(x, y):
     return SimpleNamespace(x=x, y=y)
 
@@ -80,13 +87,36 @@ class BlendVerdictTests(unittest.TestCase):
 
 class GateChargeBlendEndToEndTests(unittest.TestCase):
     def test_ipb180_two_vdd_midline_is_not_served(self) -> None:
+        # The per-column median of the 8 V and 32 V strokes is never served:
+        # the legacy curve is now the separated 8 V stroke (gate_charge_per_vdd),
+        # which lies on its source stroke, so the blend guard passes it.
         if not IPB180.exists():
             self.skipTest(f"missing local corpus fixture: {IPB180}")
         results = [r for r in digitize_gate_charge(IPB180, dpi=220, finder_dpi=220)
                    if (r.panel.page, r.panel.diagram) == (7, 15)]
         self.assertEqual(len(results), 1)
+        result = results[0]
+        self.assertNotIn(BLEND_DIAGNOSTIC, result.diagnostics)
+        self.assertEqual(result.per_vdd["legacy_curve"]["rule"], "blend_replaced_by_leftmost_curve")
+        page, rect = _page_of(result)
+        verdict = served_curve_blend(page, rect, result.dpi / 72.0, result.plot_box_px, result.curve_px)
+        self.assertFalse(verdict.blended)
+
+    def test_ipb180_blend_is_refused_when_the_curves_cannot_be_separated(self) -> None:
+        # Unevaluable separation is not OK: the guard still refuses the blend.
+        if not IPB180.exists():
+            self.skipTest(f"missing local corpus fixture: {IPB180}")
+        from unittest import mock
+
+        from datasheet_chart_digitizer import gate_charge
+
+        with mock.patch.object(gate_charge, "_analyse_per_vdd", side_effect=RuntimeError("forced")):
+            results = [r for r in digitize_gate_charge(IPB180, dpi=220, finder_dpi=220)
+                       if (r.panel.page, r.panel.diagram) == (7, 15)]
+        self.assertEqual(len(results), 1)
         self.assertNotEqual(results[0].status, "ok")
         self.assertIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
+        self.assertEqual(results[0].per_vdd["binding"], "unseparated")
 
     def test_three_curve_median_on_a_stroke_stays_served(self) -> None:
         # ISC040N10NM8 Figure 15 (20/50/80 V): the median of three strokes
@@ -111,14 +141,16 @@ class GateChargeBlendEndToEndTests(unittest.TestCase):
         self.assertNotIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
 
     def test_psmn5r3_median_between_vds_curves_is_not_served(self) -> None:
-        # Fab's HV set: the vector median runs between the 12 V and 20 V strokes.
+        # Fab's HV set: the vector median ran between the 12 V and 20 V strokes.
+        # It is replaced by the 5 V stroke; Vpl (shared plateau) is served ok.
         if not PSMN5R3.exists():
             self.skipTest(f"missing local corpus fixture: {PSMN5R3}")
         results = [r for r in digitize_gate_charge(PSMN5R3, dpi=220, finder_dpi=220)
                    if (r.panel.page, r.panel.diagram) == (8, 12)]
         self.assertEqual(len(results), 1)
-        self.assertIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
-
+        self.assertNotIn(BLEND_DIAGNOSTIC, results[0].diagnostics)
+        self.assertEqual(results[0].status, "ok")
+        self.assertAlmostEqual(results[0].vpl, 2.99, delta=0.03)
 
 if __name__ == "__main__":
     unittest.main()
