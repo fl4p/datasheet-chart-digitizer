@@ -71,6 +71,19 @@ def retirement_entry(part: str) -> tuple[dict | None, bool]:
     return (approved[-1], False) if approved else (None, False)
 
 
+def sample_retirement() -> tuple[str, dict]:
+    """A retirement to exercise the checks on: a pending proposal if one exists,
+    else an approved entry (Fab approved the first nine on 2026-10-04)."""
+    for part, entry in pending_entries().items():
+        if entry.get("kind") == "retired":
+            return part, entry
+    entries = json.loads((GOLDEN / "REBLESSED.json").read_text())["entries"]
+    approved = [e for e in entries if e.get("kind") == "retired"]
+    if not approved:
+        raise AssertionError("no retirement, pending or approved, to test the retirement checks on")
+    return approved[0]["fixture"], approved[0]
+
+
 def fixture_fingerprint(panel: dict) -> str:
     return hashlib.sha256(json.dumps(panel, sort_keys=True).encode()).hexdigest()
 
@@ -343,7 +356,7 @@ class GoldenTests(unittest.TestCase):
 class RetirementTests(unittest.TestCase):
     def test_pending_retirement_and_staleness(self):
         import copy
-        fixture, entry = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        fixture, entry = sample_retirement()
         frozen = load_golden(fixture)
         rows = copy.deepcopy(_digitize(DS / frozen["pdf_name"]))
         case = GoldenTests()
@@ -367,7 +380,7 @@ class RetirementTests(unittest.TestCase):
     def test_approved_retirement_schema_and_reappearance(self):
         import copy
         import tempfile
-        fixture, proposal = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        fixture, proposal = sample_retirement()
         frozen = load_golden(fixture)
         rows = copy.deepcopy(_digitize(DS / frozen["pdf_name"]))
         saved = GOLDEN
@@ -389,7 +402,7 @@ class RetirementTests(unittest.TestCase):
                     GoldenTests()._check(fixture)
 
     def test_pending_present_copy_keeps_full_contract(self):
-        fixture, entry = next((p, e) for p, e in pending_entries().items() if e.get("kind") == "retired")
+        fixture, entry = sample_retirement()
         frozen, twin = load_golden(fixture), load_golden(entry["duplicate_of"])
         # A proposal also works before deployment; absence requires a twin
         # note, presence requires the original golden rather than an ink-only waiver.
