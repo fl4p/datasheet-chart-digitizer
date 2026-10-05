@@ -892,3 +892,70 @@ def _estimate_vpl_from_curve(
         if local_v is not None:
             return local_v, y_px
     return _v_from_y_pixel(chart, rect, scale, y_px), y_px
+
+
+# axis titles sit beyond the label column, within this reach of the frame
+_Y_TITLE_REACH_PT = 68.0
+_GATE_TITLE = re.compile(r"GATE|V\s*GS|^GS\b")
+_DRAIN_TITLE = re.compile(r"DRAIN|V\s*DS|^DS\b")
+
+
+def y_axis_side_identity(
+    page: pymupdf.Page,
+    rect: pymupdf.Rect,
+    scale: float,
+    plot_box: tuple[int, int, int, int],
+    ticks: list[tuple[float, float]],
+) -> str:
+    """Is the chosen y label column the VGS axis, by the printed axis titles?
+
+    A dual-y chart (VGS one side, VDS the other: onsemi NTMFS4C020NT1G p4,
+    0..12 V left, 0..18 V right) has a label column against each frame, and
+    ``_local_y_ticks_for_plot`` takes the nearer one. Returns ``"contradicted"``
+    when the title text beside the chosen column names the drain and not the
+    gate, ``"consistent"`` when it names the gate, else ``"unverified"`` (no
+    title text there: the previous behaviour, not a pass).
+    """
+    if len(ticks) < 2:
+        return "unverified"
+    x0, y0, x1, y1 = plot_box
+    px0, px1 = rect.x0 + x0 / scale, rect.x0 + x1 / scale
+    py0, py1 = rect.y0 + y0 / scale, rect.y0 + y1 / scale
+    try:
+        words = page.get_text("words")
+    except Exception:
+        return "unverified"
+    # the side whose labels ARE the ticks: same value at the same row
+    matches = {"left": 0, "right": 0}
+    for word in words:
+        value = _parse_numeric_label(str(word[4]))
+        if value is None:
+            continue
+        cy = 0.5 * (float(word[1]) + float(word[3]))
+        cx = 0.5 * (float(word[0]) + float(word[2]))
+        if not any(abs(value - v) < 1e-9 and abs(cy - y) <= 1.0 for v, y in ticks):
+            continue
+        if px0 - _LOCAL_Y_AXIS_MAX_EDGE_GAP <= cx <= px0 - 1:
+            matches["left"] += 1
+        elif px1 + 1 <= cx <= px1 + _LOCAL_Y_AXIS_MAX_EDGE_GAP:
+            matches["right"] += 1
+    side = None
+    if matches["left"] != matches["right"]:
+        side = max(matches, key=matches.get)
+    if side is None:
+        return "unverified"
+    titles = {"left": [], "right": []}
+    for word in words:
+        cx = 0.5 * (float(word[0]) + float(word[2]))
+        cy = 0.5 * (float(word[1]) + float(word[3]))
+        if not py0 - 10 <= cy <= py1 + 10:
+            continue
+        if px0 - _Y_TITLE_REACH_PT <= cx < px0 - 1:
+            titles["left"].append(str(word[4]))
+        elif px1 + 1 < cx <= px1 + _Y_TITLE_REACH_PT:
+            titles["right"].append(str(word[4]))
+    own = " ".join(titles[side]).upper()
+    own_gate, own_drain = bool(_GATE_TITLE.search(own)), bool(_DRAIN_TITLE.search(own))
+    if own_drain and not own_gate:
+        return "contradicted"
+    return "consistent" if own_gate else "unverified"

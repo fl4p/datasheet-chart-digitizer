@@ -35,6 +35,7 @@ from .gate_charge_estimation import (
     _estimate_vpl_from_curve,
     _has_gate_charge_evidence,
     _local_y_ticks_for_plot,
+    y_axis_side_identity as _y_axis_side_identity,
     _non_gate_plot_reason,
     _text_near_rect,
 )
@@ -708,6 +709,12 @@ def _digitize_panel(
         local_y_ticks = panel_y_ticks
     local_y_ticks = _y_ticks_with_zero(local_y_ticks, panel_rect)
     local_y_ticks = _drop_glyph_offset_tick(local_y_ticks)
+    # Dual-y charts: the nearer label column can be the VDS axis. Its printed
+    # title says so (NTMFS4C020NT1G: "VDS, DRAIN-TO-SOURCE VOLTAGE" beside the
+    # 0..18 column read as VGS); such a VGS line is never "ok".
+    y_axis_identity = _y_axis_side_identity(
+        axis_text_page, crop_rect, scale, plot_box, local_y_ticks
+    )
     y_grid: GateAxisGrid | None = None
     x_grid: GateAxisGrid | None = None
     crop_gray = np.asarray(crop.convert("L"))
@@ -926,6 +933,9 @@ def _digitize_panel(
     grid_problem = y_grid is not None and y_grid.check.status != "verified"
     if grid_problem:
         diagnostics.append(f"y_axis_grid_check_{y_grid.check.status}")
+    y_axis_contradicted = y_axis_identity == "contradicted"
+    if y_axis_contradicted:
+        diagnostics.append("y_axis_title_names_drain_not_gate")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)
@@ -958,6 +968,7 @@ def _digitize_panel(
         or extrapolated_vpl
         or implausible_box
         or grid_problem
+        or y_axis_contradicted
     ):
         status = "low_confidence"
     else:

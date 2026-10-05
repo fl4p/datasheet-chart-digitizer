@@ -75,5 +75,35 @@ class RJK1001QgAxisTests(unittest.TestCase):
         self.assertAlmostEqual(r.vpl, 4.37, delta=0.1)
 
 
+
+NTMFS4C020 = DS / "onsemi/NTMFS4C020NT1G.pdf"
+NTMFS4854 = DS / "onsemi/NTMFS4854NST3G.pdf"
+
+
+class DualYIdentityTests(unittest.TestCase):
+    def _chart(self, pdf, page, diagram):
+        if not pdf.exists():
+            self.skipTest(f"missing {pdf.name}")
+        found = [r for r in digitize_gate_charge(pdf, dpi=220, finder_dpi=220)
+                 if (r.panel.page, r.panel.diagram) == (page, diagram)]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def test_vds_column_read_as_vgs_is_never_ok(self):
+        # 0..12 V VGS on the left, 0..18 V VDS on the right, the VDS column
+        # nearer: Vpl 4.39 V "read" off the VDS scale for a ~2.9 V plateau.
+        # NTMFS4854NST3G: main served Vpl 5.03 V off a 0..20 V VDS column for
+        # a ~3.0 V plateau.
+        for pdf, page in ((NTMFS4C020, 4), (NTMFS4854, 5)):
+            r = self._chart(pdf, page, 951)
+            self.assertIn("y_axis_title_names_drain_not_gate", r.diagnostics)
+            self.assertNotEqual(r.status, "ok")
+            self.assertIsNone(r.to_manifest()["vpl"])
+
+    def test_gate_titled_column_is_not_flagged(self):
+        r = _result(RJK1001, 4, 951)
+        self.assertNotIn("y_axis_title_names_drain_not_gate", r.diagnostics)
+
+
 if __name__ == "__main__":
     unittest.main()
