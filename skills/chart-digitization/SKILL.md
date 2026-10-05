@@ -76,7 +76,9 @@ about 24,500 PDFs) comes first; never web-fetch a datasheet that is already ther
     Vpl is read through VGS and follows `status`; curve points and `plateau_qg` also need
     `qg_axis_status == "verified"` (`curve_physical_output_available`, per-VDD
     `points_available`). An `ok` chart can serve Vpl and withhold its points because its
-    Qg axis failed or could not be checked. On a chart with several VDD/VDS curves,
+    Qg axis failed or could not be checked. `qg_table_check` compares the curve with the
+    spec table's Qg typ; it verifies a Qg axis bound to its rules by order when the labels
+    do not register, and is informational on a grid-verified axis. On a chart with several VDD/VDS curves,
     `per_vdd` lists one curve per source curve with its bound `vdd_v`, `binding_rule` and
     its own `status`. Only `ok` curves carry points. An `unbound` curve's identity was
     refused, and its points are withheld. `per_vdd.plateau` serves Vpl when every curve

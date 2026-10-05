@@ -29,6 +29,8 @@ from .gate_charge_grid_anchor import (
 )
 from .gridline_anchor import GridCheck
 from .gate_charge_plot_box import bind_plot_box_to_rules as _bind_plot_box_to_rules
+from .gate_charge_spec_table import parse_qg_spec_rows as _parse_qg_spec_rows
+from .gate_charge_table_check import TableCheck as _TableCheck, table_check as _table_check
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -135,6 +137,12 @@ class GateChargeResult:
     x_label_ticks_px: tuple[tuple[float, float], ...] = ()
     # gate_charge_plot_box: the input box and what each edge was bound to
     plot_box_binding: dict | None = None
+    # gate_charge_table_check: the spec table's Qg typ against the curve read
+    # through the served axes (agrees / contradicts / not_evaluable)
+    qg_table_check: dict | None = None
+    # low_confidence ONLY because the VGS axis is bound by rule order; a
+    # spec-table Qg agreement verifies it (see _check_served_qg_axis)
+    y_pending_table: bool = False
 
     @property
     def qg_axis_status(self) -> str:
@@ -192,6 +200,14 @@ def digitize_gate_charge(
     # neighboring normalized axis into a later gate-charge result.
     retry_ocr: dict[int, PageText] = {}
     ocr_attempted = bool(page_text)
+    # the spec table's Total Gate Charge rows, parsed once per PDF on demand
+    spec_cache: list = []
+
+    def spec_rows():
+        if not spec_cache:
+            spec_cache.append(_parse_qg_spec_rows(pdf))
+        return spec_cache[0]
+
     with pymupdf.open(pdf) as doc:
         for panel in panels:
             try:
@@ -320,7 +336,7 @@ def digitize_gate_charge(
                 if result is not None:
                     result = enforce_curve_provenance(pdf, result)
                     # the Qg mapping that is SERVED, after every retry/replace
-                    result = _check_served_qg_axis(doc[panel.page - 1], result)
+                    result = _check_served_qg_axis(doc[panel.page - 1], result, spec_rows)
                     if getattr(result, "per_vdd", None):
                         # per-VDD statuses and values from the FINAL ticks/status
                         result = replace(result, per_vdd=_finalize_per_vdd(result))
@@ -1007,6 +1023,21 @@ def _digitize_panel(
         status = "low_confidence"
     else:
         status = "ok"
+    # The ONE blocker a spec-table Qg agreement may lift later: a VGS axis
+    # bound to its rules by count and order (not by registration). Recorded
+    # here, where every other gate is known.
+    y_pending_table = bool(
+        status == "low_confidence"
+        and grid_problem
+        and y_grid is not None
+        and (y_grid.anchoring or {}).get("binding") == "ordinal_rules"
+        and not (
+            low_trace_confidence or missing_initial_ramp or missing_axis_origin
+            or non_monotone_gate_curve or clipped_curve or branch_cut_short
+            or blended_trace or not vpl_expected_for_source or extrapolated_vpl
+            or implausible_box or y_axis_contradicted
+        )
+    )
     x_tick_unit = _gate_charge_unit(broad_context)
     if x_tick_unit is None:
         diagnostics.append("gate_charge_unit_unresolved")
@@ -1056,6 +1087,7 @@ def _digitize_panel(
         x_grid=None if x_grid is None else x_grid.payload(),
         x_label_ticks_px=tuple(x_label_ticks_px),
         plot_box_binding=plot_box_binding,
+        y_pending_table=y_pending_table,
         per_vdd=_build_per_vdd(
             per_vdd_analysis, per_vdd_error, legacy_curve=curve, legacy_vpl_y_px=vpl_y_px,
             legacy_rule=legacy_rule, text_page=text_page, rect=crop_rect, scale=scale,
@@ -1084,14 +1116,24 @@ def _digitize_panel(
     return result
 
 
-def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult) -> GateChargeResult:
-    """Check the FINAL served Qg ticks on the rules their labels name.
+def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_rows=None) -> GateChargeResult:
+    """Check the FINAL served Qg ticks on their rules, and against the spec table.
 
-    Tri-state, never a pass by default: no unit, fewer than two served ticks,
-    no label evidence, or no rule binding are ``unverified``; a served tick
-    off its rule beyond tolerance is ``failed``. The verdict replaces the one
-    computed while the panel was seated, because a retry may have replaced or
+    Grid check (tri-state, never a pass by default): no unit, fewer than two
+    served ticks, no label evidence, or no rule binding are ``unverified``; a
+    served tick off its rule beyond tolerance is ``failed``. It replaces the
+    verdict computed while the panel was seated: a retry may have replaced or
     carried the ticks since.
+
+    Table check (``gate_charge_table_check``): the curve drawn for the table's
+    VDD/VDS, read at the table's VGS through the served axes, against the
+    table's Qg typ. It is the deciding evidence ONLY for an axis bound to its
+    rules by count and order (``ordinal_rules``, when the labels do not
+    register on one grid): agreement verifies it (both axes it read through),
+    anything else leaves it unverified. On an axis the grid check verified it
+    is recorded, not applied: on Fab's verified charts the table and the
+    printed curve disagree by more than the tolerance on ~11 % of charts
+    (up to 19 %, FDPF55N06), so it cannot overrule the rules.
     """
     if not isinstance(result, GateChargeResult) or result.status == "rejected_non_gate":
         return result
@@ -1109,16 +1151,66 @@ def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult) -> GateC
             check = check_gate_x_on_grid(
                 gray, result.x_ticks_px, result.x_label_ticks_px, result.plot_box_px
             )
+    try:
+        rows = spec_rows() if callable(spec_rows) else _parse_qg_spec_rows(result.pdf)
+    except Exception as exc:  # unevaluable is not a pass
+        table = _TableCheck("not_evaluable", f"spec table unreadable: {type(exc).__name__}: {exc}"[:200])
+    else:
+        table = _table_check(
+            rows, per_vdd=result.per_vdd, legacy_curve=result.curve_px,
+            x_ticks=result.x_ticks_px, y_ticks=result.y_ticks_px,
+        ) if result.x_tick_unit is not None else _TableCheck("not_evaluable", "Qg unit unresolved")
+    x_ordinal = (previous.get("anchoring") or {}).get("binding") == "ordinal_rules"
+    grid_payload = check.payload()
+    if x_ordinal and check.status != "verified":
+        if table.status == "agrees":
+            grid_payload = {
+                **grid_payload,
+                "status": "verified",
+                "reason": "Qg: labels bound in order to their rules "
+                f"({(previous.get('anchoring') or {}).get('note')}); confirmed by the spec "
+                f"table: {table.reason}",
+                "method": "ordinal_rules+table_qg",
+            }
+        else:
+            grid_payload = {
+                **grid_payload,
+                "reason": f"{grid_payload.get('reason')}; ordinal rule binding not confirmed "
+                f"by the spec table ({table.status}: {table.reason})",
+            }
     x_grid = {
         "anchoring": previous.get("anchoring"),
         "anchor_attempt": previous.get("anchor_attempt"),
         "anchor_error": previous.get("anchor_error"),
-        "grid_check": check.payload(),
+        "grid_check": grid_payload,
     }
-    diagnostics = tuple(d for d in result.diagnostics if not d.startswith("x_axis_grid_check_"))
-    if check.status != "verified":
-        diagnostics = (*diagnostics, f"x_axis_grid_check_{check.status}")
-    return replace(result, x_grid=x_grid, diagnostics=diagnostics)
+    diagnostics = tuple(
+        d for d in result.diagnostics
+        if not d.startswith("x_axis_grid_check_") and not d.startswith("qg_table_check_")
+    )
+    if grid_payload["status"] != "verified":
+        diagnostics = (*diagnostics, f"x_axis_grid_check_{grid_payload['status']}")
+    diagnostics = (*diagnostics, f"qg_table_check_{table.status}")
+    changes = {"x_grid": x_grid, "diagnostics": diagnostics, "qg_table_check": table.payload()}
+    # A VGS axis bound by rule order is verified by the same table agreement
+    # (the reading went through it); if that was the only blocker, the chart
+    # is served.
+    if result.y_pending_table and table.status == "agrees" and grid_payload["status"] == "verified":
+        y_grid = dict(result.y_grid or {})
+        y_check = dict(y_grid.get("grid_check") or {})
+        y_check.update(
+            status="verified",
+            method="ordinal_rules+table_qg",
+            reason=f"VGS: labels bound in order to their rules; confirmed by the spec table: {table.reason}",
+        )
+        y_grid["grid_check"] = y_check
+        changes["y_grid"] = y_grid
+        changes["diagnostics"] = tuple(
+            d for d in changes["diagnostics"] if d != "y_axis_grid_check_unverified"
+        )
+        if result.status == "low_confidence":
+            changes["status"] = "ok"
+    return replace(result, **changes)
 
 
 def _trim_like_legacy(curve, plot_box):

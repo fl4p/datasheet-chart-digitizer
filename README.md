@@ -116,6 +116,25 @@ the frame lies further out (an unlabelled terminal interval: within one pitch, o
 pitches on the label lattice). `plot_box_binding` records the input box and each edge's rule.
 An axis that was not seated leaves its edges unchanged.
 
+**Spec-table Qg cross-check (`qg_table_check`).** `gate_charge_spec_table` reads the Total Gate
+Charge rows (typ in an owned Typ column, nC, VGS drive, VDD/VDS, ID) from the datasheet's own
+table; `gate_charge_table_check` reads the curve drawn for that VDD/VDS (bound per-VDD curve, by
+elimination, or the chart's only curve) at the table VGS through the served axes and compares
+it with typ (tolerance 3 % of typ + half the printed resolution). Tri-state: `agrees`,
+`contradicts`, `not_evaluable` (no row / no matching curve / curve short of the VGS).
+
+When the labels do not register on one grid (a raster grid off a straight line by a pixel or
+two; a label run printed at a different pitch from its grid), the axis is bound to its rules
+by **count and order** (`anchoring.binding = "ordinal_rules"`: exactly one solid rule per label,
+uniform rules and labels, pitches within 10 %). Such an axis is `verified`
+(`grid_check.method = "ordinal_rules+table_qg"`) only when the table check `agrees`; otherwise it
+stays unverified. On an axis the grid check verified, the table check is recorded only: on the
+human-verified charts table and printed curve disagree beyond the tolerance on ~7 % of charts.
+
+**Dual-y charts.** When the nearer VGS label column's title names the drain (VDS), the column on
+the other side is used if its title names the gate (`y_axis_rebound_to_gate_titled_column`);
+otherwise the chart is `low_confidence` (`y_axis_title_names_drain_not_gate`).
+
 #### Gate charge with several VDD/VDS curves (`per_vdd`)
 
 The legacy fields are unchanged in meaning: `status`, `vpl`, `vpl_y_px` and one
