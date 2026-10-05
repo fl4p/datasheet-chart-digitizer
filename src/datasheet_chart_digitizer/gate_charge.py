@@ -36,7 +36,7 @@ from .gate_charge_estimation import (
     _estimate_vpl_from_curve,
     _has_gate_charge_evidence,
     _local_y_ticks_for_plot,
-    y_axis_side_identity as _y_axis_side_identity,
+    y_axis_side_and_identity as _y_axis_side_and_identity,
     _non_gate_plot_reason,
     _text_near_rect,
 )
@@ -714,10 +714,27 @@ def _digitize_panel(
     local_y_ticks = _drop_glyph_offset_tick(local_y_ticks)
     # Dual-y charts: the nearer label column can be the VDS axis. Its printed
     # title says so (NTMFS4C020NT1G: "VDS, DRAIN-TO-SOURCE VOLTAGE" beside the
-    # 0..18 column read as VGS); such a VGS line is never "ok".
-    y_axis_identity = _y_axis_side_identity(
+    # 0..18 column read as VGS). The VGS axis is then the column on the other
+    # side, taken only when ITS title names the gate; otherwise the chart is
+    # never "ok" on a VGS line read off the drain axis.
+    y_axis_identity, y_axis_side = _y_axis_side_and_identity(
         axis_text_page, crop_rect, scale, plot_box, local_y_ticks
     )
+    y_axis_rebound = False
+    if y_axis_identity == "contradicted" and y_axis_side in {"left", "right"}:
+        other_side = "right" if y_axis_side == "left" else "left"
+        other_ticks = _local_y_ticks_for_plot(
+            axis_text_page, crop_rect, scale, plot_box, side=other_side
+        )
+        if len(other_ticks) >= 2:
+            other_identity, _side = _y_axis_side_and_identity(
+                axis_text_page, crop_rect, scale, plot_box, other_ticks
+            )
+            if other_identity == "consistent":
+                local_y_ticks = _drop_glyph_offset_tick(
+                    _y_ticks_with_zero(other_ticks, panel_rect)
+                )
+                y_axis_identity, y_axis_rebound = "consistent", True
     y_grid: GateAxisGrid | None = None
     x_grid: GateAxisGrid | None = None
     crop_gray = np.asarray(crop.convert("L"))
@@ -951,6 +968,8 @@ def _digitize_panel(
     y_axis_contradicted = y_axis_identity == "contradicted"
     if y_axis_contradicted:
         diagnostics.append("y_axis_title_names_drain_not_gate")
+    if y_axis_rebound:
+        diagnostics.append("y_axis_rebound_to_gate_titled_column")
 
     score = trace_score + min(4.0, 0.45 * measured_y_tick_count)
     score += _title_score(panel)

@@ -50,6 +50,7 @@ def _local_y_ticks_for_plot(
     rect: pymupdf.Rect,
     scale: float,
     plot_box: tuple[int, int, int, int],
+    side: str | None = None,
 ) -> list[tuple[float, float]]:
     x0, y0, x1, y1 = plot_box
     px0 = rect.x0 + x0 / scale
@@ -88,6 +89,8 @@ def _local_y_ticks_for_plot(
             _OCR_Y_TICK_RAW_MAX if repair_ocr_decimal else _NATIVE_Y_TICK_MAX
         )
         if value < -20 or value > upper_bound:
+            continue
+        if side is not None and side != ("left" if left_band else "right"):
             continue
         candidates["left" if left_band else "right"].append((value, cy, cx))
 
@@ -907,6 +910,17 @@ def y_axis_side_identity(
     plot_box: tuple[int, int, int, int],
     ticks: list[tuple[float, float]],
 ) -> str:
+    """The verdict of ``y_axis_side_and_identity`` alone."""
+    return y_axis_side_and_identity(page, rect, scale, plot_box, ticks)[0]
+
+
+def y_axis_side_and_identity(
+    page: pymupdf.Page,
+    rect: pymupdf.Rect,
+    scale: float,
+    plot_box: tuple[int, int, int, int],
+    ticks: list[tuple[float, float]],
+) -> tuple[str, str | None]:
     """Is the chosen y label column the VGS axis, by the printed axis titles?
 
     A dual-y chart (VGS one side, VDS the other: onsemi NTMFS4C020NT1G p4,
@@ -917,14 +931,14 @@ def y_axis_side_identity(
     title text there: the previous behaviour, not a pass).
     """
     if len(ticks) < 2:
-        return "unverified"
+        return "unverified", None
     x0, y0, x1, y1 = plot_box
     px0, px1 = rect.x0 + x0 / scale, rect.x0 + x1 / scale
     py0, py1 = rect.y0 + y0 / scale, rect.y0 + y1 / scale
     try:
         words = page.get_text("words")
     except Exception:
-        return "unverified"
+        return "unverified", None
     # the side whose labels ARE the ticks: same value at the same row
     matches = {"left": 0, "right": 0}
     for word in words:
@@ -943,7 +957,7 @@ def y_axis_side_identity(
     if matches["left"] != matches["right"]:
         side = max(matches, key=matches.get)
     if side is None:
-        return "unverified"
+        return "unverified", None
     titles = {"left": [], "right": []}
     for word in words:
         cx = 0.5 * (float(word[0]) + float(word[2]))
@@ -957,5 +971,5 @@ def y_axis_side_identity(
     own = " ".join(titles[side]).upper()
     own_gate, own_drain = bool(_GATE_TITLE.search(own)), bool(_DRAIN_TITLE.search(own))
     if own_drain and not own_gate:
-        return "contradicted"
-    return "consistent" if own_gate else "unverified"
+        return "contradicted", side
+    return ("consistent" if own_gate else "unverified"), side

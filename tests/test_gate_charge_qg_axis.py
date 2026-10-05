@@ -113,16 +113,19 @@ class DualYIdentityTests(unittest.TestCase):
         self.assertEqual(len(found), 1)
         return found[0]
 
-    def test_vds_column_read_as_vgs_is_never_ok(self):
-        # 0..12 V VGS on the left, 0..18 V VDS on the right, the VDS column
-        # nearer: Vpl 4.39 V "read" off the VDS scale for a ~2.9 V plateau.
-        # NTMFS4854NST3G: main served Vpl 5.03 V off a 0..20 V VDS column for
-        # a ~3.0 V plateau.
-        for pdf, page in ((NTMFS4C020, 4), (NTMFS4854, 5)):
+    def test_vds_column_read_as_vgs_is_never_served_as_vgs(self):
+        # 0..12 V VGS on the left, 0..18/0..20 V VDS on the right, the VDS
+        # column nearer: main read Vpl 4.39 V / 5.03 V off the VDS scale for
+        # ~2.9 / ~3.0 V plateaus. The drain title rules that column out; the
+        # gate-titled column on the other side is the VGS axis, and the chart
+        # is served only once both axes are verified (rule order + table Qg).
+        for pdf, page, plateau in ((NTMFS4C020, 4, 2.9), (NTMFS4854, 5, 3.0)):
             r = self._chart(pdf, page, 951)
-            self.assertIn("y_axis_title_names_drain_not_gate", r.diagnostics)
-            self.assertNotEqual(r.status, "ok")
-            self.assertIsNone(r.to_manifest()["vpl"])
+            self.assertIn("y_axis_rebound_to_gate_titled_column", r.diagnostics)
+            self.assertNotIn("y_axis_title_names_drain_not_gate", r.diagnostics)
+            self.assertEqual(max(v for v, _ in r.y_ticks_px), 12.0)
+            if r.status == "ok":
+                self.assertAlmostEqual(r.vpl, plateau, delta=0.15)
 
     def test_gate_titled_column_is_not_flagged(self):
         r = _result(RJK1001, 4, 951)
