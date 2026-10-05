@@ -20,7 +20,14 @@ from .find_charts import (
     process_pdf,
     run_tesseract_page_text,
 )
-from .gate_charge_grid_anchor import GateYGrid, seat_gate_y_ticks, served_value
+from .gate_charge_grid_anchor import (
+    GateAxisGrid,
+    check_gate_x_on_grid,
+    seat_gate_x_ticks,
+    seat_gate_y_ticks,
+    served_value,
+)
+from .gridline_anchor import GridCheck
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -118,12 +125,33 @@ class GateChargeResult:
     y_grid: dict | None = None
     # gate_charge_per_vdd: one curve per VDD/VDS with its bound label
     per_vdd: dict | None = None
+    # Qg ticks seated on their rules + the served-axis check of the FINAL
+    # x_ticks_px (gate_charge_grid_anchor.check_gate_x_on_grid)
+    x_grid: dict | None = None
+    # Qg label glyph centres (value, continuous crop px): identity evidence
+    # for the served-axis check, never a served pixel
+    x_label_ticks_px: tuple[tuple[float, float], ...] = ()
+
+    @property
+    def qg_axis_status(self) -> str:
+        """``verified``/``failed``/``unverified`` for the served Qg mapping."""
+        check = (self.x_grid or {}).get("grid_check") or {}
+        return str(check.get("status") or "unverified")
 
     def to_manifest(self) -> dict[str, object]:
         payload = asdict(self)
         payload["panel"] = asdict(self.panel)
         physical_output_available = self.status == "ok"
         payload["physical_output_available"] = physical_output_available
+        # Field gating. Vpl is read through VGS only: it follows ``status``,
+        # which already requires the VGS rule check. Curve POINTS are (Qg, VGS)
+        # pairs and Qg readings (per-VDD plateau_qg) are Qg values: both need
+        # the served Qg axis verified on its rules as well. Unverified is not
+        # verified: a Qg axis that could not be checked withholds them too.
+        qg_status = self.qg_axis_status
+        curve_available = physical_output_available and qg_status == "verified"
+        payload["qg_axis_status"] = qg_status
+        payload["curve_physical_output_available"] = curve_available
         if not physical_output_available:
             # Keep the candidate on the in-memory result so review overlays can
             # explain a refusal, but never serialize an untrusted scalar or
@@ -131,7 +159,11 @@ class GateChargeResult:
             payload["vpl"] = None
             payload["curve_px"] = ()
             payload["vpl_y_px"] = None
-        payload["per_vdd"] = _serialize_per_vdd(self.per_vdd, physical_output_available)
+        elif not curve_available:
+            payload["curve_px"] = ()
+        payload["per_vdd"] = _serialize_per_vdd(
+            self.per_vdd, physical_output_available, qg_verified=qg_status == "verified"
+        )
         return payload
 
 
@@ -240,6 +272,14 @@ def digitize_gate_charge(
                                     y_tick_count=len(y_ticks_px),
                                     y_ticks_px=y_ticks_px,
                                     x_ticks_px=result.x_ticks_px or carried_x_ticks(ocr_result, result),
+                                    x_label_ticks_px=(
+                                        result.x_label_ticks_px
+                                        if result.x_ticks_px or ocr_result is None
+                                        else carried_x_ticks(
+                                            replace(ocr_result, x_ticks_px=ocr_result.x_label_ticks_px),
+                                            result,
+                                        )
+                                    ),
                                     x_tick_unit=x_tick_unit,
                                     y_grid=seated.payload(),
                                     diagnostics=tuple(
@@ -275,6 +315,8 @@ def digitize_gate_charge(
                             result = ocr_result
                 if result is not None:
                     result = enforce_curve_provenance(pdf, result)
+                    # the Qg mapping that is SERVED, after every retry/replace
+                    result = _check_served_qg_axis(doc[panel.page - 1], result)
                     if getattr(result, "per_vdd", None):
                         # per-VDD statuses and values from the FINAL ticks/status
                         result = replace(result, per_vdd=_finalize_per_vdd(result))
@@ -666,15 +708,27 @@ def _digitize_panel(
         local_y_ticks = panel_y_ticks
     local_y_ticks = _y_ticks_with_zero(local_y_ticks, panel_rect)
     local_y_ticks = _drop_glyph_offset_tick(local_y_ticks)
-    y_grid: GateYGrid | None = None
-    if len(local_y_ticks) >= 2:
-        # The labels identify VGS values; the line Vpl is read through is
-        # taken from the rules they name, and checked where it is served.
-        y_grid = seat_gate_y_ticks(
-            np.asarray(crop.convert("L")),
-            [(value, (y - crop_rect.y0) * scale) for value, y in local_y_ticks],
-            plot_box,
+    y_grid: GateAxisGrid | None = None
+    x_grid: GateAxisGrid | None = None
+    crop_gray = np.asarray(crop.convert("L"))
+    # Both axes: the labels identify values; the lines values are read
+    # through are taken from the rules they name, and checked where served.
+    y_label_ticks_px = (
+        [(float(value), float((y - crop_rect.y0) * scale)) for value, y in local_y_ticks]
+        if len(local_y_ticks) >= 2 else []
+    )
+    x_label_ticks_px = tuple(
+        (float(value), float((x - crop_rect.x0) * scale)) for value, x in panel_x_ticks
+    ) if len(panel_x_ticks) >= 2 else ()
+
+    def seat_axes(box):
+        return (
+            seat_gate_y_ticks(crop_gray, y_label_ticks_px, box) if y_label_ticks_px else None,
+            seat_gate_x_ticks(crop_gray, list(x_label_ticks_px), box) if x_label_ticks_px else None,
         )
+
+    y_grid, x_grid = seat_axes(plot_box)
+    if y_grid is not None:
         local_y_ticks = [
             (value, crop_rect.y0 + px / scale) for value, px in y_grid.ticks_px
         ]
@@ -912,20 +966,30 @@ def _digitize_panel(
     if x_tick_unit is None:
         diagnostics.append("gate_charge_unit_unresolved")
         status = "unresolved"
-    x_ticks_px = _snap_tick_coordinates_to_plot(
-        tuple(
-        (float(value), float((x - crop_rect.x0) * scale)) for value, x in panel_x_ticks
-        ),
-        plot_box[0],
-        plot_box[2],
-    )
-    y_ticks_px = _snap_tick_coordinates_to_plot(
-        tuple(
-        (float(value), float((y - crop_rect.y0) * scale)) for value, y in local_y_ticks
-        ),
-        plot_box[1],
-        plot_box[3],
-    )
+    # An axis seated on its rules is served at those rules. Only an axis with
+    # no rule binding keeps the legacy label run stretched onto the box edges
+    # (RJK1001DPP-A0#T2: that stretch put the Qg origin 16.6 px off its rule),
+    # and the served-axis check then reports it unverified.
+    if x_grid is not None and x_grid.anchored:
+        x_ticks_px = tuple(x_grid.ticks_px)
+    else:
+        x_ticks_px = _snap_tick_coordinates_to_plot(
+            tuple(
+            (float(value), float((x - crop_rect.x0) * scale)) for value, x in panel_x_ticks
+            ),
+            plot_box[0],
+            plot_box[2],
+        )
+    if y_grid is not None and y_grid.anchored and not (axis_assumed or axis_grid_inferred):
+        y_ticks_px = tuple(y_grid.ticks_px)
+    else:
+        y_ticks_px = _snap_tick_coordinates_to_plot(
+            tuple(
+            (float(value), float((y - crop_rect.y0) * scale)) for value, y in local_y_ticks
+            ),
+            plot_box[1],
+            plot_box[3],
+        )
     result = GateChargeResult(
         pdf=str(pdf),
         panel=panel,
@@ -944,6 +1008,8 @@ def _digitize_panel(
         y_ticks_px=y_ticks_px,
         x_tick_unit=x_tick_unit,
         y_grid=None if y_grid is None else y_grid.payload(),
+        x_grid=None if x_grid is None else x_grid.payload(),
+        x_label_ticks_px=tuple(x_label_ticks_px),
         per_vdd=_build_per_vdd(
             per_vdd_analysis, per_vdd_error, legacy_curve=curve, legacy_vpl_y_px=vpl_y_px,
             legacy_rule=legacy_rule, text_page=text_page, rect=crop_rect, scale=scale,
@@ -972,6 +1038,43 @@ def _digitize_panel(
     return result
 
 
+def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult) -> GateChargeResult:
+    """Check the FINAL served Qg ticks on the rules their labels name.
+
+    Tri-state, never a pass by default: no unit, fewer than two served ticks,
+    no label evidence, or no rule binding are ``unverified``; a served tick
+    off its rule beyond tolerance is ``failed``. The verdict replaces the one
+    computed while the panel was seated, because a retry may have replaced or
+    carried the ticks since.
+    """
+    if not isinstance(result, GateChargeResult) or result.status == "rejected_non_gate":
+        return result
+    previous = dict(result.x_grid or {})
+    if result.x_tick_unit is None:
+        check = GridCheck("unverified", "Qg: gate-charge unit unresolved", None, ())
+    elif len(result.x_ticks_px) < 2 or len(result.x_label_ticks_px) < 2:
+        check = GridCheck("unverified", "Qg: fewer than 2 labelled Qg ticks", None, ())
+    else:
+        try:
+            gray = _result_crop_luma(page, result)
+        except Exception as exc:  # unevaluable is not a pass
+            check = GridCheck("unverified", f"Qg: crop not renderable: {exc}"[:200], None, ())
+        else:
+            check = check_gate_x_on_grid(
+                gray, result.x_ticks_px, result.x_label_ticks_px, result.plot_box_px
+            )
+    x_grid = {
+        "anchoring": previous.get("anchoring"),
+        "anchor_attempt": previous.get("anchor_attempt"),
+        "anchor_error": previous.get("anchor_error"),
+        "grid_check": check.payload(),
+    }
+    diagnostics = tuple(d for d in result.diagnostics if not d.startswith("x_axis_grid_check_"))
+    if check.status != "verified":
+        diagnostics = (*diagnostics, f"x_axis_grid_check_{check.status}")
+    return replace(result, x_grid=x_grid, diagnostics=diagnostics)
+
+
 def _trim_like_legacy(curve, plot_box):
     """The legacy trace's trim chain, for one separated source curve."""
     curve = _trim_terminal_flat_grid_capture(curve, plot_box)
@@ -988,6 +1091,20 @@ def _result_crop_gray(page: pymupdf.Page, result: GateChargeResult) -> np.ndarra
     )
     rgb = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.height, pix.width, pix.n)
     return rgb[:, :, :3].mean(axis=2).astype(np.uint8)
+
+
+def _result_crop_luma(page: pymupdf.Page, result: GateChargeResult) -> np.ndarray:
+    """The result's crop in the SAME grey the panel was seated on (PIL "L").
+
+    ``_result_crop_gray`` averages RGB; on an anti-aliased hairline that moves
+    a rule centre by ~0.1 px, enough to flip a check seated at 1.4 px to a
+    1.6 px fail (NVTFS4C08NTWG p4, the 18 nC rule).
+    """
+    scale = result.dpi / 72.0
+    pix = page.get_pixmap(
+        matrix=pymupdf.Matrix(scale, scale), clip=pymupdf.Rect(result.crop_box_pt), alpha=False
+    )
+    return np.asarray(Image.frombytes("RGB", (pix.width, pix.height), pix.samples).convert("L"))
 
 
 def _strong_local_non_gate_reason(tight_context: str) -> str | None:

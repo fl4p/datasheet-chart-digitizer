@@ -91,7 +91,12 @@ class AnnotateFailClosedTests(unittest.TestCase):
             ), mock.patch.object(gate.pymupdf, "open", return_value=mock.MagicMock()):
                 results, errors = gate.digitize_gate_charge_fail_closed(pdf)
 
-        self.assertEqual(results, [accepted])
+        # the peer survives; the final served-Qg check annotates it (no Qg
+        # ticks here, so unverified: its curve points are withheld)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(replace(results[0], x_grid=None, diagnostics=()), accepted)
+        self.assertEqual(results[0].qg_axis_status, "unverified")
+        self.assertIn("x_axis_grid_check_unverified", results[0].diagnostics)
         self.assertEqual(
             errors,
             [

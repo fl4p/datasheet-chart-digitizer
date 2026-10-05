@@ -1,4 +1,4 @@
-"""Seat gate-charge VGS ticks on the gridlines their labels name.
+"""Seat gate-charge VGS and Qg ticks on the gridlines their labels name.
 
 The Vpl scalar is read through a straight line fitted to the VGS tick-LABEL
 centres (``gate_charge_estimation._v_from_local_ticks`` on word-box centres,
@@ -21,6 +21,7 @@ import numpy as np
 
 from .gridline_anchor import (
     GridCheck,
+    Orientation,
     anchor_axis_on_grid_attempts,
     check_served_on_grid_attempts,
 )
@@ -38,14 +39,19 @@ class _Frame:
 
 
 @dataclass(frozen=True)
-class GateYGrid:
-    """Served VGS ticks (value, continuous px) plus the grid evidence."""
+class GateAxisGrid:
+    """Served ticks (value, continuous px) of one axis plus the grid evidence."""
 
     ticks_px: tuple[tuple[float, float], ...]
     anchoring: dict | None
     anchor_attempt: str | None
     anchor_error: str | None
     check: GridCheck
+
+    @property
+    def anchored(self) -> bool:
+        """The served ticks are the rules the labels name (not label glyphs)."""
+        return self.anchoring is not None
 
     def payload(self) -> dict[str, object]:
         return {
@@ -54,6 +60,10 @@ class GateYGrid:
             "anchor_error": self.anchor_error,
             "grid_check": self.check.payload(),
         }
+
+
+# Kept for callers that name the VGS axis explicitly.
+GateYGrid = GateAxisGrid
 
 
 def _index_ticks(ticks_px) -> list[AxisTick]:
@@ -71,32 +81,43 @@ def _served_index_axis(ticks_px) -> NumericAxis:
     return NumericAxis("linear", float(m), float(b + m * _INDEX_TO_CONTINUOUS), (), 0.0, ())
 
 
-def seat_gate_y_ticks(
+def _frame_and_cross(plot_box, orientation: Orientation):
+    x0, y0, x1, y1 = (float(v) for v in plot_box)
+    frame = _Frame(x0, y0, x1, y1)
+    lo, hi = (y0, y1) if orientation == "x" else (x0, x1)
+    return frame, (lo - _INDEX_TO_CONTINUOUS, hi - _INDEX_TO_CONTINUOUS)
+
+
+def seat_gate_ticks(
     gray: np.ndarray,
     label_ticks_px: list[tuple[float, float]] | tuple[tuple[float, float], ...],
     plot_box: tuple[int, int, int, int],
-) -> GateYGrid:
-    """Anchor labelled VGS ticks on their rules; check the served mapping.
+    *,
+    orientation: Orientation,
+    name: str,
 
-    *label_ticks_px* are (value, continuous crop px of the label centre). If
-    no rule binding is evidenced the label ticks are returned unchanged and
-    the check says why (``unverified``) -- the caller must not report ok.
+) -> GateAxisGrid:
+    """Anchor one axis's labelled ticks on their rules; check the served mapping.
+
+    *label_ticks_px* are (value, continuous crop px of the label centre);
+    *orientation* ``"y"`` is the VGS axis (horizontal rules), ``"x"`` the Qg
+    axis (vertical rules). If no rule binding is evidenced the label ticks are
+    returned unchanged and the check says why (``unverified``) -- the caller
+    must not serve anything read through that axis as verified.
     """
-    x0, y0, x1, y1 = (float(v) for v in plot_box)
-    frame = _Frame(x0, y0, x1, y1)
-    cross = (x0 - _INDEX_TO_CONTINUOUS, x1 - _INDEX_TO_CONTINUOUS)
+    frame, cross = _frame_and_cross(plot_box, orientation)
     label_ticks = _index_ticks(label_ticks_px)
     served_ticks = tuple((float(v), float(p)) for v, p in label_ticks_px)
     anchoring = attempt_name = anchor_error = None
     try:
-        label_axis = fit_axis_ticks(label_ticks, "VGS", model="linear")
+        label_axis = fit_axis_ticks(label_ticks, name, model="linear")
     except RuntimeError as exc:
         label_axis = None
         anchor_error = str(exc)
     if label_axis is not None:
         try:
             anchored, attempt_name = anchor_axis_on_grid_attempts(
-                gray, label_axis, frame=frame, orientation="y", cross_span=cross, name="VGS"
+                gray, label_axis, frame=frame, orientation=orientation, cross_span=cross, name=name
             )
         except RuntimeError as exc:
             anchor_error = str(exc)
@@ -106,26 +127,60 @@ def seat_gate_y_ticks(
             )
             anchoring = anchored.payload()
             anchoring["pixel_convention"] = "index (add 0.5 for continuous crop px)"
-    check = check_gate_y_on_grid(gray, served_ticks, label_ticks_px, plot_box)
-    return GateYGrid(served_ticks, anchoring, attempt_name, anchor_error, check)
+    check = check_gate_on_grid(
+        gray, served_ticks, label_ticks_px, plot_box, orientation=orientation, name=name
+    )
+    return GateAxisGrid(served_ticks, anchoring, attempt_name, anchor_error, check)
 
 
-def check_gate_y_on_grid(
+def seat_gate_y_ticks(gray, label_ticks_px, plot_box) -> GateAxisGrid:
+    """VGS: ``seat_gate_ticks`` on the horizontal rules."""
+    return seat_gate_ticks(gray, label_ticks_px, plot_box, orientation="y", name="VGS")
+
+
+def seat_gate_x_ticks(gray, label_ticks_px, plot_box) -> GateAxisGrid:
+    """Qg: ``seat_gate_ticks`` on the vertical rules (or bottom-frame tick marks)."""
+    return seat_gate_ticks(gray, label_ticks_px, plot_box, orientation="x", name="Qg")
+
+
+def check_gate_on_grid(
     gray: np.ndarray,
     served_ticks_px,
     label_ticks_px,
     plot_box: tuple[int, int, int, int],
+    *,
+    orientation: Orientation,
+    name: str,
 ) -> GridCheck:
-    """The guard: the served VGS line against the rule each label names."""
+    """The guard: the SERVED line of one axis against the rule each label names.
+
+    *served_ticks_px* is what the caller serves values through (after every
+    transform); *label_ticks_px* only identify which rule each value names.
+    """
     if len(served_ticks_px) < 2 or len(label_ticks_px) < 2:
-        return GridCheck("unverified", "VGS: fewer than 2 ticks to check", None, ())
-    x0, y0, x1, y1 = (float(v) for v in plot_box)
-    frame = _Frame(x0, y0, x1, y1)
-    cross = (x0 - _INDEX_TO_CONTINUOUS, x1 - _INDEX_TO_CONTINUOUS)
+        return GridCheck("unverified", f"{name}: fewer than 2 ticks to check", None, ())
+    served_px = [float(p) for _v, p in served_ticks_px]
+    if len({round(p, 6) for p in served_px}) < 2:
+        return GridCheck("unverified", f"{name}: served ticks collapse to one pixel", None, ())
+    frame, cross = _frame_and_cross(plot_box, orientation)
     served = _served_index_axis(served_ticks_px)
     labels = _index_ticks(label_ticks_px)
     return check_served_on_grid_attempts(
-        gray, served, labels, frame=frame, orientation="y", cross_span=cross, name="VGS"
+        gray, served, labels, frame=frame, orientation=orientation, cross_span=cross, name=name
+    )
+
+
+def check_gate_y_on_grid(gray, served_ticks_px, label_ticks_px, plot_box) -> GridCheck:
+    """The guard: the served VGS line against the rule each label names."""
+    return check_gate_on_grid(
+        gray, served_ticks_px, label_ticks_px, plot_box, orientation="y", name="VGS"
+    )
+
+
+def check_gate_x_on_grid(gray, served_ticks_px, label_ticks_px, plot_box) -> GridCheck:
+    """The guard: the served Qg line against the rule each label names."""
+    return check_gate_on_grid(
+        gray, served_ticks_px, label_ticks_px, plot_box, orientation="x", name="Qg"
     )
 
 
