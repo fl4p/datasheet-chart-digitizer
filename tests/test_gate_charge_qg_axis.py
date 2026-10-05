@@ -1,10 +1,11 @@
-"""Qg axis served on its rules (corpus).
+"""Qg axis served on its rules, and the plot box on the served rules (corpus).
 
 RJK1001DPP-A0#T2 p4: the VGS corner "0" (x 120.1..124.6 pt) shares the Qg
 label row, so main bound the Qg origin and the box's left edge to that glyph
 and stretched the label run onto the box: served ticks +16.6 ... -0.4 px off
-the printed rules, status ok. Skips when the local fetlib corpus is
-missing.
+the printed rules, status ok. FDP020N06B-F102 p4: the box spanned the
+body-diode chart above and the Qg labels below. Skips when the local
+fetlib corpus is missing.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from datasheet_chart_digitizer.gate_charge_grid_anchor import check_gate_x_on_gr
 
 DS = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets")
 RJK1001 = DS / "renesas/RJK1001DPP-A0#T2.pdf"
+FDP020 = DS / "onsemi/FDP020N06B-F102.pdf"
 SCALE = 220 / 72.0
 
 
@@ -69,11 +71,33 @@ class RJK1001QgAxisTests(unittest.TestCase):
         # the origin is served on its rule, not on the VGS corner "0" glyph
         origin = dict(r.x_ticks_px)[0.0]
         self.assertGreater(origin - dict(r.x_label_ticks_px)[0.0], 10.0)
+        # box on the outermost served rules on both axes
+        x0, y0, x1, y1 = r.plot_box_px
+        xs = sorted(p for _v, p in r.x_ticks_px)
+        ys = sorted(p for _v, p in r.y_ticks_px)
+        self.assertLessEqual(abs(x0 - xs[0]), 1.5)
+        self.assertLessEqual(abs(x1 - xs[-1]), 1.5)
+        self.assertLessEqual(abs(y0 - ys[0]), 1.5)
+        self.assertLessEqual(abs(y1 - ys[-1]), 1.5)
         manifest = r.to_manifest()
         self.assertTrue(manifest["curve_physical_output_available"])
         self.assertGreater(len(manifest["curve_px"]), 20)
         self.assertAlmostEqual(r.vpl, 4.37, delta=0.1)
 
+
+
+class FDP020PlotBoxTests(unittest.TestCase):
+    def test_box_is_bound_to_the_vgs_rules(self):
+        r = _result(FDP020, 4, 6)
+        self.assertEqual(r.status, "ok")
+        _x0, y0, _x1, y1 = r.plot_box_px
+        ys = {v: p for v, p in r.y_ticks_px}
+        self.assertLessEqual(abs(y0 - ys[10.0]), 1.5)  # not 179 px up in the body-diode chart
+        self.assertLessEqual(abs(y1 - ys[0.0]), 1.5)   # not 19 px down on the Qg labels
+        self.assertEqual(r.plot_box_binding["input_box_px"][1], 307)
+        self.assertEqual(r.qg_axis_status, "verified")
+        # the served trace stays inside the 0..10 V rules
+        self.assertLessEqual(max(y for _x, y in r.curve_px), ys[0.0] + 1.5)
 
 
 NTMFS4C020 = DS / "onsemi/NTMFS4C020NT1G.pdf"

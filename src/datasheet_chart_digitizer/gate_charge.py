@@ -28,6 +28,7 @@ from .gate_charge_grid_anchor import (
     served_value,
 )
 from .gridline_anchor import GridCheck
+from .gate_charge_plot_box import bind_plot_box_to_rules as _bind_plot_box_to_rules
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -132,6 +133,8 @@ class GateChargeResult:
     # Qg label glyph centres (value, continuous crop px): identity evidence
     # for the served-axis check, never a served pixel
     x_label_ticks_px: tuple[tuple[float, float], ...] = ()
+    # gate_charge_plot_box: the input box and what each edge was bound to
+    plot_box_binding: dict | None = None
 
     @property
     def qg_axis_status(self) -> str:
@@ -735,6 +738,18 @@ def _digitize_panel(
         )
 
     y_grid, x_grid = seat_axes(plot_box)
+    # The served box must agree with the rules the served ticks sit on: a box
+    # bound to label glyphs or a neighbouring chart (FDP020N06B-F102 p4) puts
+    # every box-relative gate on the wrong frame.
+    rebound_box, plot_box_binding = _bind_plot_box_to_rules(
+        crop_gray,
+        plot_box,
+        y_ticks_px=y_grid.ticks_px if y_grid is not None and y_grid.anchored else None,
+        x_ticks_px=x_grid.ticks_px if x_grid is not None and x_grid.anchored else None,
+    )
+    if rebound_box != plot_box:
+        plot_box = rebound_box
+        y_grid, x_grid = seat_axes(plot_box)
     if y_grid is not None:
         local_y_ticks = [
             (value, crop_rect.y0 + px / scale) for value, px in y_grid.ticks_px
@@ -1021,6 +1036,7 @@ def _digitize_panel(
         y_grid=None if y_grid is None else y_grid.payload(),
         x_grid=None if x_grid is None else x_grid.payload(),
         x_label_ticks_px=tuple(x_label_ticks_px),
+        plot_box_binding=plot_box_binding,
         per_vdd=_build_per_vdd(
             per_vdd_analysis, per_vdd_error, legacy_curve=curve, legacy_vpl_y_px=vpl_y_px,
             legacy_rule=legacy_rule, text_page=text_page, rect=crop_rect, scale=scale,

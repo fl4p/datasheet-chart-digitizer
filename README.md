@@ -110,6 +110,12 @@ ticks on the horizontal rules, the Qg ticks on the vertical rules or bottom-fram
 curve gets `points_available`. A Qg axis that failed or could not be checked withholds the
 points, never the Vpl.
 
+The served `plot_box_px` agrees with the served rules (`gate_charge_plot_box`): an edge across
+a seated axis is bound to its outermost served rule, unless a full-span rule continuous with
+the frame lies further out (an unlabelled terminal interval: within one pitch, or up to three
+pitches on the label lattice). `plot_box_binding` records the input box and each edge's rule.
+An axis that was not seated leaves its edges unchanged.
+
 #### Gate charge with several VDD/VDS curves (`per_vdd`)
 
 The legacy fields are unchanged in meaning: `status`, `vpl`, `vpl_y_px` and one
