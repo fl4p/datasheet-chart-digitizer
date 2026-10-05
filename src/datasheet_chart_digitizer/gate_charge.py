@@ -47,8 +47,26 @@ from .gate_charge_trace import (
     _trace_monotone_upper_gate_curve,
     _trace_vector_gate_curve,
     _trim_terminal_branch_hop,
+    gate_ink_mask,
+)
+from .gate_charge_per_vdd import (
+    analyse as _analyse_per_vdd,
+    build_safely as _build_per_vdd,
+    curve_gates as _per_vdd_curve_gates,
+    finalize as _finalize_per_vdd,
+    legacy_fit as _legacy_per_vdd_fit,
+    lowest_curve as _lowest_per_vdd_curve,
+    plateau_shared as _per_vdd_plateau_shared,
+    serialize as _serialize_per_vdd,
 )
 from .gate_charge_blend import BLEND_DIAGNOSTIC, served_curve_blend
+from .gate_charge_trims import (  # noqa: F401  (re-exported: tests use gate._trim_*)
+    TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION,
+    _trim_after_upper_axis_reach,
+    _trim_dual_y_terminal_branch_switch,
+    _trim_dual_y_terminal_grid_capture,
+    _trim_terminal_flat_grid_capture,
+)
 from .gate_axis_ocr import (
     carried_x_ticks,
     MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
@@ -66,10 +84,6 @@ from .gate_axis_ocr import (
 )
 
 EDGE_TICK_SNAP_MAX_FRACTION = 0.04
-TERMINAL_FLAT_MIN_SPAN_FRACTION = 0.08
-TERMINAL_FLAT_MAX_Y_RANGE_PX = 2
-TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION = 0.03
-TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION = 0.03
 MAX_CURVE_LEFT_GAP_FRACTION = 0.055
 PANEL_CELL_ALIGNMENT_TOLERANCE_PT = 2.5
 PANEL_CELL_CONTAINMENT_TOLERANCE_PT = 3.0
@@ -102,6 +116,8 @@ class GateChargeResult:
     y_tick_unit: str = "V"
     # gate_charge_grid_anchor: VGS ticks seated on their rules + served check
     y_grid: dict | None = None
+    # gate_charge_per_vdd: one curve per VDD/VDS with its bound label
+    per_vdd: dict | None = None
 
     def to_manifest(self) -> dict[str, object]:
         payload = asdict(self)
@@ -115,6 +131,7 @@ class GateChargeResult:
             payload["vpl"] = None
             payload["curve_px"] = ()
             payload["vpl_y_px"] = None
+        payload["per_vdd"] = _serialize_per_vdd(self.per_vdd, physical_output_available)
         return payload
 
 
@@ -257,7 +274,11 @@ def digitize_gate_charge(
                         ):
                             result = ocr_result
                 if result is not None:
-                    results.append(enforce_curve_provenance(pdf, result))
+                    result = enforce_curve_provenance(pdf, result)
+                    if getattr(result, "per_vdd", None):
+                        # per-VDD statuses and values from the FINAL ticks/status
+                        result = replace(result, per_vdd=_finalize_per_vdd(result))
+                    results.append(result)
                 elif _errors is not None:
                     # a finder gate-charge panel never vanishes without a status
                     _errors.append({
@@ -736,8 +757,41 @@ def _digitize_panel(
     curve = _trim_after_upper_axis_reach(curve, plot_box)
     curve = _trim_terminal_branch_hop(curve, plot_box)
     curve, branch_cut_short = cut_at_branch_hop(curve, plot_box)
+    trace_gray = np.asarray(trace_crops[0].convert("L"))
+    per_vdd_analysis, per_vdd_error = None, None
+    legacy_rule = "unchanged"
+    traced_curve = curve
+    try:
+        # Separate the panel's source curves (one per VDD/VDS). A legacy trace
+        # that runs between two of them is replaced by the leftmost one
+        # (lowest VDD by physics): a real stroke, chosen without a label.
+        per_vdd_analysis = _analyse_per_vdd(
+            page, crop_rect, scale, plot_box, trace_crops[0], curve,
+            lambda c: _trim_like_legacy(c, plot_box), gate_ink_mask,
+        )
+        if per_vdd_analysis.separated and _legacy_per_vdd_fit(per_vdd_analysis, curve)[1] == "off_curve":
+            pre_blend = (
+                served_curve_blend(page, crop_rect, scale, plot_box, curve)
+                if vector_curve and trace_source == "vector" else None
+            )
+            if pre_blend is not None and pre_blend.blended:
+                legacy_rule = "blend_replaced_by_leftmost_curve"
+            elif _per_vdd_plateau_shared(per_vdd_analysis, plot_box):
+                # switches strokes after a shared plateau: same Vpl, real curve
+                legacy_rule = "switching_trace_replaced_by_leftmost_curve"
+            else:
+                legacy_rule = "legacy_curve_switches_source_curves"
+            if legacy_rule.endswith("leftmost_curve"):
+                index = _lowest_per_vdd_curve(per_vdd_analysis)
+                curve = per_vdd_analysis.curves[index]
+                branch_cut_short = per_vdd_analysis.cut_short[index]
+    except Exception as error:  # never lets the new block cost the legacy result
+        per_vdd_error = f"per_vdd_error:{type(error).__name__}:{error}"[:200]
+    # A switching trace replaced under a shared plateau keeps the plateau it
+    # was read on: same plateau, so the served Vpl must not move.
     vpl, vpl_y_px = _estimate_vpl_from_curve(
-        curve, panel, crop_rect, scale, plot_box, local_y_ticks
+        traced_curve if legacy_rule.startswith("switching") else curve,
+        panel, crop_rect, scale, plot_box, local_y_ticks,
     )
     if vpl is not None and not math.isfinite(vpl):
         vpl = None
@@ -890,6 +944,15 @@ def _digitize_panel(
         y_ticks_px=y_ticks_px,
         x_tick_unit=x_tick_unit,
         y_grid=None if y_grid is None else y_grid.payload(),
+        per_vdd=_build_per_vdd(
+            per_vdd_analysis, per_vdd_error, legacy_curve=curve, legacy_vpl_y_px=vpl_y_px,
+            legacy_rule=legacy_rule, text_page=text_page, rect=crop_rect, scale=scale,
+            plot_box=plot_box, gates=lambda c, cut: _per_vdd_curve_gates(
+                c, cut, plot_box=plot_box, gray=trace_gray, frame=aligned_frame,
+                monotone=_gate_curve_is_monotone, missing_ramp=_curve_missing_initial_ramp,
+                clipped=_curve_clipped_by_plot_box,
+            ),
+        ),
     )
     if non_gate_reason is not None and mixed_gate_context and (
         low_trace_confidence or not _vpl_is_plausible(vpl)
@@ -907,6 +970,14 @@ def _digitize_panel(
             ),
         )
     return result
+
+
+def _trim_like_legacy(curve, plot_box):
+    """The legacy trace's trim chain, for one separated source curve."""
+    curve = _trim_terminal_flat_grid_capture(curve, plot_box)
+    curve = _trim_after_upper_axis_reach(curve, plot_box)
+    curve = _trim_terminal_branch_hop(curve, plot_box)
+    return cut_at_branch_hop(curve, plot_box)
 
 
 def _result_crop_gray(page: pymupdf.Page, result: GateChargeResult) -> np.ndarray:
@@ -990,58 +1061,8 @@ def _curve_missing_initial_ramp(
     return curve[0][0] - x0 > MAX_CURVE_LEFT_GAP_FRACTION * width
 
 
-def _trim_terminal_flat_grid_capture(
-    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
-) -> list[tuple[int, int]]:
-    """Stop where a rising curve starts riding a horizontal gridline to the frame."""
-
-    if len(curve) < 8:
-        return curve
-    x0, y0, x1, y1 = plot_box
-    width = max(1, x1 - x0)
-    height = max(1, y1 - y0)
-    if x1 - curve[-1][0] > TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION * width:
-        return curve
-
-    tail_y = curve[-1][1]
-    start = len(curve) - 1
-    while start > 0 and abs(curve[start - 1][1] - tail_y) <= TERMINAL_FLAT_MAX_Y_RANGE_PX:
-        start -= 1
-    if start == 0:
-        return curve
-    flat_span = curve[-1][0] - curve[start][0]
-    if flat_span <= TERMINAL_FLAT_MIN_SPAN_FRACTION * width:
-        return curve
-    entry_rise = curve[start - 1][1] - curve[start][1]
-    if entry_rise < TERMINAL_FLAT_MIN_ENTRY_RISE_FRACTION * height:
-        return curve
-    return curve[: start + 1]
 
 
-def _trim_after_upper_axis_reach(
-    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
-) -> list[tuple[int, int]]:
-    """Stop a gate curve when its selected branch first reaches the plot ceiling.
-
-    Several VDS gate-charge curves can share the initial rise and plateau, then
-    terminate at the same VGS ceiling at different Qg values.  A vector envelope
-    may otherwise drop from the first completed branch onto the next and climb
-    back to the ceiling, producing source-discontinuous teeth in the exported
-    full curve.  Once a rising branch reaches the owned upper axis there is no
-    physical in-frame continuation to preserve.
-    """
-
-    if len(curve) < 8:
-        return curve
-    x0, y0, x1, y1 = plot_box
-    width = max(1, x1 - x0)
-    height = max(1, y1 - y0)
-    search_start = x0 + 0.55 * width
-    ceiling_tolerance = max(3.0, 0.012 * height)
-    for index, (x, y) in enumerate(curve):
-        if x >= search_start and y <= y0 + ceiling_tolerance:
-            return curve[: index + 1]
-    return curve
 
 
 def _uses_bounded_dual_y_trace(
@@ -1058,54 +1079,8 @@ def _uses_bounded_dual_y_trace(
     )
 
 
-def _trim_dual_y_terminal_branch_switch(
-    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
-) -> list[tuple[int, int]]:
-    """Stop at the first finished VGS branch instead of joining its neighbors.
-
-    The Toshiba VGS bundle has several rising strokes that end separately at
-    the same upper voltage.  Raster continuity can jump downward to a later
-    branch after the first one ends.  A monotonic fit is unsafe here because it
-    turns that source discontinuity into a horizontal, source-absent segment.
-    """
-
-    if len(curve) < 8:
-        return curve
-    x0, y0, x1, y1 = plot_box
-    width = max(1, x1 - x0)
-    height = max(1, y1 - y0)
-    search_start = x0 + 0.55 * width
-    reverse_jump = max(5.0, 0.012 * height)
-    required_future_progress = max(6.0, 0.02 * height)
-    for index in range(1, len(curve)):
-        x, y = curve[index]
-        previous_y = curve[index - 1][1]
-        if x < search_start or y - previous_y < reverse_jump:
-            continue
-        future_min_y = min(point_y for _point_x, point_y in curve[index:])
-        if previous_y - future_min_y < required_future_progress:
-            return curve[:index]
-    return curve
 
 
-def _trim_dual_y_terminal_grid_capture(
-    curve: list[tuple[int, int]], plot_box: tuple[int, int, int, int]
-) -> list[tuple[int, int]]:
-    """Stop a Toshiba VGS trace where it reaches and then rides a gridline."""
-
-    if len(curve) < 8:
-        return curve
-    x0, _y0, x1, _y1 = plot_box
-    width = max(1, x1 - x0)
-    if x1 - curve[-1][0] > TERMINAL_FLAT_MAX_RIGHT_GAP_FRACTION * width:
-        return curve
-    tail_y = curve[-1][1]
-    start = len(curve) - 1
-    while start > 0 and abs(curve[start - 1][1] - tail_y) <= 1:
-        start -= 1
-    if curve[-1][0] - curve[start][0] < 0.06 * width:
-        return curve
-    return curve[: start + 1]
 
 
 def _curve_starts_at_axis_origin(

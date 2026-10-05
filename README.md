@@ -92,6 +92,60 @@ package scalar `find_vpl()` API because the result status and diagnostics are
 part of the experimental compatibility contract.
 Relative PDF arguments are resolved under `--datasheet-root/datasheets`.
 
+#### Gate charge with several VDD/VDS curves (`per_vdd`)
+
+The legacy fields are unchanged in meaning: `status`, `vpl`, `vpl_y_px` and one
+`curve_px` (served only when `status == "ok"`). On a chart with several VDD
+curves the legacy curve is:
+
+1. the curve the class has always selected, when it lies on a source curve
+   (most charts: no change). That includes a trace on strokes that coincide
+   where it runs (diagnostic `legacy_curve_on_coincident_source_curves`);
+2. otherwise, when it lies on no single source curve, the **leftmost separated
+   curve above the plateau** (the lowest VDD by physics; the branch the vector
+   tracer already follows on terminal bundles). This applies when the old
+   selection was a vector blend of two strokes
+   (`served_trace_blends_source_strokes`), or when it switched strokes after a
+   plateau all curves share. In the switching case Vpl is still read from the
+   original trace's plateau, so the served Vpl does not move;
+3. kept as it was, with `per_vdd.legacy_curve.rule =
+   "legacy_curve_switches_source_curves"`, when it switches strokes and the
+   plateaus differ per curve (replacing it would move a served Vpl).
+
+The choice needs no label, so it holds when identity is refused. A served
+legacy curve that lies on no stroke is still never `ok` (blend guard).
+
+`per_vdd` (also in `to_manifest()`) adds one entry per source curve:
+
+| field | meaning |
+|---|---|
+| `method` | `vector_paths` (endpoint-graph paths), `vector_pen_strokes` (each curve one pen stroke), `raster_tracks`, `legacy_single` (one curve), or `null` (not separated) |
+| `curve_count` | separated curves, `null` when separation was refused |
+| `binding` | `single_curve`, `all_bound`, `partly_bound`, `refused`, `unseparated` |
+| `physics` | `consistent`, `contradicted` (every binding refused) or `not_evaluable` |
+| `labels[]` | `text`, `vdd_v`, `bbox_px`, `curve` (index or `null`), `rule` (`leader`, `legend`, `outer_side_left/right`, `sole_label`) or `reason` (why it was refused) |
+| `plateau` | `shared` (`true`/`false`/`null` = unverified), `vpl`, `vpl_y_px`, `status`: the legacy status when shared, else `not_shared` / `unverified`. Served even when identity is refused |
+| `shared_curve_px` | the rise/plateau every curve shares (identity-free) |
+| `curves[]` | `index` (left to right above the plateau), `vdd_v`, `label`, `binding_rule`, `status`, `curve_px`, `vpl`, `vpl_y_px`, `plateau_x_px`, `plateau_qg`, `gates` (failed curve gates), `x_at_common_level_px` |
+| `legacy_curve` | `index` of the separated curve the legacy curve lies on, and `rule` |
+
+A curve's `status` is `ok` only when the chart is `ok`, its own curve gates
+pass (enough points, initial ramp, monotone, not clipped, not cut short) and
+its VDD is bound; `unbound` when only the identity is missing; `low_confidence`
+when a gate fails; `withheld` when the chart is not `ok`. Only `ok` curves
+serialize `curve_px` and `vpl`. With a shared plateau every curve's `vpl` is
+the chart's Vpl; otherwise it is read at that curve's own plateau.
+
+Binding evidence (never guessed): a leader line or arrow from the label to the
+curve its tip lands on (a curve the shaft only crosses is skipped); a legend
+sample's stroke style (dash pattern, colour, width) matching exactly one curve;
+a label wholly left or right of the bundle on a row above every plateau, bound
+to the outermost curve on that side. A label with a leader never falls back to
+proximity. Physics cross-checks every chart: a higher VDD lies further right,
+and when each curve has exactly one printed value, each bound value's rank must
+equal its curve index. Two labels on one curve, one value on two curves or a
+contradicted order refuses every binding on that chart.
+
 The Vpl digitizer can use an installed `tesseract` executable in two bounded
 fallback cases. If normal discovery finds no gate-charge panel, per-page OCR can
 supply words to a second discovery pass. If a normally discovered panel produces

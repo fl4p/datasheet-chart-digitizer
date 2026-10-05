@@ -73,7 +73,15 @@ about 24,500 PDFs) comes first; never web-fetch a datasheet that is already ther
 - **Each class has its own output contract.** Read it; don't assume the RDS(on)-vs-VGS
   one.
   - **Gate charge:** carries `diagnostics` and `physical_output_available`. No physical
-    curve is served unless the status is `ok`.
+    curve is served unless the status is `ok`. On a chart with several VDD/VDS curves,
+    `per_vdd` lists one curve per source curve with its bound `vdd_v`, `binding_rule` and
+    its own `status`. Only `ok` curves carry points. An `unbound` curve's identity was
+    refused, and its points are withheld. `per_vdd.plateau` serves Vpl when every curve
+    shares one plateau, even when identity is refused; otherwise read each curve's own
+    `vpl`. The legacy `curve_px` is one real source curve, labelled by
+    `per_vdd.legacy_curve`: not necessarily the VDD you need. Take the curve whose
+    `vdd_v` matches your operating point. Contract: README "Gate charge with several
+    VDD/VDS curves".
   - **Capacitance:** the chart, its points and the Qoss/Eoss metrics each carry their own
     availability and reasons (`physical_output_available`,
     `points_physical_output_available`, `qoss_metrics_physical_output_available`, …). A

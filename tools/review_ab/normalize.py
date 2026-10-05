@@ -309,6 +309,22 @@ def norm_gate(rec, work, pdf):
         for x, y in pts:
             data.append((value_at(xa, x) if xa else None, value_at(ya, y) if ya else None))
         out['curves'] = [{'label': 'VGS(Qg)', 'pts_pt': pts, 'data': data}]
+    # per-VDD curves: only those the contract serves (chart ok, curve status ok)
+    per = R.get('per_vdd') or {}
+    xa = next((a for a in out['axes'] if a['orient'] == 'x'), None)
+    ya = next((a for a in out['axes'] if a['orient'] == 'y'), None)
+    for c in per.get('curves') or []:
+        if out['status'] != 'ok' or c.get('status') != 'ok' or c.get('vdd_v') is None or not c.get('curve_px'):
+            continue
+        pts = [frame.pt(x, y) for x, y in c['curve_px']]
+        out['curves'].append({'label': f"VDD={c['vdd_v']:g}V", 'pts_pt': pts,
+                              'data': [(value_at(xa, x) if xa else None, value_at(ya, y) if ya else None) for x, y in pts]})
+    if per:
+        out['scalars']['per_vdd_binding'] = per.get('binding')
+        out['scalars']['per_vdd_curve_count'] = per.get('curve_count')
+        out['scalars']['per_vdd_legacy_rule'] = (per.get('legacy_curve') or {}).get('rule')
+        plateau = per.get('plateau') or {}
+        out['scalars']['plateau_status'] = plateau.get('status')
     out['scalars']['vpl_v'] = R.get('vpl') if out['status'] == 'ok' else None
     out['scalars']['vpl_raw'] = R.get('vpl')
     if R.get('vpl_y_px') is not None:
