@@ -29,8 +29,11 @@ from .gate_charge_grid_anchor import (
 )
 from .gridline_anchor import GridCheck
 from .gate_charge_plot_box import bind_plot_box_to_rules as _bind_plot_box_to_rules
+from .gate_charge_spec_table import parse_charge_split_rows as _parse_charge_split_rows
 from .gate_charge_spec_table import parse_qg_spec_rows as _parse_qg_spec_rows
+from .gate_charge_table_check import PLATEAU_MAX_QG_REL as _PLATEAU_MAX_QG_REL
 from .gate_charge_table_check import TableCheck as _TableCheck, table_check as _table_check
+from .gate_charge_table_check import PlateauCheck as _PlateauCheck, plateau_check as _plateau_check
 from .gate_charge_estimation import (
     _best_x_axis_for_panel,
     _best_y_axis_for_panel,
@@ -140,6 +143,9 @@ class GateChargeResult:
     # gate_charge_table_check: the spec table's Qg typ against the curve read
     # through the served axes (agrees / contradicts / not_evaluable)
     qg_table_check: dict | None = None
+    # gate_charge_table_check.plateau_check: the table's Qgs / Qgd against the
+    # plateau, run only when it decides an ordinal Qg axis (None: not run)
+    qgs_qgd_check: dict | None = None
     # low_confidence ONLY because the VGS axis is bound by rule order; a
     # spec-table Qg agreement verifies it (see _check_served_qg_axis)
     y_pending_table: bool = False
@@ -207,6 +213,14 @@ def digitize_gate_charge(
         if not spec_cache:
             spec_cache.append(_parse_qg_spec_rows(pdf))
         return spec_cache[0]
+
+    # its Qgs / Qgd rows, parsed only when an ordinal axis needs them
+    split_cache: list = []
+
+    def split_rows():
+        if not split_cache:
+            split_cache.append(_parse_charge_split_rows(pdf))
+        return split_cache[0]
 
     with pymupdf.open(pdf) as doc:
         for panel in panels:
@@ -336,7 +350,7 @@ def digitize_gate_charge(
                 if result is not None:
                     result = enforce_curve_provenance(pdf, result)
                     # the Qg mapping that is SERVED, after every retry/replace
-                    result = _check_served_qg_axis(doc[panel.page - 1], result, spec_rows)
+                    result = _check_served_qg_axis(doc[panel.page - 1], result, spec_rows, split_rows)
                     if getattr(result, "per_vdd", None):
                         # per-VDD statuses and values from the FINAL ticks/status
                         result = replace(result, per_vdd=_finalize_per_vdd(result))
@@ -1116,7 +1130,9 @@ def _digitize_panel(
     return result
 
 
-def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_rows=None) -> GateChargeResult:
+def _check_served_qg_axis(
+    page: pymupdf.Page, result: GateChargeResult, spec_rows=None, split_rows=None,
+) -> GateChargeResult:
     """Check the FINAL served Qg ticks on their rules, and against the spec table.
 
     Grid check (tri-state, never a pass by default): no unit, fewer than two
@@ -1134,6 +1150,13 @@ def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_row
     is recorded, not applied: on Fab's verified charts the table and the
     printed curve disagree by more than the tolerance on ~11 % of charts
     (up to 19 %, FDPF55N06), so it cannot overrule the rules.
+
+    Plateau check (``gate_charge_table_check.plateau_check``): run only for an
+    ordinal axis the Qg check did not confirm. The plateau's start and length
+    on the same curve against the table's Qgs / Qgd; agreement verifies the
+    axis when the Qg typ is unevaluable or off by at most
+    ``PLATEAU_MAX_QG_REL`` (an ordinal binding fails in whole steps, far
+    beyond that; the residue is the datasheet's typ vs its own curve).
     """
     if not isinstance(result, GateChargeResult) or result.status == "rejected_non_gate":
         return result
@@ -1162,8 +1185,34 @@ def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_row
         ) if result.x_tick_unit is not None else _TableCheck("not_evaluable", "Qg unit unresolved")
     x_ordinal = (previous.get("anchoring") or {}).get("binding") == "ordinal_rules"
     grid_payload = check.payload()
+    plateau = None
+    if x_ordinal and check.status != "verified" and table.status != "agrees":
+        try:
+            qg_rows = spec_rows() if callable(spec_rows) else _parse_qg_spec_rows(result.pdf)
+            splits = split_rows() if callable(split_rows) else _parse_charge_split_rows(result.pdf)
+        except Exception as exc:  # unevaluable is not a pass
+            plateau = _PlateauCheck("not_evaluable", f"spec table unreadable: {type(exc).__name__}: {exc}"[:200])
+        else:
+            plateau = _plateau_check(
+                splits, qg_rows, table, per_vdd=result.per_vdd, legacy_curve=result.curve_px,
+                x_ticks=result.x_ticks_px, y_ticks=result.y_ticks_px,
+            )
+    qg_within_band = table.status == "not_evaluable" or (
+        table.status == "contradicts" and table.delta_rel is not None
+        and abs(table.delta_rel) <= _PLATEAU_MAX_QG_REL
+    )
+    plateau_confirms = plateau is not None and plateau.status == "agrees" and qg_within_band
     if x_ordinal and check.status != "verified":
-        if table.status == "agrees":
+        if plateau_confirms:
+            grid_payload = {
+                **grid_payload,
+                "status": "verified",
+                "reason": "Qg: labels bound in order to their rules "
+                f"({(previous.get('anchoring') or {}).get('note')}); confirmed by the spec "
+                f"table's Qgs/Qgd: {plateau.reason}; Qg {table.status}: {table.reason}",
+                "method": "ordinal_rules+table_qgs_qgd",
+            }
+        elif table.status == "agrees":
             grid_payload = {
                 **grid_payload,
                 "status": "verified",
@@ -1173,10 +1222,15 @@ def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_row
                 "method": "ordinal_rules+table_qg",
             }
         else:
+            plateau_note = "" if plateau is None else (
+                f"; Qgs/Qgd {plateau.status}: {plateau.reason}"
+                + ("" if plateau.status != "agrees" or qg_within_band
+                   else f" (Qg off by more than {_PLATEAU_MAX_QG_REL:.0%})")
+            )
             grid_payload = {
                 **grid_payload,
                 "reason": f"{grid_payload.get('reason')}; ordinal rule binding not confirmed "
-                f"by the spec table ({table.status}: {table.reason})",
+                f"by the spec table ({table.status}: {table.reason}){plateau_note}",
             }
     x_grid = {
         "anchoring": previous.get("anchoring"),
@@ -1192,16 +1246,20 @@ def _check_served_qg_axis(page: pymupdf.Page, result: GateChargeResult, spec_row
         diagnostics = (*diagnostics, f"x_axis_grid_check_{grid_payload['status']}")
     diagnostics = (*diagnostics, f"qg_table_check_{table.status}")
     changes = {"x_grid": x_grid, "diagnostics": diagnostics, "qg_table_check": table.payload()}
+    if plateau is not None:
+        changes["diagnostics"] = (*changes["diagnostics"], f"qgs_qgd_check_{plateau.status}")
+        changes["qgs_qgd_check"] = plateau.payload()
     # A VGS axis bound by rule order is verified by the same table agreement
     # (the reading went through it); if that was the only blocker, the chart
     # is served.
-    if result.y_pending_table and table.status == "agrees" and grid_payload["status"] == "verified":
+    if result.y_pending_table and (table.status == "agrees" or plateau_confirms) and grid_payload["status"] == "verified":
         y_grid = dict(result.y_grid or {})
         y_check = dict(y_grid.get("grid_check") or {})
         y_check.update(
             status="verified",
-            method="ordinal_rules+table_qg",
-            reason=f"VGS: labels bound in order to their rules; confirmed by the spec table: {table.reason}",
+            method="ordinal_rules+table_qg" if table.status == "agrees" else "ordinal_rules+table_qgs_qgd",
+            reason="VGS: labels bound in order to their rules; confirmed by the spec table: "
+            + (table.reason if table.status == "agrees" else plateau.reason),
         )
         y_grid["grid_check"] = y_check
         changes["y_grid"] = y_grid

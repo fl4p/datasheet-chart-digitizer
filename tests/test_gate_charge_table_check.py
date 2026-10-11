@@ -4,7 +4,8 @@ Unit tests use synthetic rows/curves/rasters; corpus tests (skipped without the
 fetlib library) pin the cases the coordinator measured from PDF vector
 geometry: FDMS86500L (rules 117.2 nC, labels 123.3 nC, table 117),
 NTMFS4C022NT1G (VGS on the LEFT column, Qg on the rules, table 45.2 nC),
-and FDP045N10A-F102 (rules read 56.7 nC against a 54 nC table: refused).
+and FDP045N10A-F102 (rules read 56.7 nC against a 54 nC table; the plateau
+reads Qgs 16.77 / Qgd 12.99 against 17 / 13 and verifies the ordinal axis).
 """
 
 from __future__ import annotations
@@ -15,8 +16,19 @@ from pathlib import Path
 import numpy as np
 
 from datasheet_chart_digitizer.gate_charge_grid_anchor import ordinal_rule_ticks
-from datasheet_chart_digitizer.gate_charge_spec_table import QgSpecRow, parse_qg_spec_rows
-from datasheet_chart_digitizer.gate_charge_table_check import read_qg_at_vgs, table_check
+from datasheet_chart_digitizer.gate_charge_spec_table import (
+    ChargeSplitRow,
+    QgSpecRow,
+    parse_charge_split_rows,
+    parse_qg_spec_rows,
+)
+from datasheet_chart_digitizer.gate_charge_table_check import (
+    TableCheck,
+    plateau_check,
+    plateau_knees,
+    read_qg_at_vgs,
+    table_check,
+)
 
 DS = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets")
 
@@ -96,6 +108,82 @@ class TableCheckUnitTests(unittest.TestCase):
         per["curves"][0]["vdd_v"], per["curves"][2]["vdd_v"] = 40.0, 20.0
         got = table_check([_row()], per_vdd=per, legacy_curve=None, x_ticks=X, y_ticks=Y)
         self.assertEqual(got.status, "not_evaluable")
+
+
+# A gate-charge curve 0..60 nC: rise to a 4.5 V plateau at Qgs = 17 nC,
+# plateau 13 nC long (slope 0.02 V/nC), then rise to 10 V at 56.7 nC (FDP045's shape).
+def _qv(q):
+    if q <= 17.0:
+        return 4.5 * q / 17.0
+    if q <= 30.0:
+        return 4.5 + 0.02 * (q - 17.0)
+    return 4.76 + (10.0 - 4.76) * (q - 30.0) / (56.7 - 30.0)
+
+
+GC_CURVE = [(100.0 + 10.0 * q, 500.0 - 40.0 * _qv(q)) for q in np.arange(0.0, 57.0, 0.4)]
+GC_QG_ROW = QgSpecRow(1, 54.0, 1.0, 10.0, 50.0, "DS", 100.0, "Qg(tot) Total Gate Charge at 10V", "", 172.5)
+GC_SPLIT = [
+    ChargeSplitRow("qgs", 1, 17.0, 1.0, "Qgs Gate to Source Gate Charge - 17 - nC", 188.9, True),
+    ChargeSplitRow("qgd", 1, 13.0, 1.0, "Qgd Gate to Drain Miller Charge - 13 - nC", 221.6, True),
+]
+
+
+def _table(**kw):
+    base = dict(status="contradicts", reason="", typ_nc=54.0, vgs_v=10.0, vdrain_v=50.0,
+                row_text=GC_QG_ROW.row_text, page=1)
+    base.update(kw)
+    return TableCheck(**base)
+
+
+def _plateau(x_ticks=X, split=GC_SPLIT, curve=GC_CURVE, table=None):
+    return plateau_check(split, [GC_QG_ROW], table or _table(), per_vdd=SINGLE, legacy_curve=curve,
+                         x_ticks=x_ticks, y_ticks=Y)
+
+
+class PlateauCheckUnitTests(unittest.TestCase):
+    def test_knees_of_a_piecewise_linear_curve(self):
+        q = np.arange(0.0, 57.0, 0.4)
+        k1, k2, rise1, flat, rise2 = plateau_knees(q, [_qv(x) for x in q])
+        self.assertAlmostEqual(k1, 17.0, delta=0.4)
+        self.assertAlmostEqual(k2, 30.0, delta=0.4)
+        self.assertLess(flat, 0.35 * min(rise1, rise2))
+
+    def test_agrees_on_the_true_axis(self):
+        got = _plateau()
+        self.assertEqual(got.status, "agrees", got.reason)
+        self.assertAlmostEqual(got.qgs_read_nc, 17.0, delta=0.5)
+        self.assertAlmostEqual(got.qgd_read_nc, 13.0, delta=0.8)
+
+    def test_ordinal_failures_contradict_and_keep_contradicting(self):
+        # Known-bad: what a wrong ordinal binding does to the axis -- a shift by
+        # one or more rule pitches (100 px = 10 nC), a missing or extra rule
+        # (scale by 7/6, 6/7), and the far tail of both.
+        pitch = 100.0
+        for shift in (pitch, -pitch, 2 * pitch, 5 * pitch):
+            bad = [(v, p + shift) for v, p in X]
+            self.assertEqual(_plateau(bad).status, "contradicts", shift)
+        for scale in (7 / 6, 6 / 7, 1.5, 3.0, 0.5):
+            bad = [(v, 100.0 + (p - 100.0) * scale) for v, p in X]
+            self.assertEqual(_plateau(bad).status, "contradicts", scale)
+
+    def test_unevaluable_is_never_a_pass(self):
+        straight = [(100.0 + 10.0 * q, 500.0 - 40.0 * q / 5.67) for q in np.arange(0, 57, 0.4)]
+        cases = {
+            "no Qgd row": dict(split=GC_SPLIT[:1]),
+            "two Qgs rows": dict(split=GC_SPLIT + GC_SPLIT[:1]),
+            "rows outside the block": dict(split=[
+                ChargeSplitRow(r.kind, 1, r.typ_nc, 1.0, r.row_text, r.y_pt + 200, True) for r in GC_SPLIT]),
+            "rows on another page": dict(split=[
+                ChargeSplitRow(r.kind, 2, r.typ_nc, 1.0, r.row_text, r.y_pt, True) for r in GC_SPLIT]),
+            "no plateau": dict(curve=straight),
+            "too few points": dict(curve=GC_CURVE[:5]),
+            "one x tick": dict(x_ticks=X[:1]),
+            "no table voltage": dict(table=_table(status="not_evaluable", vdrain_v=None)),
+            "Qg row not the table's": dict(table=_table(row_text="something else")),
+        }
+        for name, kw in cases.items():
+            got = _plateau(**kw)
+            self.assertEqual(got.status, "not_evaluable", (name, got.reason))
 
 
 def _grid(rules, labels_n=None, size=(520, 820)):
@@ -194,12 +282,49 @@ class TableCheckCorpusTests(unittest.TestCase):
         self.assertAlmostEqual(r.crop_box_pt[0] + (ticks[0.0] - 0.5) / scale, 323.94, delta=0.4)
         self.assertAlmostEqual(r.crop_box_pt[0] + (ticks[50.0] - 0.5) / scale, 529.28, delta=0.4)
 
-    def test_fdp045_rules_contradicted_by_table_stay_unverified(self):
+    def test_fdp045_ordinal_rules_verified_by_qgs_qgd(self):
+        # The table's Qg (54) contradicts the rules' 56.68 nC by 5 %; the
+        # datasheet's own curve says 56.7 (vector stroke 56.65 on the rules).
+        # The plateau on the same curve reads the table's Qgs / Qgd.
         r = _result("FDP045N10A-F102", 4)
         self.assertEqual(r.qg_table_check["status"], "contradicts")
-        self.assertNotEqual(r.qg_axis_status, "verified")
-        self.assertEqual(r.to_manifest()["curve_px"], ())
-        self.assertIsNotNone(r.to_manifest()["vpl"])
+        self.assertAlmostEqual(r.qg_table_check["read_nc"], 56.7, delta=0.3)
+        self.assertEqual(r.qgs_qgd_check["status"], "agrees", r.qgs_qgd_check)
+        self.assertAlmostEqual(r.qgs_qgd_check["qgs_read_nc"], 17.0, delta=0.6)
+        self.assertAlmostEqual(r.qgs_qgd_check["qgd_read_nc"], 13.0, delta=0.6)
+        self.assertEqual(r.qg_axis_status, "verified", r.x_grid)
+        self.assertEqual(r.x_grid["grid_check"]["method"], "ordinal_rules+table_qgs_qgd")
+        self.assertNotEqual(r.to_manifest()["curve_px"], ())
+        # known-bad on the real chart: the served ticks shifted by one rule,
+        # or stretched as by a missing rule, contradict
+        pitch = abs(r.x_ticks_px[1][1] - r.x_ticks_px[0][1])
+        x0 = r.x_ticks_px[0][1]
+        rows, splits = parse_qg_spec_rows(r.pdf), parse_charge_split_rows(r.pdf)
+        table = TableCheck(**{k: v for k, v in r.qg_table_check.items()})
+        for bad in ([(v, p + pitch) for v, p in r.x_ticks_px],
+                    [(v, x0 + (p - x0) * 7 / 6) for v, p in r.x_ticks_px]):
+            got = plateau_check(splits, rows, table, per_vdd=r.per_vdd, legacy_curve=r.curve_px,
+                                x_ticks=bad, y_ticks=r.y_ticks_px)
+            self.assertEqual(got.status, "contradicts", got.reason)
+
+    def test_fdp045_qg_far_off_blocks_the_plateau(self):
+        # Monotone in the Qg contradiction: within PLATEAU_MAX_QG_REL the
+        # plateau decides; beyond it (and in the far tail) the axis stays
+        # unverified although the plateau still agrees.
+        import dataclasses
+
+        import pymupdf
+
+        from datasheet_chart_digitizer.gate_charge import _check_served_qg_axis
+
+        r = _result("FDP045N10A-F102", 4)
+        rows = parse_qg_spec_rows(r.pdf)
+        with pymupdf.open(r.pdf) as doc:
+            for typ, verified in ((54.0, True), (52.0, True), (50.0, False), (40.0, False), (20.0, False)):
+                fake = [dataclasses.replace(row, typ_nc=typ) if row.typ_nc == 54.0 else row for row in rows]
+                got = _check_served_qg_axis(doc[r.panel.page - 1], r, lambda fake=fake: fake)
+                self.assertEqual(got.qgs_qgd_check["status"], "agrees", typ)
+                self.assertEqual(got.qg_axis_status == "verified", verified, (typ, got.x_grid["grid_check"]["reason"]))
 
 
 if __name__ == "__main__":
