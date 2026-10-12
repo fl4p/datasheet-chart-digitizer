@@ -304,7 +304,9 @@ def finalize(result) -> dict | None:
     payload = {**payload, "curves": [dict(c) for c in payload["curves"]], "plateau": dict(payload["plateau"])}
     chart_ok = result.status == "ok"
     y_fit = _fit(result.y_ticks_px)
-    x_fit = _fit(result.x_ticks_px) if result.x_tick_unit else None
+    # Qg readings only through a Qg axis verified on its rules
+    qg_verified = getattr(result, "qg_axis_status", "unverified") == "verified"
+    x_fit = _fit(result.x_ticks_px) if result.x_tick_unit and qg_verified else None
     plateau = payload["plateau"]
     if plateau["shared"]:
         plateau["vpl"] = result.vpl
@@ -335,16 +337,23 @@ def finalize(result) -> dict | None:
     return payload
 
 
-def serialize(payload: dict | None, chart_ok: bool) -> dict | None:
-    """Withhold every untrusted number and point (fail-closed manifest)."""
+def serialize(payload: dict | None, chart_ok: bool, *, qg_verified: bool = False) -> dict | None:
+    """Withhold every untrusted number and point (fail-closed manifest).
+
+    Per field: Vpl (plateau and per curve) is read through VGS only and follows
+    the chart/curve status. Points and ``plateau_qg`` also need the served Qg
+    axis verified on its rules (*qg_verified*); otherwise they are withheld
+    and ``points_available`` says so, while a curve's identity and Vpl stay.
+    """
 
     if not payload:
         return payload
     out = {**payload, "plateau": dict(payload["plateau"]), "curves": []}
+    out["qg_axis_verified"] = bool(qg_verified)
     if not chart_ok or out["plateau"]["status"] != "ok":
         out["plateau"]["vpl"] = None
         out["plateau"]["vpl_y_px"] = None
-    if not chart_ok:
+    if not chart_ok or not qg_verified:
         out["shared_curve_px"] = []
     for entry in payload["curves"]:
         entry = dict(entry)
@@ -353,6 +362,10 @@ def serialize(payload: dict | None, chart_ok: bool) -> dict | None:
             entry["vpl"] = None
             entry["vpl_y_px"] = None
             entry["plateau_qg"] = None
+        elif not qg_verified:
+            entry["curve_px"] = []
+            entry["plateau_qg"] = None
+        entry["points_available"] = bool(entry.get("status") == "ok" and qg_verified)
         out["curves"].append(entry)
     return out
 

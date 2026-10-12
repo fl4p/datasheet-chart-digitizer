@@ -273,7 +273,12 @@ def norm_gate(rec, work, pdf):
         pass
     frame = Frame(cb, (w, h), 'continuous')
     frame_idx = Frame(cb, (w, h), 'index')
-    out = {'class': 'gate_charge', 'page': rec['page'], 'diagram': rec['diagram'], 'status': _status(R),
+    # Points need the served Qg axis verified on its rules (x_grid, 2026-10-05);
+    # a result without x_grid predates that check and is reported as before.
+    qg = ((R.get('x_grid') or {}).get('grid_check') or {}).get('status') if 'x_grid' in R else None
+    points_served = qg is None or qg == 'verified'
+    status = _status(R) if points_served or _status(R) != 'ok' else f"ok/qg_{qg}"
+    out = {'class': 'gate_charge', 'page': rec['page'], 'diagram': rec['diagram'], 'status': status,
            'title': (R.get('panel') or {}).get('title'), 'crop_png': None, 'crop_box_pt': cb, 'px_per_pt': s,
            'px_convention': 'continuous (curve, x ticks); index (y_grid served)', 'axes': [], 'curves': [], 'scalars': {}}
     out['diagnostics'] = R.get('diagnostics')
@@ -300,7 +305,7 @@ def norm_gate(rec, work, pdf):
         A, B = np.polyfit(p, v, 1)
         out['axes'].insert(0, {'name': 'Qg', 'orient': 'x', 'unit': R.get('x_tick_unit') or 'nC', 'model': 'linear', 'A': float(A), 'B': float(B),
                                'ticks': [float(x) for x in v], 'source': 'x_ticks_px (continuous; Qg is not a served quantity)'})
-    cp = R.get('curve_px') or []
+    cp = (R.get('curve_px') or []) if points_served else []
     if cp:
         pts = [frame.pt(x, y) for x, y in cp]
         data = []
@@ -314,7 +319,7 @@ def norm_gate(rec, work, pdf):
     xa = next((a for a in out['axes'] if a['orient'] == 'x'), None)
     ya = next((a for a in out['axes'] if a['orient'] == 'y'), None)
     for c in per.get('curves') or []:
-        if out['status'] != 'ok' or c.get('status') != 'ok' or c.get('vdd_v') is None or not c.get('curve_px'):
+        if out['status'] != 'ok' or c.get('status') != 'ok' or c.get('vdd_v') is None or not c.get('curve_px') or not points_served:
             continue
         pts = [frame.pt(x, y) for x, y in c['curve_px']]
         out['curves'].append({'label': f"VDD={c['vdd_v']:g}V", 'pts_pt': pts,
@@ -325,7 +330,9 @@ def norm_gate(rec, work, pdf):
         out['scalars']['per_vdd_legacy_rule'] = (per.get('legacy_curve') or {}).get('rule')
         plateau = per.get('plateau') or {}
         out['scalars']['plateau_status'] = plateau.get('status')
-    out['scalars']['vpl_v'] = R.get('vpl') if out['status'] == 'ok' else None
+    out['scalars']['qg_axis'] = qg
+    out['scalars']['plot_box_binding'] = R.get('plot_box_binding')
+    out['scalars']['vpl_v'] = R.get('vpl') if _status(R) == 'ok' else None
     out['scalars']['vpl_raw'] = R.get('vpl')
     if R.get('vpl_y_px') is not None:
         out['scalars']['vpl_y_pt'] = frame.pty(R['vpl_y_px'])

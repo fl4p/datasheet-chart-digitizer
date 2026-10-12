@@ -356,6 +356,9 @@ def annotate_pdf(
         record["vpl_v"] = gate.vpl if served else None
         record["vpl_y_px"] = gate.vpl_y_px if served else None
         record["x_ticks_px"] = gate.x_ticks_px
+        # the curve's (Qg, VGS) points are physical only with a verified Qg axis
+        record["qg_axis_status"] = gate.qg_axis_status
+        record["curve_physical_output_available"] = served and gate.qg_axis_status == "verified"
         record["y_ticks_px"] = gate.y_ticks_px
         record["x_tick_unit"] = gate.x_tick_unit
         record["y_tick_unit"] = gate.y_tick_unit

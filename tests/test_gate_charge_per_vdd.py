@@ -35,11 +35,31 @@ class ContractTests(unittest.TestCase):
     }
 
     def test_unbound_curve_points_are_withheld(self) -> None:
-        out = serialize(self.PAYLOAD, True)
+        out = serialize(self.PAYLOAD, True, qg_verified=True)
         self.assertEqual(out["curves"][0]["curve_px"], [[0, 400]])
         self.assertEqual(out["curves"][1]["curve_px"], [])
         self.assertIsNone(out["curves"][1]["vpl"])
         self.assertEqual(out["plateau"]["vpl"], 3.0)
+
+    def test_points_and_qg_readings_need_a_verified_qg_axis(self) -> None:
+        # Vpl is read through VGS only and stays; (Qg, VGS) points and the
+        # plateau Qg are withheld while the Qg axis is not verified.
+        for qg_verified in (False,):
+            out = serialize(self.PAYLOAD, True, qg_verified=qg_verified)
+            self.assertFalse(out["qg_axis_verified"])
+            self.assertEqual(out["plateau"]["vpl"], 3.0)
+            self.assertEqual(out["shared_curve_px"], [])
+            ok = out["curves"][0]
+            self.assertEqual(ok["status"], "ok")
+            self.assertEqual(ok["vpl"], 3.0)
+            self.assertEqual(ok["curve_px"], [])
+            self.assertIsNone(ok["plateau_qg"])
+            self.assertFalse(ok["points_available"])
+        # the default is fail-closed: no keyword means not verified
+        self.assertEqual(serialize(self.PAYLOAD, True)["curves"][0]["curve_px"], [])
+        served = serialize(self.PAYLOAD, True, qg_verified=True)
+        self.assertTrue(served["curves"][0]["points_available"])
+        self.assertEqual(served["curves"][0]["plateau_qg"], [1, 2])
 
     def test_nothing_is_served_when_the_chart_is_not_ok(self) -> None:
         payload = {**self.PAYLOAD, "curves": [dict(c, status="withheld") for c in self.PAYLOAD["curves"]]}

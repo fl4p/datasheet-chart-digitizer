@@ -92,10 +92,53 @@ package scalar `find_vpl()` API because the result status and diagnostics are
 part of the experimental compatibility contract.
 Relative PDF arguments are resolved under `--datasheet-root/datasheets`.
 
+#### Gate charge: what each output field depends on
+
+Both axes are served from the rules their labels name (`gate_charge_grid_anchor`): the VGS
+ticks on the horizontal rules, the Qg ticks on the vertical rules or bottom-frame tick marks.
+`y_grid` and `x_grid` carry the anchoring and the tri-state served-axis check
+(`grid_check.status`: `verified`, `failed`, `unverified`). The Qg check runs on the FINAL
+`x_ticks_px`, after every OCR retry or carried tick.
+
+| output | reads through | served when |
+|---|---|---|
+| `vpl`, `vpl_y_px`, `per_vdd.plateau.vpl`, a curve's own `vpl` | VGS | `status == "ok"` (which already requires the VGS check `verified`) |
+| `curve_px`, `per_vdd.curves[].curve_px`, `shared_curve_px` | Qg and VGS | as above **and** `qg_axis_status == "verified"` |
+| `per_vdd.curves[].plateau_qg` | Qg | as above **and** `qg_axis_status == "verified"` |
+
+`to_manifest()` adds `qg_axis_status` and `curve_physical_output_available`; each per-VDD
+curve gets `points_available`. A Qg axis that failed or could not be checked withholds the
+points, never the Vpl.
+
+The served `plot_box_px` agrees with the served rules (`gate_charge_plot_box`): an edge across
+a seated axis is bound to its outermost served rule, unless a full-span rule continuous with
+the frame lies further out (an unlabelled terminal interval: within one pitch, or up to three
+pitches on the label lattice). `plot_box_binding` records the input box and each edge's rule.
+An axis that was not seated leaves its edges unchanged.
+
+**Spec-table Qg cross-check (`qg_table_check`).** `gate_charge_spec_table` reads the Total Gate
+Charge rows (typ in an owned Typ column, nC, VGS drive, VDD/VDS, ID) from the datasheet's own
+table; `gate_charge_table_check` reads the curve drawn for that VDD/VDS (bound per-VDD curve, by
+elimination, or the chart's only curve) at the table VGS through the served axes and compares
+it with typ (tolerance 3 % of typ + half the printed resolution). Tri-state: `agrees`,
+`contradicts`, `not_evaluable` (no row / no matching curve / curve short of the VGS).
+
+When the labels do not register on one grid (a raster grid off a straight line by a pixel or
+two; a label run printed at a different pitch from its grid), the axis is bound to its rules
+by **count and order** (`anchoring.binding = "ordinal_rules"`: exactly one solid rule per label,
+uniform rules and labels, pitches within 10 %). Such an axis is `verified`
+(`grid_check.method = "ordinal_rules+table_qg"`) only when the table check `agrees`; otherwise it
+stays unverified. On an axis the grid check verified, the table check is recorded only: on the
+human-verified charts table and printed curve disagree beyond the tolerance on ~7 % of charts.
+
+**Dual-y charts.** When the nearer VGS label column's title names the drain (VDS), the column on
+the other side is used if its title names the gate (`y_axis_rebound_to_gate_titled_column`);
+otherwise the chart is `low_confidence` (`y_axis_title_names_drain_not_gate`).
+
 #### Gate charge with several VDD/VDS curves (`per_vdd`)
 
 The legacy fields are unchanged in meaning: `status`, `vpl`, `vpl_y_px` and one
-`curve_px` (served only when `status == "ok"`). On a chart with several VDD
+`curve_px` (served only when `status == "ok"` and the Qg axis is verified). On a chart with several VDD
 curves the legacy curve is:
 
 1. the curve the class has always selected, when it lies on a source curve
@@ -133,7 +176,8 @@ A curve's `status` is `ok` only when the chart is `ok`, its own curve gates
 pass (enough points, initial ramp, monotone, not clipped, not cut short) and
 its VDD is bound; `unbound` when only the identity is missing; `low_confidence`
 when a gate fails; `withheld` when the chart is not `ok`. Only `ok` curves
-serialize `curve_px` and `vpl`. With a shared plateau every curve's `vpl` is
+serialize `vpl`, and only `ok` curves with `points_available` (Qg axis verified)
+serialize `curve_px` and `plateau_qg`. With a shared plateau every curve's `vpl` is
 the chart's Vpl; otherwise it is read at that curve's own plateau.
 
 Binding evidence (never guessed): a leader line or arrow from the label to the
@@ -339,6 +383,8 @@ reverse leakage, and up to 0.46 % on capacitance, gate charge and reverse recove
 
 `gridline_anchor.check_served_on_grid` checks the served mapping at every labelled tick. It
 returns verified, failed or unverified. An axis it cannot evaluate is `unverified`, never OK.
+Gate charge checks both axes since 2026-10-05; before, its Qg axis was served from label glyphs
+stretched onto the plot box with no check (RJK1001DPP-A0#T2: up to 17 px, status `ok`).
 It was calibrated on known-bad fits: a label-centre fit fails, and a shift of any size up to
 three grid pitches never flips back to verified.
 

@@ -748,11 +748,22 @@ class GateChargeVplTests(unittest.TestCase):
         ordered = sorted([unresolved, result, higher_score], key=gate._result_sort_key)
         self.assertEqual(ordered, [higher_score, result, unresolved])
 
+        # Vpl needs VGS only; the curve's points need the Qg axis verified too
         served = replace(result, status="ok")
         served_manifest = served.to_manifest()
         self.assertTrue(served_manifest["physical_output_available"])
         self.assertEqual(served_manifest["vpl"], 4.2)
-        self.assertEqual(served_manifest["curve_px"], ((10, 100), (90, 30)))
+        self.assertEqual(served_manifest["qg_axis_status"], "unverified")
+        self.assertFalse(served_manifest["curve_physical_output_available"])
+        self.assertEqual(served_manifest["curve_px"], ())
+        for verdict in ("failed", "unverified"):
+            gated = replace(result, status="ok", x_grid={"grid_check": {"status": verdict}}).to_manifest()
+            self.assertEqual(gated["vpl"], 4.2)
+            self.assertEqual(gated["curve_px"], ())
+        verified = replace(result, status="ok", x_grid={"grid_check": {"status": "verified"}})
+        verified_manifest = verified.to_manifest()
+        self.assertTrue(verified_manifest["curve_physical_output_available"])
+        self.assertEqual(verified_manifest["curve_px"], ((10, 100), (90, 30)))
 
     def test_digitize_detaches_temporary_finder_crop_path(self) -> None:
         with TemporaryDirectory() as tmp:
