@@ -93,6 +93,60 @@ class FinderProductionPathGuardTests(unittest.TestCase):
             ("Gate Charge", (350, 280, 410, 288), frames[1]),
         ])
 
+    def test_captions_above_layout_wins_over_below_only(self) -> None:
+        # TSM036N03PQ56 p3: titles ABOVE a 2x3 grid of frames. Each row-2/3
+        # title also sits 24-52 pt under the frame above it; picking that side
+        # shifted every title one row up and lost the bottom row.
+        page = find_charts.PageText(3, 612, 792, [])
+        frames = [
+            (81, 160, 282, 318), (335, 159, 536, 318),
+            (88, 376, 281, 526), (335, 376, 536, 527),
+            (88, 586, 281, 748), (348, 587, 536, 748),
+        ]
+        lines = [
+            [find_charts.Word("Output Characteristics", 120, 143, 240, 154)],
+            [find_charts.Word("Transfer Characteristics", 378, 143, 500, 154)],
+            [find_charts.Word("On-Resistance vs. Drain Current", 76, 352, 269, 363)],
+            [find_charts.Word("Gate-Source Voltage vs. Gate Charge", 325, 352, 528, 363)],
+            [find_charts.Word("On-Resistance vs. Junction Temperature", 73, 565, 273, 576)],
+            [find_charts.Word("On-Resistance vs. Gate-Source Voltage", 328, 565, 525, 576)],
+        ]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, lines, frames, find_charts.classify_chart,
+            lambda text: find_charts.is_spec_table_header_title(text)
+            or find_charts._is_gate_charge_axis_label(text),
+            below_only=True,
+        )
+
+        self.assertEqual([(text, frame) for text, _bbox, frame in recovered], [
+            ("Transfer Characteristics", frames[1]),
+            ("On-Resistance vs. Drain Current", frames[2]),
+            ("Gate-Source Voltage vs. Gate Charge", frames[3]),
+            ("On-Resistance vs. Junction Temperature", frames[4]),
+            ("On-Resistance vs. Gate-Source Voltage", frames[5]),
+        ])
+
+    def test_captions_below_layout_keeps_below_when_it_titles_more_frames(self) -> None:
+        # Mirror of the case above: titles BELOW each frame; the row-1 titles
+        # are also within reach above row 2, but below titles every frame.
+        page = find_charts.PageText(3, 612, 792, [])
+        frames = [(100, 100, 250, 250), (100, 300, 250, 450)]
+        lines = [
+            [find_charts.Word("Gate Charge", 150, 280, 210, 288)],
+            [find_charts.Word("Transfer Characteristics", 110, 480, 240, 488)],
+        ]
+
+        recovered = find_charts.frame_bound_short_caption_segments(
+            page, lines, frames, find_charts.classify_chart,
+            find_charts.is_spec_table_header_title,
+        )
+
+        self.assertEqual([(text, frame) for text, _bbox, frame in recovered], [
+            ("Gate Charge", frames[0]),
+            ("Transfer Characteristics", frames[1]),
+        ])
+
     def test_tight_below_frame_caption_prefers_preceding_frame(self) -> None:
         page = find_charts.PageText(1, 600, 800, [])
         title = find_charts.DiagramTitle(

@@ -16,7 +16,9 @@ labels"). Checks, per row:
           in its chip (a 3-VDD chart drawn with one curve is half a review)
   dupes   one card per chart (same source_pdf and pdf_page, plot boxes
           overlapping > 50 %): never main and branch as two near-identical
-          cards -- put the before-state in the chip
+          cards -- put the before-state in the chip. Two cards' crop pixels are
+          different spaces, so boxes are compared on the PDF page when both rows
+          give crop_box_pt + crop_dpi; otherwise two cards on one page are refused
 
 With --html, also: the rendered packet has no "no axis ticks" chip and as many
 cards as rows. Exit 0 = clean; exit 1 = refused (every problem printed). It
@@ -88,12 +90,22 @@ def _overlap(a, b) -> float:
     return ix * iy / small if small > 0 else 0.0
 
 
+def _page_box(row: dict):
+    """The plot box in PDF points, or None when the row does not say where its crop sits."""
+    box = (row.get("axis_ticks") or {}).get("plot_box_px")
+    crop, dpi = row.get("crop_box_pt"), row.get("crop_dpi")
+    if not (box and crop and dpi):
+        return None
+    s = 72.0 / float(dpi)
+    return [crop[0] + box[0] * s, crop[1] + box[1] * s, crop[0] + box[2] * s, crop[1] + box[3] * s]
+
+
 def lint_rows(rows: list[dict]) -> list[str]:
     problems: list[str] = []
     seen: list[tuple] = []
     for row in rows:
         problems.extend(lint_row(row))
-        box = (row.get("axis_ticks") or {}).get("plot_box_px")
+        box = _page_box(row)
         page = (row.get("source_pdf"), row.get("pdf_page"))
         for other_page, other_box, other_id in seen:
             if page == other_page and (box is None or other_box is None or _overlap(box, other_box) > 0.5):

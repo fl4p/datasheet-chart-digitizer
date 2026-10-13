@@ -222,11 +222,26 @@ def frame_bound_short_caption_segments(
             if below:
                 below_candidates[bbox] = (text, frame)
     below_frames = {frame for _, frame in below_candidates.values()}
-    candidates = (
-        below_candidates
-        if below_only or len(below_candidates) >= 2 and len(below_frames) >= 2
-        else above_candidates
-    )
+    above_frames = {frame for _, frame in above_candidates.values()}
+    # A title between two stacked rows is within reach of both frames. The
+    # side that titles MORE frames is the page's layout: captions-below leaves
+    # the top row's frames untitled from above, captions-above leaves the
+    # bottom row's untitled from below (TSM036N03PQ56 p3: 5 frames above vs 4
+    # below, every title shifted one row up and the bottom row lost).
+    # The count only means something for stacked rows, where both readings
+    # title at least two frames; otherwise (and on a tie) the previous rules
+    # decide -- a lone title above a frame on a below_only page stays unclaimed.
+    stacked = len(above_frames) >= 2 and len(below_frames) >= 2
+    if stacked and len(above_frames) > len(below_frames):
+        candidates = above_candidates
+    elif stacked and len(below_frames) > len(above_frames):
+        candidates = below_candidates
+    else:
+        candidates = (
+            below_candidates
+            if below_only or len(below_candidates) >= 2 and len(below_frames) >= 2
+            else above_candidates
+        )
     return sorted(((text, bbox, frame) for bbox, (text, frame) in candidates.items()), key=lambda item: (item[1][1], item[1][0]))
 
 

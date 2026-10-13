@@ -173,6 +173,100 @@ def _page_qg_rows(page_num: int, page) -> list[QgSpecRow]:
     return rows
 
 
+# Gate-source and gate-drain (Miller) charge: the plateau's start and length.
+# Qgs2 / Qg(th) / "threshold to plateau" are the partial charge below the
+# plateau, not Qgs, and are refused.
+_QGS_LABEL_RE = re.compile(
+    r"gate[\s\-−–]*to[\s\-−–]*source\s+(?:gate\s+)?charge|gate[\s\-−–]*source\s+charge"
+    r"|(?<![A-Za-z])Q\s*G\s*S(?![A-Za-z0-9(])",
+    re.IGNORECASE,
+)
+_QGD_LABEL_RE = re.compile(
+    r"gate[\s\-−–]*to[\s\-−–]*drain\s+(?:\(?\s*[\"“”]?miller[\"“”]?\s*\)?\s+)?charge|gate[\s\-−–]*drain\s+charge"
+    r"|miller[\"“”]?\s+charge|(?<![A-Za-z])Q\s*G\s*D(?![A-Za-z0-9(])",
+    re.IGNORECASE,
+)
+_SPLIT_FOREIGN_RE = re.compile(
+    r"Q\s*G\s*S\d|Q\s*G\s*\(\s*th|threshold|plateau|total|Q\s*G\s*\(\s*tot|sync|Q\s*oss|Q\s*rr|ratio|/"
+    r"|figure|fig\.|•",
+    re.IGNORECASE,
+)
+
+
+@dataclass(frozen=True)
+class ChargeSplitRow:
+    kind: str  # "qgs" / "qgd"
+    page: int
+    typ_nc: float
+    typ_resolution_nc: float | None
+    row_text: str
+    y_pt: float
+    # True: "nC" printed on the row; False: no unit on the row (a merged
+    # Units cell) -- the caller may take the unit of the Qg row it binds to.
+    unit_on_row: bool
+
+    def to_json(self) -> dict[str, object]:
+        return asdict(self)
+
+
+_OTHER_CHARGE_UNIT_RE = re.compile(r"(?<![A-Za-z])(?:pC|[uµμ]C|mC)\b")
+
+
+def _split_kind(text: str) -> str | None:
+    if _SPLIT_FOREIGN_RE.search(text):
+        return None
+    qgs, qgd = bool(_QGS_LABEL_RE.search(text)), bool(_QGD_LABEL_RE.search(text))
+    if qgs == qgd:
+        return None
+    return "qgs" if qgs else "qgd"
+
+
+def _page_split_rows(page_num: int, page) -> list[ChargeSplitRow]:
+    lines = [_line(group) for group in group_words_into_lines(page_words(page))]
+    headers = _headers(lines)
+    if not headers:
+        return []
+    rows: list[ChargeSplitRow] = []
+    for line in lines:
+        kind = _split_kind(line.text)
+        if kind is None or _OTHER_CHARGE_UNIT_RE.search(line.text):
+            continue
+        header = _header_for(line, headers)
+        if header is None or "typ" not in header:
+            continue
+        values, _unparsed = _owned_values(line, header)
+        if "typ" not in values:
+            continue
+        typ = float(values["typ"])
+        token = next(
+            (w.text.strip() for w in line.words
+             if _NUMBER_TOKEN_RE.match(w.text.strip()) and float(_NUMBER_TOKEN_RE.match(w.text.strip()).group(1)) == typ),
+            None,
+        )
+        resolution = None
+        if token is not None:
+            digits = _NUMBER_TOKEN_RE.match(token).group(1)
+            resolution = 10.0 ** -(len(digits.split(".")[1]) if "." in digits else 0)
+        rows.append(ChargeSplitRow(
+            kind, page_num, typ, resolution, line.text, round(_cy(line), 2), bool(_NC_RE.search(line.text)),
+        ))
+    return rows
+
+
+def parse_charge_split_rows(pdf: str | Path) -> list[ChargeSplitRow]:
+    """Every Qgs / Qgd row with an owned typ (nC or no printed unit), in page order.
+
+    The rows carry no test condition of their own: they share the Total Gate
+    Charge row's merged condition cell, so the caller binds them to a Qg row
+    by page and proximity.
+    """
+    rows: list[ChargeSplitRow] = []
+    with pymupdf.open(Path(pdf)) as document:
+        for index in range(min(_MAX_TABLE_PAGES, document.page_count)):
+            rows.extend(_page_split_rows(index + 1, document[index]))
+    return rows
+
+
 def parse_qg_spec_rows(pdf: str | Path) -> list[QgSpecRow]:
     """Every Total Gate Charge row this parser can own, in page order."""
     rows: list[QgSpecRow] = []
