@@ -43,6 +43,12 @@ def vgs_label_rows(panel) -> list[tuple[float, float, float]]:
                     (float(match.group(1)), bbox[0], 0.5 * (bbox[1] + bbox[3]))
                 )
     rows.extend(_subscript_vgs_rows(words))
+    # A glued "=10V" subscript label (TSM60NE200CIT) counts only where no row of
+    # that value was already read on its baseline (the joined line text often has it).
+    rows.extend(
+        glued for glued in _glued_subscript_vgs_rows(words)
+        if not any(glued[0] == row[0] and abs(glued[2] - row[2]) <= 2.5 for row in rows)
+    )
     return list(dict.fromkeys(rows))
 
 
@@ -86,6 +92,37 @@ def _subscript_vgs_rows(words: list[Word]) -> list[tuple[float, float, float]]:
                     0.5 * (bbox[1] + bbox[3]),
                 )
             )
+    return rows
+
+
+_GLUED_TAIL_RE = re.compile(r"=(\d+(?:\.\d+)?)V", re.I)
+
+
+def _glued_subscript_vgs_rows(words: list[Word]) -> list[tuple[float, float, float]]:
+    """V/GS subscript rows whose "=10V" is one word (TSM60NE200CIT p3)."""
+
+    def middle_y(word: Word) -> float:
+        return 0.5 * (word.y0 + word.y1)
+
+    rows: list[tuple[float, float, float]] = []
+    for base in (word for word in words if word.text.strip().upper() == "V"):
+        for subscript in (
+            word for word in words
+            if word.text.strip().upper() == "GS"
+            and -0.75 <= word.x0 - base.x1 <= 2.5
+            and 0.0 <= middle_y(word) - middle_y(base) <= 4.5
+        ):
+            tails = [
+                word for word in words
+                if _GLUED_TAIL_RE.fullmatch(word.text.strip())
+                and -0.75 <= word.x0 - subscript.x1 <= 4.0
+                and abs(middle_y(word) - middle_y(base)) <= 4.5
+            ]
+            if len(tails) != 1:
+                continue
+            bbox = line_bbox([base, subscript, tails[0]])
+            value = float(_GLUED_TAIL_RE.fullmatch(tails[0].text.strip()).group(1))
+            rows.append((value, bbox[0], 0.5 * (bbox[1] + bbox[3])))
     return rows
 
 
@@ -140,9 +177,35 @@ def count_only_binding_refusal(panel, vgs: float) -> str | None:
     """
 
     others = sorted({v for v in bare_voltage_labels(panel) if v != vgs})
-    if not others:
-        return None
-    return (
-        f"legend: one VGS row ({vgs:g} V) and one trace, but the panel labels "
-        f"other curves {others} V; count-only binding refused"
-    )
+    if others:
+        return (
+            f"legend: one VGS row ({vgs:g} V) and one trace, but the panel labels "
+            f"other curves {others} V; count-only binding refused"
+        )
+    # TSM60NE200CIT p3: "VGS=10V" and "VGS=12V" rows, one of them unparsed and
+    # one curve untraced; the 10 V curve was served as VGS = 12 V (status ok).
+    printed = sorted({v for v in printed_vgs_values(panel) if v != vgs})
+    if printed:
+        return (
+            f"legend: one VGS row ({vgs:g} V) and one trace, but the panel text "
+            f"names VGS {printed} V too; count-only binding refused"
+        )
+    return None
+
+
+_PRINTED_VGS_RE = re.compile(
+    r"V\s*(?:GS\s*)?=\s*(\d+(?:\.\d+)?)\s*V(?:\s*GS)?\b", re.I
+)
+
+
+def printed_vgs_values(panel) -> list[float]:
+    """Every VGS value the panel's own text names ("VGS=10V", "V =10V GS")."""
+
+    values = []
+    for match in _PRINTED_VGS_RE.finditer(panel.text):
+        start = match.start()
+        tail = panel.text[match.end() : match.end() + 4]
+        head = panel.text[max(0, start - 4) : start]
+        if "GS" in match.group(0).upper() or re.match(r"\s*GS", tail, re.I) or head.upper().endswith("GS"):
+            values.append(float(match.group(1)))
+    return values
