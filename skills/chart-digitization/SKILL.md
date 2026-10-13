@@ -199,6 +199,18 @@ is as a cross-check that sends dsdig/model disagreements to review.
   (`--rows-jsonl` for batches outside the backlog). It gives per-chart layer toggles,
   Green/Flag/Needs-rework verdicts and a JSON export. Changes to that tool go upstream in
   that file, never into a packet-local copy.
+- **Every card shows BOTH the digitized axis AND every digitized curve** (Fab, 2026-10-11:
+  "NEVER EVER SHOW ME A CHART WITH JUST THE AXIS OR JUST THE CURVE DIGITIZED"; "I MUST BE
+  ABLE TO REVIEW AXIS + CURVE IN ONE GO"). Before a packet reaches Fab, all three:
+  1. `tools/review_packet_lint.py ROWS.jsonl --html PACKET.html` exits 0. It refuses cards
+     without labelled x AND y ticks, without a served curve inside the plot box, with a
+     withheld/grey curve, with fewer curves than the row's mandatory
+     `expected_curve_count` (unless the chip says "n of m curves served"), and duplicate
+     cards of one chart (A/B goes in the chip, never as two cards).
+  2. Screenshot every rendered card and look at each one: ticks on the printed gridlines,
+     every curve on its printed curve. The linter cannot see alignment; a stale
+     `overlay_offset_px` once shifted every chart 92 px under correct coordinates.
+  3. Withheld or refused charts are a list in the README/report, never cards.
 - **Agent reviewers** follow `docs/CHART-REVIEWER-PROMPT.md` in the dsdig repo (on
   `main`). It carries the checks that caught what reviewers missed, including ticks
   measured against their rules (check 4), printed-text inventory (check 12) and source
