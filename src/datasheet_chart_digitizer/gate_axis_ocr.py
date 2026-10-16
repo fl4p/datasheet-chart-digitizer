@@ -405,16 +405,16 @@ def _raw_linear_y_ticks(
             token = token.replace("U", "0").replace("u", "0")
         value = _parse_numeric_label(token)
         y = 0.5 * (word.y0 + word.y1)
-        if (
-            value is not None
-            and -20.0 <= value <= 30.0
-            and plot.y0 - 10.0 <= y <= plot.y1 + 10.0
-        ):
+        if value is None or not plot.y0 - 10.0 <= y <= plot.y1 + 10.0:
+            continue
+        # The decimal-loss candidate is range-checked as the REPAIRED value:
+        # "45" (4.5 printed) is out of range as read but is exactly the case.
+        if re.fullmatch(r"\d\d", token):
+            decimal_loss.append((float(value) / 10.0, float(y)))
+        if -20.0 <= value <= 30.0:
             points.append((float(value), float(y)))
             if re.fullmatch(r"-?\d\.\d", token):
                 explicit_decimals.add((round(float(value), 6), round(float(y), 3)))
-            elif re.fullmatch(r"\d\d", token):
-                decimal_loss.append((float(value) / 10.0, float(y)))
     explicit = {(round(value, 6), round(y, 3)) for value, y in points}
     if len(explicit_decimals) >= 2:
         points.extend(decimal_loss)
@@ -486,10 +486,16 @@ def _fill_ticks_from_other_reads(
     step = float(np.median(np.abs(np.diff(np.sort(values)))))
     if step <= 0.0:
         return ticks
+    # A label row already holding a tick is not refilled: a conflicting read
+    # there (9.5 where 10 was read) would otherwise be averaged into the
+    # calibration, and more so the fewer ticks were read (larger step).
+    row_step = step / abs(float(slope)) if abs(float(slope)) > 1e-12 else 0.0
     filled = list(ticks)
     for words in reads:
         for value, y in _raw_linear_y_ticks(words, plot):
             if any(abs(value - known) < 1e-6 for known, _y in filled):
+                continue
+            if any(abs(y - row) < 0.5 * row_step for _v, row in filled):
                 continue
             if abs(value - (slope * y + offset)) <= 0.1 * step:
                 filled.append((value, y))

@@ -1114,12 +1114,15 @@ def _extract_vector_curve_series(
     return curves
 
 
-def _stroke_endpoints(drawing: dict) -> tuple[tuple[float, float], tuple[float, float]] | None:
+def _stroke_endpoints(
+    drawing: dict, *, min_segments: int = 2
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
     items = drawing.get("items") or []
     # One-segment-per-drawing producers (Infineon IPP024N08NF2S) are already
     # chained by the generic joiner; merging them here changes which component
-    # is kept.  Only multi-segment drawings count as split strokes.
-    if drawing.get("type") != "s" or len(items) < 2:
+    # is kept.  Only multi-segment drawings count as split strokes (the
+    # default); every stroke counts as a competitor (min_segments=1).
+    if drawing.get("type") != "s" or len(items) < min_segments:
         return None
     if any(item[0] not in ("l", "c") for item in items):
         return None
@@ -1143,8 +1146,11 @@ def _merge_source_contiguous_strokes(drawings: list[dict]) -> list[dict]:
     """
 
     endpoints = [_stroke_endpoints(drawing) for drawing in drawings]
+    # Competing continuations are counted over ALL strokes, including the
+    # one-segment drawings that are never merged themselves: a single-segment
+    # alternative starting at the junction makes it ambiguous.
     touching: dict[tuple[float, float], int] = {}
-    for record in endpoints:
+    for record in (_stroke_endpoints(d, min_segments=1) for d in drawings):
         if record is None:
             continue
         for point in set(record):
