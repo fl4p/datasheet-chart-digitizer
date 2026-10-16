@@ -1121,10 +1121,29 @@ class GateChargeVplTests(unittest.TestCase):
         result = gate.find_vpl_result(pdf, dpi=180)
         self.assertIsNotNone(result)
         assert result is not None
-        self.assertAlmostEqual(result.x_ticks_px[0][1], result.plot_box_px[0])
-        self.assertAlmostEqual(result.x_ticks_px[-1][1], result.plot_box_px[2])
-        self.assertAlmostEqual(result.y_ticks_px[0][1], result.plot_box_px[1])
-        self.assertAlmostEqual(result.y_ticks_px[-1][1], result.plot_box_px[3])
+        # Since the Qg-axis work (271a0b5) the edge ticks are served on their
+        # measured rules, not snapped to the box: frame column 120, row 131,
+        # row 447, columns 626-627 at 180 dpi (continuous px = index + 0.5).
+        self.assertEqual(
+            [p for _v, p in (result.x_ticks_px[0], result.x_ticks_px[-1])], [120.5, 627.0]
+        )
+        self.assertEqual(
+            [p for _v, p in (result.y_ticks_px[0], result.y_ticks_px[-1])], [131.5, 447.5]
+        )
+        # The box is bound to those rules within the binder's keep tolerance
+        # (gate_charge_plot_box._KEEP_TOLERANCE_PX, compared index-to-centre).
+        # Snapping every edge onto the rule pixel was measured 2026-10-16 on
+        # 1,092 PDFs: frame-on-ink edges 1047 -> 1226, but 128 Vpl moved by a
+        # pixel and two correct served Vpl were lost (STW70N65DM6, STL31N65M5),
+        # so it waits for a tracer that is stable under a 1 px box move.
+        x0, y0, x1, y1 = result.plot_box_px
+        for tick, edge in (
+            (result.x_ticks_px[0][1], x0),
+            (result.x_ticks_px[-1][1], x1),
+            (result.y_ticks_px[0][1], y0),
+            (result.y_ticks_px[-1][1], y1),
+        ):
+            self.assertLessEqual(abs(tick - edge), 1.5)
 
 
 if __name__ == "__main__":
