@@ -988,7 +988,22 @@ def choose_caption_panel_bbox(
                 sibling_direction is not None
                 and sibling_direction != chosen_side
             ):
-                return None
+                # The layout names the side; bind the nearest grid THERE when
+                # one exists (DMN3009LFVQ-13-HXY p4: Figure 8's own chart sits
+                # 30 pt above it, the SOA chart 24 pt below; every sibling
+                # caption is under its chart). Refuse only when that side has
+                # no grid (NCE0160G: Figure 9's own raster plot is undetected).
+                sided = [
+                    item
+                    for item in candidates
+                    if (item[2][3] <= ty0 if sibling_direction == "above" else item[2][1] >= ty1)
+                ]
+                if not sided:
+                    return None
+                best = min(
+                    ((item[1] + 0.25 * item[0], item[2]) for item in sided),
+                    key=lambda scored: scored[0],
+                )
 
     x0, y0, x1, y1 = best[1]
     pad_x = min(12.0, (x1 - x0) * 0.04)

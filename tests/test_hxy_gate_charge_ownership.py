@@ -84,8 +84,13 @@ class HxyGateChargeOwnershipTests(unittest.TestCase):
         self.assertEqual(len(gate), 1)
         self.assertEqual((gate[0].page, gate[0].diagram), (3, 4))
         self.assertLess(gate[0].bbox_pt[1], 340.0)
-        self.assertLess(gate[0].bbox_pt[3], 545.0)
-        self.assertGreater(gate[0].bbox_pt[3], 525.0)
+        # Since 2026-10-16 the caption binds its own grid (frame 336.5..533.8 x
+        # 347.5..502.9 pt, 35 pt above "Fig.4" at 538.4 pt) because every
+        # sibling caption on p3 sits under its chart; the bbox is that frame
+        # plus the finder pad. It used to come from a fallback route reaching
+        # 536 pt, into the Qg label row.
+        self.assertGreater(gate[0].bbox_pt[3], 502.9)
+        self.assertLess(gate[0].bbox_pt[3], 538.4)
 
     @unittest.skipUnless(HXY_MATERIALIZED, "materialized HXY PDF unavailable")
     def test_digitizer_no_longer_rejects_owned_gate_plot_as_rds(self) -> None:

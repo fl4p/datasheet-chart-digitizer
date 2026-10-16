@@ -1077,7 +1077,7 @@ class GateChargeVplTests(unittest.TestCase):
         )
         self.assertFalse(result.to_manifest()["physical_output_available"])
 
-    def test_real_hxy_gate_caption_cannot_override_refined_non_gate_plot(self) -> None:
+    def test_real_hxy_gate_caption_binds_its_own_chart_above_not_the_soa_below(self) -> None:
         pdf = (
             Path(os.environ.get("DSDIG_DATASHEET_ROOT", "."))
             / "datasheets/hxy/DMN3009LFVQ-13-HXY.pdf"
@@ -1091,11 +1091,22 @@ class GateChargeVplTests(unittest.TestCase):
             if item.panel.page == 4 and item.panel.diagram == 8
         )
 
-        self.assertIsNone(result.vpl)
-        self.assertEqual(result.status, "rejected_non_gate")
-        self.assertTrue(
-            any(reason.startswith("non_gate_plot:") for reason in result.diagnostics)
-        )
+        # Updated 2026-10-16. This used to expect rejected_non_gate because the
+        # finder bound "Figure 8. Gate Charge Characteristics" (caption y
+        # 307.7 pt) to the Figure 10 SOA chart below it, and only the crop's
+        # spill onto the Figure 9 caption rejected it. Every caption on p4 sits
+        # under its chart; Figure 8's own frame is y 125.6..278.0 pt above the
+        # caption (Qg axis "Qg-Toal Gate Charge (nC)", 0..10 V). The finder now
+        # binds that chart, and the plateau measured at 600 dpi (frame 125.62 /
+        # 278.02 pt, plateau 240.14..238.82 pt) is 2.49..2.57 V. The result
+        # stays unserved on the HXY shared-template provenance rule, never on a
+        # number read from the SOA chart.
+        self.assertLess(result.panel.bbox_pt[3], 307.7)
+        self.assertNotIn("non_gate_plot:safe_operating_area", result.diagnostics)
+        self.assertEqual(result.status, "source_untrusted")
+        self.assertIn("shared_curve_template_provenance_untrusted", result.diagnostics)
+        self.assertAlmostEqual(result.vpl, 2.53, delta=0.1)
+        self.assertIsNone(gate.find_vpl_result(pdf))
 
     def test_real_raster_axis_ocr_replaces_unverified_grid_scale(self) -> None:
         pdf = (
