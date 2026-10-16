@@ -1425,6 +1425,22 @@ def _select_dual_y_raster_curve(
     candidates = [
         curve for curve in owned if _gate_curve_is_monotone(curve, plot_box)
     ] or owned or curves
+    # A candidate with a wide interior x gap has no ink evidence across it, and
+    # the Vpl estimator would read the plateau off the straight line bridging
+    # the gap. TJ40S04M3L p6 Fig 8.10: the monotone-upper trace skips the whole
+    # Miller plateau (crop x 334..418 of a 468 px plot) and served -3.82 V from
+    # that bridge. It only won after the branch follower (cbe5da9) correctly
+    # ended the ordinary trace at its own VDD branch's top (x 702, not the
+    # neighbour's 735), which cost that trace 0.45 in span score. Prefer
+    # candidates whose ink is continuous; the score ranks within them.
+    max_gap = 0.08 * max(1, plot_box[2] - plot_box[0])
+    continuous = [
+        curve
+        for curve in candidates
+        if len(curve) >= 2
+        and float(np.max(np.diff(sorted(x for x, _y in curve)))) <= max_gap
+    ]
+    candidates = continuous or candidates
     best_score = max((_score_curve_in_plot(curve, plot_box) for curve in candidates), default=-1e9)
     evidenced = [curve for curve in candidates if _score_curve_in_plot(curve, plot_box) >= best_score - 0.5]
     return max(evidenced, key=lambda curve: (len(curve), _score_curve_in_plot(curve, plot_box)), default=[])
