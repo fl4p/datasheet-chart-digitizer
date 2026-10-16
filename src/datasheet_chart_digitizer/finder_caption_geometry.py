@@ -1006,10 +1006,27 @@ def page_image_rects(pdf: Path, page_num: int) -> list[BBox]:
     return rects
 
 
+def _axis_aligned_quad(quad: object) -> bool:
+    points = (quad.ul, quad.ur, quad.ll, quad.lr)
+    xs = sorted(float(point.x) for point in points)
+    ys = sorted(float(point.y) for point in points)
+    return (
+        xs[1] - xs[0] <= 0.5 and xs[3] - xs[2] <= 0.5
+        and ys[1] - ys[0] <= 0.5 and ys[3] - ys[2] <= 0.5
+    )
+
+
 def page_vector_plot_frames(
-    pdf: Path, page_num: int, page: _PageLike, *, include_quadrilaterals: bool = True
+    pdf: Path, page_num: int, page: _PageLike, *, include_quadrilaterals: bool = True,
+    include_gridded: bool = False,
 ) -> list[BBox]:
-    """Return positively evidenced stroked vector plot frames on one page."""
+    """Return positively evidenced stroked vector plot frames on one page.
+
+    ``include_gridded`` also accepts a hairline (0.20..0.45 pt) frame and an
+    axis-aligned quad with non-standard corner order, but only when at least
+    three interior horizontal grid lines span the frame's full width; the grid,
+    not the stroke weight or winding, is the frame evidence there.
+    """
     try:
         with pymupdf.open(pdf) as doc:
             drawings = doc[page_num - 1].get_drawings()
@@ -1021,17 +1038,42 @@ def page_vector_plot_frames(
     min_height = page.height_pt * 0.08
     max_height = page.height_pt * 0.40
     frames: list[BBox] = []
+    thin_spans: list[tuple[float, float, float]] = []
+    if include_gridded:
+        for drawing in drawings:
+            if drawing.get("type") not in {"s", "fs"}:
+                continue
+            for item in drawing.get("items", []):
+                if item[0] == "l" and abs(float(item[1].y) - float(item[2].y)) <= 0.5:
+                    left, right = sorted((float(item[1].x), float(item[2].x)))
+                    thin_spans.append((left, right, 0.5 * (float(item[1].y) + float(item[2].y))))
+
+    def gridded(rect: object) -> bool:
+        x0, y0, x1, y1 = (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
+        rows = {
+            round(y, 1) for left, right, y in thin_spans
+            if abs(left - x0) <= 1.0 and abs(right - x1) <= 1.0 and y0 + 1.0 < y < y1 - 1.0
+        }
+        return len(rows) >= 3
+
     for drawing in drawings:
         if drawing.get("type") not in {"s", "fs"}:
             continue
         stroke_width = float(drawing.get("width") or 0.0)
-        if not 0.45 <= stroke_width <= 2.5:
+        thin = include_gridded and 0.20 <= stroke_width < 0.45
+        if not (0.45 <= stroke_width <= 2.5 or thin):
             continue
         for item in drawing.get("items", []):
+            needs_grid = False
             if item[0] == "re":
                 rect = item[1]
             elif item[0] == "qu" and include_quadrilaterals and item[1].is_rectangular:
                 rect = item[1].rect
+            elif item[0] == "qu" and include_gridded and _axis_aligned_quad(item[1]):
+                # ST NK frames list corners as ul, ll, ur, lr: an axis-aligned
+                # box PyMuPDF reports as non-rectangular (mirrored winding).
+                rect = item[1].rect
+                needs_grid = True
             else:
                 continue
             width = float(rect.width)
@@ -1043,6 +1085,8 @@ def page_vector_plot_frames(
                 continue
             aspect = width / max(height, 1e-9)
             if not 0.55 <= aspect <= 2.4:
+                continue
+            if (thin or needs_grid) and not gridded(rect):
                 continue
             candidate = (
                 float(rect.x0),
