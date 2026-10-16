@@ -533,22 +533,31 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
             (
                 "infineon/IPP024N08NF2S.pdf",
                 "Typ. forward characteristics of reverse diode",
-                PlotBox(102, 62, 642, 665),
+                # Raster frame: top rule = rows 62/63, bottom rule = rows
+                # 664/665, each pair equally ~50 % dark (crop profile at
+                # 180 dpi).  The plot takes the first row of each pair; the
+                # old 665 mixed conventions (first row on top, second at the
+                # bottom).  Measured 2026-10-16, agent b.
+                PlotBox(102, 62, 642, 664),
                 "linear",
                 "log10",
                 (1, 10, 100, 1000),
                 (102, 178, 256, 332, 410, 488, 564, 642),
-                (62, 262, 464, 665),
+                (62, 262, 464, 664),
             ),
             (
                 "onsemi/FDA032N08.pdf",
                 "Body Diode Forward Voltage",
-                PlotBox(189, 54, 670, 390),
+                # Crop-relative pixels follow the finder's panel box (crop
+                # origin 334.0, 290.4 pt).  In page points the plot is
+                # 354.8/300.8/546.8/435.2 vs the drawn frame and 400 A/1 A
+                # rules 355.01/300.70/547.14/435.29 (get_drawings).
+                PlotBox(52, 26, 532, 362),
                 "linear",
                 "log10",
                 (1, 10, 100, 400),
-                (189, 349, 509, 670),
-                (54, 132, 262, 390),
+                (52, 212, 372, 532),
+                (26, 103, 233, 362),
             ),
             (
                 "diodes/DMTH83M2SPSWQ-13.pdf",
@@ -754,67 +763,76 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
         )
 
     def test_onsemi_outer_decades_and_plot_bottom_bind_to_physical_lines(self):
+        # Pixels are relative to the finder's crop, whose left/bottom edge
+        # moved in ba7a2a1 (e.g. NTMFS0D6N03CT1G crop x0 330.0 -> 320.8 pt, so
+        # the y tick labels "100"/"10" at x 325.0/329.4 pt are no longer cut).
+        # Re-pinned 2026-10-16 after checking every plot edge and outer decade
+        # in PAGE points against get_drawings() frame/grid rules: all ten
+        # bind within 0.45 pt (about 1 px), e.g. NTMFS0D6N03CT1G plot
+        # 340.8/302.0/546.0/446.0 vs rules 340.95/302.23/546.24/446.00.
+        # FDP8D5N10C/FDPF8D5N10C x0 25 (frame ink = crop columns 24-26) and
+        # FDPF51N25 y0 25 (frame ink = crop row 25 only) are the inked pixels.
         if self.datasheets is None:
             self.skipTest("DSDIG_DATASHEET_ROOT is not set")
         cases = (
             (
                 "onsemi/NTMFS0D6N03CT1G.pdf",
-                PlotBox(28, 20, 540, 380),
-                (28, 112, 198, 284, 369, 454, 540),
+                PlotBox(50, 20, 563, 380),
+                (50, 136, 221, 306, 392, 478, 563),
                 (20, 140, 260, 380),
             ),
             (
                 "onsemi/NTMFS5C406NLT1G.pdf",
-                PlotBox(27, 26, 540, 388),
-                (27, 100, 174, 247, 320, 393, 467, 540),
+                PlotBox(48, 27, 562, 388),
+                (48, 121, 195, 268, 342, 415, 489, 562),
                 (27, 208, 388),
             ),
             (
                 "onsemi/NTMFS5C410NT1G.pdf",
-                PlotBox(27, 27, 540, 386),
-                (27, 100, 173, 246, 320, 393, 466, 540),
+                PlotBox(50, 27, 563, 386),
+                (50, 123, 196, 270, 343, 416, 489, 563),
                 (27, 206, 386),
             ),
             (
                 "onsemi/NTMFS5C410NT3G.pdf",
-                PlotBox(27, 27, 540, 386),
-                (27, 100, 173, 246, 320, 393, 466, 540),
+                PlotBox(50, 27, 563, 386),
+                (50, 123, 196, 270, 343, 416, 489, 563),
                 (27, 206, 386),
             ),
             (
                 "onsemi/FDP3651U.pdf",
-                PlotBox(23, 21, 449, 333),
-                (23, 94, 165, 236, 307, 378, 449),
+                PlotBox(58, 21, 484, 333),
+                (58, 129, 200, 271, 342, 413, 484),
                 (21, 74, 125, 177, 229, 281, 333),
             ),
             (
                 "onsemi/FDP8D5N10C.pdf",
-                PlotBox(26, 26, 479, 371),
-                (26, 101, 176, 252, 328, 403, 479),
+                PlotBox(25, 26, 479, 371),
+                (25, 101, 176, 252, 328, 403, 479),
                 (26, 46, 111, 176, 241, 306, 371),
             ),
             (
                 "onsemi/FDPF51N25.pdf",
-                PlotBox(26, 26, 508, 362),
+                PlotBox(26, 25, 508, 362),
                 (26, 86, 146, 207, 267, 327, 387, 448, 508),
                 (69, 216, 362),
             ),
             (
                 "onsemi/FDPF8D5N10C.pdf",
-                PlotBox(26, 26, 479, 371),
-                (26, 101, 176, 252, 328, 403, 479),
+                PlotBox(25, 26, 479, 371),
+                (25, 101, 176, 252, 328, 403, 479),
                 (26, 46, 111, 176, 241, 306, 371),
             ),
             (
                 "onsemi/FDS4435BZ.pdf",
-                PlotBox(23, 19, 437, 322),
-                (23, 92, 161, 230, 299, 368, 437),
+                PlotBox(62, 19, 476, 322),
+                (62, 131, 200, 269, 338, 407, 476),
                 (19, 69, 120, 170, 221, 272, 322),
             ),
             (
                 "onsemi/FDS8447.pdf",
-                PlotBox(24, 19, 449, 330),
-                (24, 95, 166, 236, 307, 378, 449),
+                PlotBox(54, 19, 479, 330),
+                (54, 125, 196, 266, 337, 408, 479),
                 (19, 81, 143, 205, 268, 330),
             ),
             (
