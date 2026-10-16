@@ -23,6 +23,10 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "xnrusemi/XRT90N20T.pdf": 4.67,
             "nce/NCEP080N10.pdf": 5.11,
             "huayi/HY1710P.pdf": 4.47,
+            # served again since 2026-10-16: the bounded OCR now seats 15/12/9/3/0
+            # on their rules (grid check verified) and reads 5.651 V, the value
+            # the frame rules give (15 V at 137 px, 0 V at 612 px, plateau 433 px).
+            "huayi/HY1720P.pdf": 5.65,
             "siliup/SP015N15HTQ.pdf": 4.71,
             "siliup/SP012N06GHTQ.pdf": 5.55,
             "siliup/SP010N02AGHTO.pdf": 4.82,
@@ -39,8 +43,8 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
             "good_ark/GSFT7R515.pdf": 5.48,
             "toshiba/XPQ1R00AQB.pdf": 5.58,
         }
-        # Withheld since the served VGS line is checked against its rules
-        # (2026-09-29): the bounded OCR ticks of HY1720P read a "0" 11 px
+        # HY1720P was withheld 2026-09-29 to 2026-10-16 (now in cases above):
+        # the bounded OCR ticks of HY1720P read a "0" 11 px
         # below the 0 V frame and a stray "2", so no registration binds them to
         # the dotted 1.5 V grid. That OCR line served Vpl 5.886 V where the
         # frame rules (15 V at 137 px, 0 V at 612 px) put the plateau at
@@ -55,7 +59,6 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
         #   non_monotone_gate_curve.
         # Their Vpl reads were right; the served curves were not.
         withheld = {
-            "huayi/HY1720P.pdf": "y_axis_grid_check_unverified",
             "nce/NCE0160G.pdf": "plot_box_clips_source_curve",
             "st/STH240N10F7-2.pdf": "plot_box_clips_source_curve",
             "toshiba/TK72E12N1.pdf": "non_monotone_gate_curve",
@@ -172,7 +175,15 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         result = results[0]
         self.assertAlmostEqual(float(result.vpl or 0.0), 4.74, delta=0.35)
-        self.assertEqual(result.status, "source_untrusted")
+        # Since 2026-10-16 the bounded OCR also reads the printed "4.0" label
+        # (one read drops it, another has it on the 4 V row). The JPEG rules
+        # are not evenly spaced: the 4 V rule is at crop row 403-404 where the
+        # 12/10/6/2 V rules (136/204/336/468) put it at 402, so the 1.5 px
+        # label-to-grid registration now refuses (y_axis_grid_check_unverified)
+        # and the status is low_confidence instead of source_untrusted. Either
+        # way it is unserved and keeps the provenance diagnostic.
+        self.assertIn(result.status, {"source_untrusted", "low_confidence"})
+        self.assertNotEqual(result.status, "ok")
         self.assertIn(
             "shared_curve_template_provenance_untrusted",
             result.diagnostics,
