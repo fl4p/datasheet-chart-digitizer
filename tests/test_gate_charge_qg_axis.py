@@ -94,7 +94,14 @@ class FDP020PlotBoxTests(unittest.TestCase):
         ys = {v: p for v, p in r.y_ticks_px}
         self.assertLessEqual(abs(y0 - ys[10.0]), 1.5)  # not 179 px up in the body-diode chart
         self.assertLessEqual(abs(y1 - ys[0.0]), 1.5)   # not 19 px down on the Qg labels
-        self.assertEqual(r.plot_box_binding["input_box_px"][1], 307)
+        # The first pass used to bind a foreign column whose values rise
+        # downward (0.4 @ 492.9 pt, 6 @ 537.5, 30 @ 701.5 pt) and the box top
+        # sat 179 px up in the body-diode chart until _bind_plot_box_to_rules
+        # moved it (input_box_px[1] == 307 in that crop). Since 2026-10-16
+        # such a positive rising run is not a y axis, the native 10..0 column
+        # at x 350.8 pt wins, and the box is on the rules before rebinding.
+        self.assertEqual(r.plot_box_binding["y"], {"lo": "on_rule", "hi": "on_rule"})
+        self.assertLessEqual(abs(r.plot_box_binding["input_box_px"][1] - ys[10.0]), 1.5)
         self.assertEqual(r.qg_axis_status, "verified")
         # the served trace stays inside the 0..10 V rules
         self.assertLessEqual(max(y for _x, y in r.curve_px), ys[0.0] + 1.5)
