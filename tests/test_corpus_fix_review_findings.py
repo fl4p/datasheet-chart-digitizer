@@ -55,6 +55,29 @@ class ReviewFindingTests(unittest.TestCase):
         )
         self.assertEqual(filled, [(10.0, 0.0), (5.0, 50.0), (0.0, 100.0)])
 
+    def test_fill_in_recovers_every_missing_row_between_two_read_ticks(self):
+        # re-review: a radius scaled by the surviving tick spacing (50 pt with
+        # two ticks) refused every real missing label
+        filled = _fill_ticks_from_other_reads(
+            [(10.0, 0.0), (0.0, 100.0)],
+            [_words([("8", 20), ("6", 40)]), _words([("4", 60), ("2", 80)])],
+            PLOT,
+        )
+        self.assertEqual([v for v, _y in filled], [10.0, 8.0, 6.0, 4.0, 2.0, 0.0])
+        filled = _fill_ticks_from_other_reads(
+            [(10.0, 0.0), (8.0, 20.0), (0.0, 100.0)],
+            [_words([("6", 40), ("2", 80)])],
+            PLOT,
+        )
+        self.assertEqual([v for v, _y in filled], [10.0, 8.0, 6.0, 2.0, 0.0])
+
+    def test_fill_in_refuses_a_label_off_the_axis_by_position(self):
+        # 4 V read 4 pt away from where the axis puts 4 V
+        filled = _fill_ticks_from_other_reads(
+            [(10.0, 0.0), (0.0, 100.0)], [_words([("10", 0), ("4", 64)])], PLOT
+        )
+        self.assertEqual(filled, [(10.0, 0.0), (0.0, 100.0)])
+
     def test_decimal_loss_repairs_out_of_range_reads(self):
         # "45" is 4.5 with the point dropped; two explicit decimals anchor it
         ticks = _raw_linear_y_ticks(
@@ -90,6 +113,26 @@ class ReviewFindingTests(unittest.TestCase):
             finder._unambiguous_sibling_caption_direction(page, title, frames), "above"
         )
         self.assertIsNone(finder.choose_caption_panel_bbox(page, title, frames))
+
+    def test_sibling_recovery_binds_the_grid_over_the_caption_centre(self):
+        # re-review: a caption straddling two columns; the left grid shares
+        # 10 pt of it and is nearer, the right grid spans its centre
+        page = finder.PageText(
+            1, 600, 800, [finder.Word("Figure 1. Output Characteristics", 500, 100, 580, 110)]
+        )
+        title = finder.DiagramTitle(
+            8, "Gate Charge Characteristics", (290, 300, 380, 310),
+            "Figure 8. Gate Charge Characteristics",
+        )
+        frames = [(450, 0, 590, 80), (100, 200, 300, 290), (310, 200, 510, 265),
+                  (310, 320, 510, 450)]
+        if finder._unambiguous_sibling_caption_direction(page, title, frames) != "above":
+            self.skipTest("layout no longer evidences 'above' for this fixture")
+        bbox = finder.choose_caption_panel_bbox(page, title, frames)
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertLess(bbox[0], 335.0)
+        self.assertGreater(bbox[0], 300.0)
 
 
 if __name__ == "__main__":

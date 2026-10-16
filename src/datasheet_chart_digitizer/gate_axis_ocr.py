@@ -462,6 +462,11 @@ def _raw_linear_y_ticks(
     return [] if best is None else best[4]
 
 
+# _fill_ticks_from_other_reads: page-point limits (see there).
+_FILL_MAX_OFFSET_PT = 2.0
+_FILL_OCCUPIED_PT = 3.0
+
+
 def _fill_ticks_from_other_reads(
     ticks: list[tuple[float, float]],
     reads: list[list[Word]],
@@ -486,18 +491,25 @@ def _fill_ticks_from_other_reads(
     step = float(np.median(np.abs(np.diff(np.sort(values)))))
     if step <= 0.0:
         return ticks
-    # A label row already holding a tick is not refilled: a conflicting read
-    # there (9.5 where 10 was read) would otherwise be averaged into the
-    # calibration, and more so the fewer ticks were read (larger step).
-    row_step = step / abs(float(slope)) if abs(float(slope)) > 1e-12 else 0.0
+    # Positions are page points. A filled label must sit on the axis line by
+    # position, not only by value: within a tenth of the row step, capped at
+    # _FILL_MAX_OFFSET_PT. Without the cap, two read ticks give a 10 V step and
+    # a 9.5 read on the 10 V row (5 pt off) passes as "on the axis" and is
+    # averaged into the calibration. A row already holding a tick (within
+    # _FILL_OCCUPIED_PT, about half a label height) is never refilled. Both are
+    # absolute so that missing rows between few read ticks are still filled.
+    if abs(float(slope)) <= 1e-12:
+        return ticks
+    row_step = step / abs(float(slope))
+    tolerance_pt = min(0.1 * row_step, _FILL_MAX_OFFSET_PT)
     filled = list(ticks)
     for words in reads:
         for value, y in _raw_linear_y_ticks(words, plot):
             if any(abs(value - known) < 1e-6 for known, _y in filled):
                 continue
-            if any(abs(y - row) < 0.5 * row_step for _v, row in filled):
+            if any(abs(y - row) < _FILL_OCCUPIED_PT for _v, row in filled):
                 continue
-            if abs(value - (slope * y + offset)) <= 0.1 * step:
+            if abs((value - offset) / slope - y) <= tolerance_pt:
                 filled.append((value, y))
     return sorted(filled, key=lambda item: item[1])
 

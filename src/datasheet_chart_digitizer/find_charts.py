@@ -994,13 +994,14 @@ def choose_caption_panel_bbox(
                 # caption is under its chart). Refuse only when that side has
                 # no grid (NCE0160G: Figure 9's own raster plot is undetected).
                 # Direction fixes the layout, not ownership: the recovered grid
-                # must also share the caption's column (horizontal overlap),
-                # else a disjoint neighbour on that side would be bound.
+                # must span the caption's centre (its own column). Any overlap
+                # is not enough -- a neighbour sharing 10 pt of a caption that
+                # straddles two columns would win on distance.
                 sided = [
                     item
                     for item in candidates
                     if (item[2][3] <= ty0 if sibling_direction == "above" else item[2][1] >= ty1)
-                    and min(item[2][2], tx1) - max(item[2][0], tx0) > 0.0
+                    and item[2][0] <= tcx <= item[2][2]
                 ]
                 if not sided:
                     return None
