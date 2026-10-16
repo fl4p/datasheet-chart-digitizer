@@ -1317,11 +1317,18 @@ class TransferBodyCaptionIntegrationTests(unittest.TestCase):
         self.assertEqual([(panel.page, panel.diagram) for panel in transfer], [(3, 2)])
         self.assertEqual([(panel.page, panel.diagram) for panel in body], [(3, 4)])
         self.assertEqual([(panel.page, panel.diagram) for panel in gate], [(3, 6)])
-        self.assertEqual(transfer[0].bbox_pt, (277.902, 53.06, 612.0, 264.06))
-        # The body-diode panel starts below the preceding Figure 2 caption;
-        # retaining that caption would make the crop own text from another plot.
-        self.assertEqual(body[0].bbox_pt, (281.211, 280.932, 612.0, 478.302))
-        self.assertEqual(gate[0].bbox_pt, (345.472, 566.032, 554.128, 658.768))
+        # Drawn frames (get_drawings): Fig 2 x 355.0..545.7 y 92.5..229.3,
+        # Fig 4 x 355.0..547.1 y 300.7..435.3, Fig 6 x 353.8..545.7 y 516.0..653.8.
+        # Each crop is its frame plus local ticks/axis titles. The former page-edge
+        # boxes (x1 612.0, x0 ~278..281) owned Figure 1's "1" tick (x 298.5..303.0)
+        # and Figure 3's "400" tick (x 293.2..306.2); the former gate y0 566.0
+        # cut the Figure 6 frame in half.
+        self.assertEqual(transfer[0].bbox_pt, (318.123, 84.18, 554.08, 263.423))
+        # The body-diode panel starts below the preceding Figure 2 caption
+        # (y1 278.9); retaining that caption would make the crop own text from
+        # another plot.
+        self.assertEqual(body[0].bbox_pt, (336.173, 292.736, 555.328, 476.985))
+        self.assertEqual(gate[0].bbox_pt, (345.472, 507.732, 554.128, 662.068))
 
 
 class CaptionBboxExpansionGuardTests(unittest.TestCase):

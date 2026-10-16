@@ -1362,10 +1362,20 @@ class RealPanelOwnershipRegressionTests(unittest.TestCase):
         panels = self._page_panels("vishay/SUD50N04-8m8P.pdf", 4)
         by_title = {panel.title: panel for panel in panels}
 
+        # The top-right body-diode frame (368.0, 106.0, 541.6, 258.3; 1.0 pt
+        # stroke, get_drawings) is now recovered, so the caption binds its own
+        # frame. The original failure bound it to the Threshold Voltage frame
+        # below (top y 312.9); that cross-bind must stay impossible.
         self.assertEqual(set(by_title), {
             "On-Resistance vs. Junction Temperature",
             "On-Resistance vs. Gate-to-Source Voltage",
+            "Source-Drain Diode Forward Voltage",
         })
+        body = by_title["Source-Drain Diode Forward Voltage"]
+        self.assertGreater(body.bbox_pt[0], 306)
+        self.assertLessEqual(body.bbox_pt[1], 106.0)
+        self.assertGreaterEqual(body.bbox_pt[3], 286.0)
+        self.assertLess(body.bbox_pt[3], 312.9)
         self.assertLess(
             by_title["On-Resistance vs. Junction Temperature"].bbox_pt[2], 306,
         )
