@@ -838,14 +838,32 @@ class GateChargeVplTests(unittest.TestCase):
 
     def test_real_panjit_huayi_frames_bind_to_own_grid_not_neighbor_divider(self) -> None:
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
+        # Re-pinned 2026-10-16 from page measurements (pixel boxes are relative
+        # to the result's own crop at 220 dpi, so a crop-origin move re-expresses
+        # the same frame at other indices):
+        # - 050N10NS2: frame rules at y 141.25 / 283.29 pt (vector, p4) are rows
+        #   169 and 603-604 of crop y0 85.906 pt. The top edge is the index
+        #   holding the rule (169), not the row under it (170); the ticks are
+        #   continuous px since 271a0b5 (top rule 169.5), so edges are compared
+        #   as floor(tick). Needs the box fix that binds edges to floor(rule).
+        # - 055N08NS1: the finder crop x0 moved 30.728 -> 29.987 pt (ba7a2a1),
+        #   2.26 px; the frame (vector x 84.26 / 280.16 pt) is the same rule,
+        #   now columns 165-166 / 764-765 -> (166, 168, 765, 591). Vpl pinned to
+        #   the vector truth: frame 119.52 / 257.88 pt, plateau 190.56 pt ->
+        #   4.866 V (was 4.86).
+        # - HY1001D: crop y0 moved 304.006 -> 303.139 pt (finder bbox 343.1 ->
+        #   341.1 pt); the frame (600 dpi: 345.04 / 357.04 / 539.80 / 501.64 pt)
+        #   is the same, rows 163-164 / 606-607 -> (141, 164, 737, 607). Vpl is
+        #   read on the rules now: plateau 436.48 pt -> 4.506 V (4.61 was the
+        #   label-centre fit). The x crop origin is unchanged (298.925 pt).
         cases = {
             # 050N10NS2: 4.96 V on the VGS label-centre fit, 4.994 V on the
             # rules (grid-seated 2026-09-29, all six ticks verified).
-            "panjit/PSMB050N10NS2_R2_00601.pdf": ((166, 170, 764, 604), 4.994),
-            "panjit/PSMB055N08NS1_R2_00601.pdf": ((164, 168, 763, 591), 4.86),
-            "panjit/PSMP050N10NS2_T0_00601.pdf": ((166, 170, 764, 604), 4.994),
-            "panjit/PSMP055N08NS1_T0_00601.pdf": ((164, 168, 763, 591), 4.86),
-            "huayi/HY1001D.pdf": ((141, 162, 737, 605), 4.61),
+            "panjit/PSMB050N10NS2_R2_00601.pdf": ((166, 169, 764, 604), 4.994),
+            "panjit/PSMB055N08NS1_R2_00601.pdf": ((166, 168, 765, 591), 4.866),
+            "panjit/PSMP050N10NS2_T0_00601.pdf": ((166, 169, 764, 604), 4.994),
+            "panjit/PSMP055N08NS1_T0_00601.pdf": ((166, 168, 765, 591), 4.866),
+            "huayi/HY1001D.pdf": ((141, 164, 737, 607), 4.51),
         }
         if not all((root / relative).exists() for relative in cases):
             self.skipTest("Panjit/Huayi frame regressions are not configured")
@@ -857,9 +875,11 @@ class GateChargeVplTests(unittest.TestCase):
                 assert result is not None
                 self.assertEqual(expected_box, result.plot_box_px)
                 self.assertAlmostEqual(expected_vpl, result.vpl, delta=0.03)
-                self.assertEqual(result.plot_box_px[0], result.x_ticks_px[0][1])
-                self.assertEqual(result.plot_box_px[1], result.y_ticks_px[0][1])
-                self.assertEqual(result.plot_box_px[3], result.y_ticks_px[-1][1])
+                # box edges are pixel indices, ticks continuous px: the edge is
+                # the pixel that holds the rule centre
+                self.assertEqual(result.plot_box_px[0], int(np.floor(result.x_ticks_px[0][1])))
+                self.assertEqual(result.plot_box_px[1], int(np.floor(result.y_ticks_px[0][1])))
+                self.assertEqual(result.plot_box_px[3], int(np.floor(result.y_ticks_px[-1][1])))
                 if relative.endswith("HY1001D.pdf"):
                     spacing = result.x_ticks_px[-1][1] - result.x_ticks_px[-2][1]
                     self.assertAlmostEqual(
@@ -868,7 +888,7 @@ class GateChargeVplTests(unittest.TestCase):
                         delta=4.0,
                     )
                 else:
-                    self.assertEqual(result.plot_box_px[2], result.x_ticks_px[-1][1])
+                    self.assertEqual(result.plot_box_px[2], int(np.floor(result.x_ticks_px[-1][1])))
 
     def test_real_gate_frame_does_not_expand_into_neighbor_or_whitespace(self) -> None:
         root = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"

@@ -70,6 +70,12 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
                 )
                 self.assertTrue(any(diagnostic in r.diagnostics for r in results))
 
+        # native PDF text carries these VGS columns (5..0 V / 12..0 V at x 366 pt)
+        native_axis = {
+            "infineon/IRLB4030PBF.pdf",
+            "infineon/IRFB4410ZPBF.pdf",
+            "infineon/IRFB4410ZGPBF.pdf",
+        }
         for relative, expected_vpl in cases.items():
             with self.subTest(pdf=relative):
                 results = gate_charge.digitize_gate_charge(
@@ -88,12 +94,22 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
                 )
                 self.assertEqual(result.x_tick_unit, "nC")
                 self.assertGreaterEqual(result.y_tick_count, 2)
-                self.assertTrue(
-                    any(
-                        diagnostic.startswith("axis_ocr_bounded")
-                        for diagnostic in result.diagnostics
+                if relative in native_axis:
+                    # The first pass now reads the native-text VGS column
+                    # itself; bounded OCR is not needed. Until 2026-10-16 the
+                    # first pass took a column whose values RISE downward
+                    # ("-20" at 482 pt over "20" at 713 pt, x 410 pt) and only
+                    # the bounded-OCR retry recovered the axis; such a run is
+                    # now accepted only when it is all non-positive. Same Vpl.
+                    self.assertNotIn("axis_ocr_bounded", result.diagnostics)
+                    self.assertGreaterEqual(result.y_tick_count, 6)
+                else:
+                    self.assertTrue(
+                        any(
+                            diagnostic.startswith("axis_ocr_bounded")
+                            for diagnostic in result.diagnostics
+                        )
                     )
-                )
                 self.assertNotIn(
                     "axis_inferred_from_regular_grid", result.diagnostics
                 )
