@@ -922,7 +922,15 @@ class GateChargeVplTests(unittest.TestCase):
         assert result is not None
         self.assertEqual(result.status, "ok")
         self.assertAlmostEqual(result.vpl, 2.4, delta=0.5)
-        self.assertGreater(result.crop_box_pt[0], result.panel.bbox_pt[0] + 50.0)
+        # The right-hand Fig. 12 frame is drawn at x 341.4..501.4 pt (vector
+        # rules, p7); the left column's charts end at x 255.7 pt. This used to
+        # compare the crop against panel.bbox_pt + 50, which held only while the
+        # finder bbox was loose (x0 215.9 pt, spanning the Fig. 11 neighbour);
+        # since ba7a2a1 the bbox is the frame itself (x0 334.7 pt) and the crop's
+        # y-label margin (x0 297.6 pt) legitimately starts left of it.
+        plot_x0_pt = result.crop_box_pt[0] + result.plot_box_px[0] / (result.dpi / 72)
+        self.assertGreater(plot_x0_pt, 300.0)
+        self.assertAlmostEqual(plot_x0_pt, 341.4, delta=72 / result.dpi + 0.25)
 
     def test_real_sij_selects_gate_charge_instead_of_output_characteristics(self) -> None:
         pdf = (
