@@ -116,8 +116,17 @@ class BodyDiodeFinderCorpusTests(unittest.TestCase):
     def test_three_acceptance_panels_have_exact_identity_and_local_bbox(self):
         cases = (
             ("infineon/IPP024N08NF2S.pdf", 8, 12, (311.63, 451.941, 580.88, 755.301)),
-            ("onsemi/FDA032N08.pdf", 3, 4, (281.211, 267.302, 612.0, 478.302)),
-            ("diodes/DMTH83M2SPSWQ-13.pdf", 5, 9, (27.59, 299.27, 367.59, 510.27)),
+            # FDA Figure 4: drawn frame x 355.0..547.1, y 300.7..435.3 (get_drawings);
+            # crop holds its ticks (x>=338.2) and VSD title (y<=475.0). The old
+            # caption-synthetic box (281.211..612.0) took Figure 3's "400" tick
+            # (x 293.2..306.2). Known residual: the rotated "IS, Reverse Drain
+            # Current (A)" title (x 319.9..330.9) is outside x0; the body-diode
+            # axis-title expansion does not recognise that wording (separate slice).
+            ("onsemi/FDA032N08.pdf", 3, 4, (336.173, 292.736, 555.328, 476.985)),
+            # DMTH Figure 9: frame x 103.8..291.15, last tick "1.2" ends x 296.9;
+            # Figure 10's axis labels start x 324.6, so the two-column clamp at
+            # the 306.0 midpoint is the true right edge (old 367.59 crossed it).
+            ("diodes/DMTH83M2SPSWQ-13.pdf", 5, 9, (27.59, 299.27, 306.0, 510.27)),
         )
         for relative, page, diagram, expected_bbox in cases:
             with self.subTest(pdf=relative):
@@ -126,8 +135,8 @@ class BodyDiodeFinderCorpusTests(unittest.TestCase):
                 for actual, expected in zip(panels[0].bbox_pt, expected_bbox):
                     self.assertAlmostEqual(actual, expected, delta=0.15)
         dmth = self._body_panels("diodes/DMTH83M2SPSWQ-13.pdf")[0]
-        self.assertGreaterEqual(dmth.bbox_pt[2], 347.0)
-        self.assertLess(dmth.bbox_pt[2], 370.0)
+        self.assertGreaterEqual(dmth.bbox_pt[2], 296.9)
+        self.assertLessEqual(dmth.bbox_pt[2], 324.6)
 
     def test_dmth_synthetic_bbox_stays_in_left_column(self):
         page = run_text_bbox(self._pdf("diodes/DMTH83M2SPSWQ-13.pdf"))[4]
