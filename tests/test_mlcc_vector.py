@@ -418,3 +418,16 @@ class StoredJmk325bj476(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+class TestPdfLabelsAreSafe(unittest.TestCase):
+    """Legend labels come from the vendor PDF: defuse spreadsheet formulas and
+    terminal control sequences before they reach a CSV cell or stdout."""
+
+    def test_cell(self):
+        for raw, want in [("Z", "Z"), ("ESR", "ESR"),
+                          ('=HYPERLINK("x")', '\'=HYPERLINK("x")'), ("+1", "'+1"),
+                          ("-A", "'-A"), ("@SUM", "'@SUM"), ("Z\x1b[2J", "Z[2J")]:
+            with self.subTest(raw=raw):
+                self.assertEqual(M._cell(raw), want)

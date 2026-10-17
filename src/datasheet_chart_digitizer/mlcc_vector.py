@@ -1246,7 +1246,7 @@ def write_outputs(result, page, cals, out_dir, stem, overlays=True):
                 w.writerow(["curve", f"x_{ch['curves'][0]['x_unit']}", f"y_{ch['curves'][0]['y_unit']}"])
                 for c in ch["curves"]:
                     for x, y in zip(c["x_si"], c["y_si"]):
-                        w.writerow([c["label"], f"{x:.6g}", f"{y:.6g}"])
+                        w.writerow([_cell(c["label"]), f"{x:.6g}", f"{y:.6g}"])
             ch["csv"] = str(path)
             written.append(path)
         if overlays and cal is not None and ch.get("curves"):
@@ -1262,6 +1262,18 @@ def write_outputs(result, page, cals, out_dir, stem, overlays=True):
     j.write_text(json.dumps(result, indent=1, default=float))
     written.append(j)
     return written
+
+
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _cell(text) -> str:
+    """A PDF-derived string made safe for a CSV cell and a terminal line: control
+    characters (incl. ESC sequences) dropped, and a leading = + - @ (a
+    spreadsheet formula) defused with a quote. Legend labels come from the
+    vendor's PDF, so they are untrusted input."""
+    t = _CONTROL.sub("", str(text))
+    return "'" + t if t[:1] in ("=", "+", "-", "@") else t
 
 
 def main(argv=None) -> int:
@@ -1282,8 +1294,8 @@ def main(argv=None) -> int:
             if ch["status"] == "not_a_chart":
                 continue
             print(f"{stem}\t{ch.get('chart_class')}\t{ch['status']}\t"
-                  f"{','.join(c['label'] + ':' + str(c['n_points']) for c in ch.get('curves', []))}\t"
-                  f"{'; '.join(ch['reasons'])[:200]}")
+                  f"{','.join(_cell(c['label']) + ':' + str(c['n_points']) for c in ch.get('curves', []))}\t"
+                  f"{_cell('; '.join(ch['reasons']))[:200]}")
             worst = max(worst, {"ok": 0, "unverified": 1, "not_a_chart": 0}.get(ch["status"], 2))
         for k, v in res["page_checks"].items():
             print(f"{stem}\tpage_check {k}\t{v['status']}\tratio={v.get('ratio'):.4f}")
