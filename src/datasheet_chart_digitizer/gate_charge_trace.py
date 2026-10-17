@@ -297,7 +297,29 @@ def _bridge_source_supported_plateau_gaps(
     height, width = gray.shape
     ordered = sorted(points)
     repaired: list[tuple[int, int]] = [ordered[0]]
-    for left, right in zip(ordered, ordered[1:], strict=False):
+    index = 0
+    while index < len(ordered) - 1:
+        left = ordered[index]
+        # A long plateau stroke is erased with the grid rules (row_frac), so
+        # the trace jumps from the ramp's last column to the next ramp's
+        # first: corner to corner, i.e. bottom edge to top edge of the
+        # stroke. Bridge such a gap on the printed stroke's centreline
+        # (SSFB3910L p3: served plateau tilted 291 -> 282 px over a flat
+        # 285..289 stroke). Grid-crossing specks inside the gap are skipped.
+        band = None
+        for far in _plateau_bridge_ends(ordered, index):
+            centre = _source_plateau_band_centre(left, ordered[far], gray)
+            if centre is not None:
+                band = (far, centre)
+                break
+        if band is not None:
+            far, centre = band
+            repaired.extend((x, centre) for x in range(left[0] + 1, ordered[far][0]))
+            repaired.append(ordered[far])
+            index = far
+            continue
+        right = ordered[index + 1]
+        index += 1
         gap = right[0] - left[0]
         horizontal = _source_horizontal_plateau_bridge(
             left, right, gray
@@ -332,6 +354,117 @@ def _bridge_source_supported_plateau_gaps(
             repaired.extend(zip(xs.tolist(), expected.tolist()))
         repaired.append(right)
     return repaired
+
+
+_PLATEAU_SPECK_COLUMNS = 4
+_PLATEAU_MAX_SPECKS = 2
+
+
+def _plateau_bridge_ends(ordered: list[tuple[int, int]], index: int) -> list[int]:
+    """Right-end candidates for a gap after *index*, farthest first.
+
+    Past up to two specks (clusters of at most four columns, e.g. a grid
+    crossing left in the mask), then the next point itself. Empty when the
+    next point is adjacent (no gap).
+    """
+
+    if index + 1 >= len(ordered) or ordered[index + 1][0] - ordered[index][0] <= 3:
+        return []
+    ends = [index + 1]
+    start = index + 1
+    for _ in range(_PLATEAU_MAX_SPECKS):
+        end = start
+        while end + 1 < len(ordered) and ordered[end + 1][0] - ordered[end][0] <= 3:
+            end += 1
+        if ordered[end][0] - ordered[start][0] >= _PLATEAU_SPECK_COLUMNS or end + 1 >= len(ordered):
+            break
+        start = end + 1
+        ends.append(start)
+    return ends[::-1]
+
+
+def _plateau_band_rows(
+    gray: np.ndarray, x_lo: int, x_hi: int, y_lo: int, y_hi: int
+) -> list[int]:
+    """Rows in [y_lo, y_hi] dark (gray < 170) across >= 97 % of columns x_lo..x_hi-1."""
+
+    height = gray.shape[0]
+    rows = []
+    for y in range(max(0, y_lo), min(height, y_hi + 1)):
+        if float(np.mean(gray[y, x_lo:x_hi] < 170)) >= 0.97:
+            rows.append(y)
+    return rows
+
+
+def _dark_run_extent(dark_row: np.ndarray, x: int) -> tuple[int, int]:
+    start = x
+    while start > 0 and dark_row[start - 1]:
+        start -= 1
+    end = x
+    while end + 1 < len(dark_row) and dark_row[end + 1]:
+        end += 1
+    return start, end
+
+
+def _source_plateau_band_centre(
+    left: tuple[int, int],
+    right: tuple[int, int],
+    gray: np.ndarray,
+) -> int | None:
+    """Centre row of a printed flat stroke joining *left* to *right*, else None.
+
+    Required, all of: a gap of 8..85 % of the plot width; a band of
+    contiguous rows, each source-dark across the whole gap, no thicker than a
+    curve stroke; both trace ends within reach of the band (the ramp's last
+    column ends on the band's edge, not its centre); and the band is not a
+    grid rule: rows whose dark run continues well past BOTH gap ends are
+    rules and are stripped from the band's edges; a band of only rule rows is
+    no stroke. Unevaluable input returns None (no bridge here; the caller's
+    older rules still apply).
+    """
+
+    height, width = gray.shape
+    gap = right[0] - left[0]
+    if gap < 0.08 * width or gap > 0.85 * width or left[0] < 0.12 * width:
+        return None
+    max_thick = max(8, int(round(0.03 * height)))
+    if abs(right[1] - left[1]) > max_thick + 2:
+        return None
+    x_lo, x_hi = left[0] + 1, right[0]
+    rows = _plateau_band_rows(
+        gray,
+        x_lo,
+        x_hi,
+        min(left[1], right[1]) - max_thick,
+        max(left[1], right[1]) + max_thick,
+    )
+    groups: list[list[int]] = []
+    for y in rows:
+        if groups and y == groups[-1][-1] + 1:
+            groups[-1].append(y)
+        else:
+            groups.append([y])
+    slack = max(12, int(round(0.03 * width)))
+    best: tuple[float, int] | None = None
+    for group in groups:
+        def rule_like(y: int) -> bool:
+            start, end = _dark_run_extent(gray[y] < 170, x_lo)
+            return start < left[0] - slack and end > right[0] + slack
+
+        while group and rule_like(group[0]):
+            group = group[1:]
+        while group and rule_like(group[-1]):
+            group = group[:-1]
+        if not group or len(group) > max_thick:
+            continue
+        centre = 0.5 * (group[0] + group[-1])
+        reach = 0.5 * len(group) + max(4, len(group))
+        if abs(left[1] - centre) > reach or abs(right[1] - centre) > reach:
+            continue
+        distance = abs(centre - 0.5 * (left[1] + right[1]))
+        if best is None or distance < best[0]:
+            best = (distance, int(round(centre)))
+    return best[1] if best is not None else None
 
 
 def _source_horizontal_plateau_bridge(
@@ -374,6 +507,20 @@ def _source_horizontal_plateau_bridge(
     if best is None:
         return []
     plateau_y = best[2]
+    # The longest run's row is an edge row as often as not: serve the centre
+    # of the contiguous band of rows dark across the whole gap.
+    max_thick = max(8, int(round(0.03 * height)))
+    band = set(
+        _plateau_band_rows(gray, left[0] + 1, right[0], plateau_y - max_thick, plateau_y + max_thick)
+    )
+    if plateau_y in band:
+        top = bottom = plateau_y
+        while top - 1 in band:
+            top -= 1
+        while bottom + 1 in band:
+            bottom += 1
+        if bottom - top + 1 <= max_thick:
+            plateau_y = int(round(0.5 * (top + bottom)))
     return [
         (x, plateau_y)
         for x in range(left[0] + 1, right[0])

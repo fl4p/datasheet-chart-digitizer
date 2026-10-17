@@ -81,6 +81,7 @@ from .gate_charge_trims import (  # noqa: F401  (re-exported: tests use gate._tr
     _trim_dual_y_terminal_grid_capture,
     _trim_terminal_flat_grid_capture,
 )
+from .gate_axis_label_recovery import page_ocr as page_label_ocr, recover_axis_labels
 from .gate_axis_ocr import (
     carried_x_ticks,
     MAX_PLOT_BOX_ASPECT as _MAX_PLOT_BOX_ASPECT,
@@ -351,6 +352,11 @@ def digitize_gate_charge(
                     result = enforce_curve_provenance(pdf, result)
                     # the Qg mapping that is SERVED, after every retry/replace
                     result = _check_served_qg_axis(doc[panel.page - 1], result, spec_rows, split_rows)
+                    # printed labels the bounded OCR column read missed; the
+                    # Qg axis is then checked again on what is now served
+                    recovered = _recover_missing_axis_labels(pdf, doc[panel.page - 1], result)
+                    if recovered is not result:
+                        result = _check_served_qg_axis(doc[panel.page - 1], recovered, spec_rows, split_rows)
                     if getattr(result, "per_vdd", None):
                         # per-VDD statuses and values from the FINAL ticks/status
                         result = replace(result, per_vdd=_finalize_per_vdd(result))
@@ -1240,7 +1246,7 @@ def _check_served_qg_axis(
     }
     diagnostics = tuple(
         d for d in result.diagnostics
-        if not d.startswith("x_axis_grid_check_") and not d.startswith("qg_table_check_")
+        if not d.startswith(("x_axis_grid_check_", "qg_table_check_", "qgs_qgd_check_"))
     )
     if grid_payload["status"] != "verified":
         diagnostics = (*diagnostics, f"x_axis_grid_check_{grid_payload['status']}")
@@ -1269,6 +1275,71 @@ def _check_served_qg_axis(
         if result.status == "low_confidence":
             changes["status"] = "ok"
     return replace(result, **changes)
+
+
+def _recover_missing_axis_labels(pdf, page: pymupdf.Page, result, *, ocr=None):
+    """Bounded-OCR axes: add printed labels the column read missed (see
+    ``gate_axis_label_recovery``). Only an axis already verified on its rules
+    is touched, and the augmented axis replaces it only if it seats on its
+    rules and verifies again with every previously served value kept.
+    """
+    if (
+        not isinstance(result, GateChargeResult)
+        or result.status == "rejected_non_gate"
+        or "axis_ocr_bounded" not in result.diagnostics
+    ):
+        return result
+    try:
+        gray = _result_crop_luma(page, result)
+    except Exception:  # unevaluable: leave the axes as served
+        return result
+    reader = ocr or page_label_ocr(pdf, result.panel.page)
+    changes: dict[str, object] = {}
+    for orientation in ("y", "x"):
+        grid = (result.y_grid if orientation == "y" else result.x_grid) or {}
+        check = grid.get("grid_check") or {}
+        served = tuple(result.y_ticks_px if orientation == "y" else result.x_ticks_px)
+        if check.get("status") != "verified" or len(served) < 2:
+            continue
+        labels = [(float(t["value"]), float(t["label_px"]) + 0.5) for t in check.get("ticks") or ()]
+        if orientation == "y" and (
+            result.vpl is None or result.vpl_y_px is None
+            or abs(served_value(served, float(result.vpl_y_px)) - float(result.vpl)) > 1e-6
+        ):
+            continue  # Vpl not read through these ticks: do not move them
+        try:
+            recovery = recover_axis_labels(
+                gray, orientation=orientation, served_px=served, label_px=labels,
+                plot_box=result.plot_box_px, crop_box_pt=result.crop_box_pt,
+                scale=result.dpi / 72.0, tol_px=float(check.get("tolerance_px") or 1.5), ocr=reader,
+            )
+        except (OSError, RuntimeError, ValueError):
+            continue  # an OCR failure recovers nothing
+        if recovery is None or not recovery.labels_px:
+            continue
+        augmented = sorted([*labels, *recovery.labels_px], key=lambda t: t[1])
+        seat = seat_gate_y_ticks if orientation == "y" else seat_gate_x_ticks
+        seated = seat(gray, augmented, result.plot_box_px)
+        wanted = {round(v, 9) for v, _ in served} | {round(v, 9) for v, _ in recovery.labels_px}
+        if not (
+            seated.anchored and seated.check.status == "verified"
+            and {round(v, 9) for v, _ in seated.ticks_px} == wanted
+        ):
+            continue
+        payload = seated.payload()
+        payload["anchoring"] = {**(payload["anchoring"] or {}), "recovered_labels": recovery.record}
+        ticks = tuple(sorted(seated.ticks_px, key=lambda t: t[1]))
+        if orientation == "y":
+            changes.update(
+                y_ticks_px=ticks, y_grid=payload, y_tick_count=len(ticks),
+                vpl=served_value(ticks, float(result.vpl_y_px)),
+            )
+        else:
+            changes.update(
+                x_ticks_px=tuple(sorted(seated.ticks_px)), x_grid=payload,
+                x_label_ticks_px=tuple(sorted(augmented)),
+            )
+    return replace(result, **changes) if changes else result
 
 
 def _trim_like_legacy(curve, plot_box):
