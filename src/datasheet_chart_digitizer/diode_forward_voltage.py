@@ -1014,7 +1014,7 @@ def _extract_vector_curve_series(
         gray_paths: list[
             tuple[list[tuple[float, float]], tuple[float, ...], float]
         ] = []
-        for drawing in page.get_drawings():
+        for drawing in _merge_source_contiguous_strokes(page.get_drawings()):
             edges = _vector_curve_edges([drawing], rect, min_stroke_width=0.4)
             components = _chain_vector_components(edges)
             if components:
@@ -1112,6 +1112,83 @@ def _extract_vector_curve_series(
                 )
             )
     return curves
+
+
+def _stroke_endpoints(
+    drawing: dict, *, min_segments: int = 2
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    items = drawing.get("items") or []
+    # One-segment-per-drawing producers (Infineon IPP024N08NF2S) are already
+    # chained by the generic joiner; merging them here changes which component
+    # is kept.  Only multi-segment drawings count as split strokes (the
+    # default); every stroke counts as a competitor (min_segments=1).
+    if drawing.get("type") != "s" or len(items) < min_segments:
+        return None
+    if any(item[0] not in ("l", "c") for item in items):
+        return None
+    start, end = items[0][1], items[-1][-1]
+    return (round(float(start.x), 2), round(float(start.y), 2)), (
+        round(float(end.x), 2),
+        round(float(end.y), 2),
+    )
+
+
+def _merge_source_contiguous_strokes(drawings: list[dict]) -> list[dict]:
+    """Rejoin one stroke the PDF producer split into consecutive drawings.
+
+    Some producers (onsemi FDA032N08 Fig. 4) emit one curve as several
+    drawings where drawing N ends at exactly the point drawing N+1 starts.
+    Edge chaining later trims sub-tolerance segments, so after extraction the
+    pieces no longer touch and two converging curves make the generic join
+    ambiguous.  Merge here only on source evidence: identical (0.01 pt) end ->
+    start point, consecutive in drawing order, the same stroke style, and no
+    other stroke drawing with an endpoint at that point.
+    """
+
+    endpoints = [_stroke_endpoints(drawing) for drawing in drawings]
+    # Competing continuations are counted over ALL strokes, including the
+    # one-segment drawings that are never merged themselves: a single-segment
+    # alternative starting at the junction makes it ambiguous.
+    touching: dict[tuple[float, float], int] = {}
+    for record in (_stroke_endpoints(d, min_segments=1) for d in drawings):
+        if record is None:
+            continue
+        for point in set(record):
+            touching[point] = touching.get(point, 0) + 1
+
+    def style(drawing: dict) -> tuple:
+        return (
+            round(float(drawing.get("width") or 0.0), 3),
+            tuple(drawing.get("color") or ()),
+            str(drawing.get("dashes")),
+            drawing.get("stroke_opacity"),
+        )
+
+    merged: list[dict] = []
+    index = 0
+    while index < len(drawings):
+        current = drawings[index]
+        record = endpoints[index]
+        following = index + 1
+        while (
+            record is not None
+            and following < len(drawings)
+            and (nxt := endpoints[following]) is not None
+            and record[1] == nxt[0]
+            and record[1] != record[0]
+            and touching.get(record[1]) == 2
+            and style(drawings[following]) == style(current)
+        ):
+            current = {
+                **current,
+                "items": [*current["items"], *drawings[following]["items"]],
+                "rect": pymupdf.Rect(current["rect"]) | drawings[following]["rect"],
+            }
+            record = (record[0], nxt[1])
+            following += 1
+        merged.append(current)
+        index = following
+    return merged
 
 
 def _excluded_wide_curve(

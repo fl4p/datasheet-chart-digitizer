@@ -332,7 +332,15 @@ def _normalize_y_tick_candidate_runs(
             vals = np.array([value for value, _y in run], dtype=float)
             ys = np.array([y for _value, y in run], dtype=float)
             diffs = np.diff(vals)
-            if not (np.all(diffs < 0) or np.all(diffs > 0)):
+            # Values fall downward on every y axis.  The one printed exception is
+            # a negative-labelled magnitude axis (p-channel: -20 at the top, -5
+            # below it), so a run whose values RISE downward is accepted only when
+            # it is entirely non-positive. A positive rising run is two foreign
+            # labels stacked in one column: HY1001D's OCR pairs the upper chart's
+            # x-tick "1.2" (read "12", 285.6 pt) with this chart's x-tick "90"
+            # (read "30", 505.3 pt) at x=539 pt, and that 12->30 "axis" outscored
+            # the real 10/0 column on value span, moving the crop 75 pt up.
+            if not (np.all(diffs < 0) or (np.all(diffs > 0) and np.all(vals <= 0))):
                 continue
             value_span = float(abs(vals[0] - vals[-1]))
             if len(run) == 2 and value_span < 4.0:

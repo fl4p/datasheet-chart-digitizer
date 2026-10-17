@@ -988,7 +988,27 @@ def choose_caption_panel_bbox(
                 sibling_direction is not None
                 and sibling_direction != chosen_side
             ):
-                return None
+                # The layout names the side; bind the nearest grid THERE when
+                # one exists (DMN3009LFVQ-13-HXY p4: Figure 8's own chart sits
+                # 30 pt above it, the SOA chart 24 pt below; every sibling
+                # caption is under its chart). Refuse only when that side has
+                # no grid (NCE0160G: Figure 9's own raster plot is undetected).
+                # Direction fixes the layout, not ownership: the recovered grid
+                # must span the caption's centre (its own column). Any overlap
+                # is not enough -- a neighbour sharing 10 pt of a caption that
+                # straddles two columns would win on distance.
+                sided = [
+                    item
+                    for item in candidates
+                    if (item[2][3] <= ty0 if sibling_direction == "above" else item[2][1] >= ty1)
+                    and item[2][0] <= tcx <= item[2][2]
+                ]
+                if not sided:
+                    return None
+                best = min(
+                    ((item[1] + 0.25 * item[0], item[2]) for item in sided),
+                    key=lambda scored: scored[0],
+                )
 
     x0, y0, x1, y1 = best[1]
     pad_x = min(12.0, (x1 - x0) * 0.04)
@@ -1489,6 +1509,37 @@ def process_page_texts(
                     continue
                 if _bbox_looks_like_spec_table(page, bbox): continue
                 if any(panel.page == page.page_num and _bbox_iou(panel.bbox_pt, bbox) > 0.45 for panel in panels):
+                    continue
+                _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox, titles + caption_titles)
+            # Fallback only: ST NK templates caption the body-diode plot ABOVE a
+            # hairline / mirrored-quad frame whose ticks are outlined (wordless),
+            # so no axis text gives a direction and every text route above
+            # refuses.  A numbered body caption that produced no panel may then
+            # own an adjacent same-column frame proven by full-width grid rows.
+            # Captions that already bound a panel are untouched.
+            gridded_frames: list[tuple[float, float, float, float]] | None = None
+            for title in caption_titles:
+                if title.number >= 900 or classify_chart(title.title, "") != "body_diode":
+                    continue
+                if any(panel.page == page.page_num and panel.diagram == title.number for panel in panels):
+                    continue
+                if caption_axis_direction(page, title, "body_diode", _token_norm) is not None:
+                    continue
+                if gridded_frames is None:
+                    gridded_frames = _page_vector_plot_frames(pdf, page.page_num, page, include_gridded=True)
+                bbox = _numbered_breakdown_vector_frame_bbox(page, title, gridded_frames)
+                if bbox is None:
+                    continue
+                bbox = _expand_caption_bbox_to_axis_labels(page, bbox, "body_diode")
+                bbox = _bound_caption_bbox_to_own_column(page, title, bbox)
+                if bbox is None or _bbox_looks_like_spec_table(page, bbox):
+                    continue
+                if any(
+                    panel.page == page.page_num and (
+                        _bbox_iou(panel.bbox_pt, bbox) > 0.45
+                        or _bbox_overlap_fraction_of_smaller(panel.bbox_pt, bbox) >= 0.60
+                    ) for panel in panels
+                ):
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox, titles + caption_titles)
             for axis_idx, axis_label_bbox in enumerate(axis_label_spans, start=1):

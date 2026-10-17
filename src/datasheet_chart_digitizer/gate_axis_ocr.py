@@ -390,6 +390,14 @@ def _raw_linear_y_ticks(
     """Choose the largest linear OCR subset, leaving decimal-loss outliers out."""
 
     points = []
+    # Two-digit integers that may be decimal-loss reads ("45" for 4.5). They are
+    # offered as value/10 ONLY when the same band also holds explicitly printed
+    # decimals, and a line may use them only if two explicit decimals are its
+    # inliers too: the printed decimals fix the scale, the digits identify the
+    # row. Tesseract 5.5.3 (installed 2026-08-23) drops the point on XR100N02F's
+    # 4.5/2.7/1.8 at 900 dpi while still reading 0.9 and 0.0.
+    decimal_loss: list[tuple[float, float]] = []
+    explicit_decimals: set[tuple[float, float]] = set()
     for word in words:
         token = word.text.strip()
         if re.fullmatch(r"[0-9oOuU]+", token):
@@ -397,13 +405,21 @@ def _raw_linear_y_ticks(
             token = token.replace("U", "0").replace("u", "0")
         value = _parse_numeric_label(token)
         y = 0.5 * (word.y0 + word.y1)
-        if (
-            value is not None
-            and -20.0 <= value <= 30.0
-            and plot.y0 - 10.0 <= y <= plot.y1 + 10.0
-        ):
+        if value is None or not plot.y0 - 10.0 <= y <= plot.y1 + 10.0:
+            continue
+        # The decimal-loss candidate is range-checked as the REPAIRED value:
+        # "45" (4.5 printed) is out of range as read but is exactly the case.
+        if re.fullmatch(r"\d\d", token):
+            decimal_loss.append((float(value) / 10.0, float(y)))
+        if -20.0 <= value <= 30.0:
             points.append((float(value), float(y)))
+            if re.fullmatch(r"-?\d\.\d", token):
+                explicit_decimals.add((round(float(value), 6), round(float(y), 3)))
+    explicit = {(round(value, 6), round(y, 3)) for value, y in points}
+    if len(explicit_decimals) >= 2:
+        points.extend(decimal_loss)
     points = list(dict.fromkeys((round(value, 6), round(y, 3)) for value, y in points))
+    repaired = {point for point in points if point not in explicit}
     best: tuple[
         int, float, float, float, list[tuple[float, float]]
     ] | None = None
@@ -421,6 +437,10 @@ def _raw_linear_y_ticks(
                 if abs(value - (slope * y + offset)) <= 0.35
             ]
             if len(inliers) < 2:
+                continue
+            if repaired.intersection(inliers) and len(
+                explicit_decimals.intersection(inliers)
+            ) < 2:
                 continue
             values = np.asarray([value for value, _y in inliers], dtype=float)
             rows = np.asarray([y for _value, y in inliers], dtype=float)
@@ -440,6 +460,58 @@ def _raw_linear_y_ticks(
             if best is None or score > best[:4]:
                 best = (*score, ordered)
     return [] if best is None else best[4]
+
+
+# _fill_ticks_from_other_reads: page-point limits (see there).
+_FILL_MAX_OFFSET_PT = 2.0
+_FILL_OCCUPIED_PT = 3.0
+
+
+def _fill_ticks_from_other_reads(
+    ticks: list[tuple[float, float]],
+    reads: list[list[Word]],
+    plot: pymupdf.Rect,
+) -> list[tuple[float, float]]:
+    """Add labels another read of the SAME column found, where the chosen axis puts them.
+
+    Each OCR read of a label column can miss a different label (XR100N02F
+    under tesseract 5.5.3: the 900 dpi read loses 3.6, the Poppler read loses
+    2.7). A union of reads must not compete on label count -- stray digits
+    within the 0.35 V inlier band then outvote the real column (SP015N15HTQ:
+    a "5" 13 px off its row). So the best single read stays the axis, and a
+    value it lacks is taken from another read only when that read's own
+    linear subset places it within a tenth of a tick step of the axis line.
+    """
+
+    if len(ticks) < 2:
+        return ticks
+    values = np.asarray([value for value, _y in ticks], dtype=float)
+    rows = np.asarray([y for _value, y in ticks], dtype=float)
+    slope, offset = np.polyfit(rows, values, 1)
+    step = float(np.median(np.abs(np.diff(np.sort(values)))))
+    if step <= 0.0:
+        return ticks
+    # Positions are page points. A filled label must sit on the axis line by
+    # position, not only by value: within a tenth of the row step, capped at
+    # _FILL_MAX_OFFSET_PT. Without the cap, two read ticks give a 10 V step and
+    # a 9.5 read on the 10 V row (5 pt off) passes as "on the axis" and is
+    # averaged into the calibration. A row already holding a tick (within
+    # _FILL_OCCUPIED_PT, about half a label height) is never refilled. Both are
+    # absolute so that missing rows between few read ticks are still filled.
+    if abs(float(slope)) <= 1e-12:
+        return ticks
+    row_step = step / abs(float(slope))
+    tolerance_pt = min(0.1 * row_step, _FILL_MAX_OFFSET_PT)
+    filled = list(ticks)
+    for words in reads:
+        for value, y in _raw_linear_y_ticks(words, plot):
+            if any(abs(value - known) < 1e-6 for known, _y in filled):
+                continue
+            if any(abs(y - row) < _FILL_OCCUPIED_PT for _v, row in filled):
+                continue
+            if abs((value - offset) / slope - y) <= tolerance_pt:
+                filled.append((value, y))
+    return sorted(filled, key=lambda item: item[1])
 
 
 def _axis_ticks_from_band(
@@ -742,6 +814,30 @@ def bounded_gate_axis_ocr(
                 pdf, panel.page, right, dpi=BOUNDED_AXIS_OCR_DPI, psm=6
             )
         )
+        # The bands above reach 5 pt across the frame. Where the labels touch
+        # the frame's grid stubs, tesseract reads the column as one blob:
+        # HYG016N04LS1B's 8/6/4/2 come back only as "10" + noise, and all six
+        # labels read once the band stops 1.5 pt short of the frame.
+        left_tight = pymupdf.Rect(left.x0, left.y0, left_edge - 1.5, left.y1)
+        right_tight = pymupdf.Rect(right_edge + 1.5, right.y0, right.x1, right.y1)
+        tight_left_words = (
+            _words(
+                ocr_words_in_rect(
+                    pdf, panel.page, left_tight, dpi=BOUNDED_AXIS_OCR_DPI, psm=6
+                )
+            )
+            if left_tight.width >= 6.0
+            else []
+        )
+        tight_right_words = (
+            _words(
+                ocr_words_in_rect(
+                    pdf, panel.page, right_tight, dpi=BOUNDED_AXIS_OCR_DPI, psm=6
+                )
+            )
+            if right_tight.width >= 6.0
+            else []
+        )
         poppler_left = (
             _words(
                 ocr_words_in_poppler_page_rect(
@@ -763,6 +859,42 @@ def bounded_gate_axis_ocr(
     except (OSError, RuntimeError, subprocess.SubprocessError):
         return None
 
+    side_reads = [
+        ("left", native_left),
+        ("right", native_right),
+        ("left", left_words),
+        ("right", right_words),
+        ("left", poppler_left),
+        ("right", poppler_right),
+        (
+            "left",
+            [
+                word
+                for word in contextual_words
+                if left.contains(
+                    (
+                        0.5 * (word.x0 + word.x1),
+                        0.5 * (word.y0 + word.y1),
+                    )
+                )
+            ],
+        ),
+        (
+            "right",
+            [
+                word
+                for word in contextual_words
+                if right.contains(
+                    (
+                        0.5 * (word.x0 + word.x1),
+                        0.5 * (word.y0 + word.y1),
+                    )
+                )
+            ],
+        ),
+        ("left", tight_left_words),
+        ("right", tight_right_words),
+    ]
     axis_candidates = [
         (
             side,
@@ -770,40 +902,7 @@ def bounded_gate_axis_ocr(
                 words, crop, scale, result.plot_box_px, axis_search_plot
             ),
         )
-        for side, words in (
-            ("left", native_left),
-            ("right", native_right),
-            ("left", left_words),
-            ("right", right_words),
-            ("left", poppler_left),
-            ("right", poppler_right),
-            (
-                "left",
-                [
-                    word
-                    for word in contextual_words
-                    if left.contains(
-                        (
-                            0.5 * (word.x0 + word.x1),
-                            0.5 * (word.y0 + word.y1),
-                        )
-                    )
-                ],
-            ),
-            (
-                "right",
-                [
-                    word
-                    for word in contextual_words
-                    if right.contains(
-                        (
-                            0.5 * (word.x0 + word.x1),
-                            0.5 * (word.y0 + word.y1),
-                        )
-                    )
-                ],
-            ),
-        )
+        for side, words in side_reads
     ]
     side, ticks = max(
         axis_candidates,
@@ -811,6 +910,9 @@ def bounded_gate_axis_ocr(
     )
     if not _linear_axis_is_evidenced(ticks):
         return None
+    ticks = _fill_ticks_from_other_reads(
+        ticks, [words for read_side, words in side_reads if read_side == side], axis_search_plot
+    )
 
     if gate_charge_unit(" ".join(word.text for word in bottom_words)) is None:
         unit_band = pymupdf.Rect(
