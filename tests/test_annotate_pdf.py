@@ -74,7 +74,7 @@ class AnnotatePdfTests(unittest.TestCase):
                 include_review_required=True,
             )
 
-        self.assertEqual(manifest["detected_panels"], 5)
+        self.assertEqual(manifest["detected_panels"], 6)  # + SOA, detected only
         self.assertEqual(manifest["errors"], [])
         self.assertRegex(manifest["source_pdf_sha256"], r"^[0-9a-f]{64}$")
         self.assertRegex(manifest["extractor_git_commit"], r"^[0-9a-f]{40}$")
@@ -122,7 +122,7 @@ class AnnotatePdfTests(unittest.TestCase):
         gate_rows = [row for row in manifest["overlays"] if row["kind"] == "gate_charge"]
         self.assertTrue(all(row["vpl_v"] is not None for row in gate_rows))
         self.assertTrue(all(row["vpl_y_px"] is not None for row in gate_rows))
-        self.assertEqual(manifest["detected_panels"], 6)
+        self.assertEqual(manifest["detected_panels"], 8)  # + Vth and SOA, detected only
         self.assertEqual(len(manifest["overlays"]), 6)
         self.assertEqual(manifest["errors"], [])
         self.assertTrue(all(row["embedded"] for row in manifest["overlays"]))
@@ -222,7 +222,7 @@ class AnnotatePdfTests(unittest.TestCase):
 
             self.assertTrue(output.is_file())
             self.assertTrue((root / "artifacts" / "annotated_pdf_manifest.json").is_file())
-            self.assertEqual(manifest["detected_panels"], 7)
+            self.assertEqual(manifest["detected_panels"], 9)  # + Vth and SOA, detected only
             gate = [
                 row for row in manifest["overlays"] if row["kind"] == "gate_charge"
             ]

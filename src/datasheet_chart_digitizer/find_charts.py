@@ -413,6 +413,7 @@ def find_caption_titles(page: PageText) -> list[DiagramTitle]:
                 "body_diode",
                 "reverse_leakage",
                 "transfer", "capacitances", "rds_on",
+                "threshold_voltage", "safe_operating_area",
             }:
                 continue
             title = title_for_classification
@@ -1378,6 +1379,12 @@ def crop_panel(
         crop[2] * page.width_pt / width_px,
         crop[3] * page.height_pt / height_px,
     )
+# Classes whose caption binds to a whole-figure embedded image directly above it
+# (Toshiba): the image is the label-complete panel, the grid bbox clips the ticks.
+_WHOLE_FIGURE_RASTER_KINDS = frozenset({
+    "capacitances", "breakdown_voltage", "threshold_voltage", "transfer", "safe_operating_area",
+})
+_LATE_BOUND_KINDS = frozenset({"threshold_voltage", "safe_operating_area"})
 def process_pdf(pdf: Path, out_dir: Path, dpi: int) -> list[ChartPanel]:
     return process_page_texts(pdf, out_dir, dpi, run_text_bbox(pdf))
 def process_page_texts(
@@ -1443,7 +1450,9 @@ def process_page_texts(
                     continue
                 _append_panel(panels, pdf, page, page_png, out_dir, lines, title, bbox, titles + caption_titles)
             page_image_rects: list[tuple[float, float, float, float]] | None = None
-            for title in caption_titles:
+            # Classes with no digitizer contract yet bind last: they never take a
+            # bbox an established class would have owned.
+            for title in sorted(caption_titles, key=lambda t: classify_chart(t.title, "") in _LATE_BOUND_KINDS):
                 if is_spec_table_header_title(title.title) or is_marketing_feature_title(title.title): continue
                 kind = classify_chart(title.title, "")
                 direction = caption_axis_direction(page, title, kind, _token_norm)
@@ -1477,12 +1486,12 @@ def process_page_texts(
                     bbox = axis_label_bbox
                 if bbox is None: continue
                 bbox = expand_numbered_dual_y_gate_bbox(page, title, bbox)
-                if kind == "capacitances" and not (
+                if kind in _WHOLE_FIGURE_RASTER_KINDS and not (
                     title.owner_frame is not None
                     and page.text_source == "tesseract_fallback"
                 ):
-                    # Scoped to capacitance captions so gate-charge crops (and
-                    # the Vpl parity corpus built on them) stay byte-identical.
+                    # Not gate charge, so its crops (and the Vpl parity corpus
+                    # built on them) stay byte-identical.
                     # Raster-recovered captions (OCR page text + owned closed
                     # frame) keep their frame: page-wide rasters (Siliup) span
                     # several panels, so the nearest image rect is NOT the panel.
