@@ -1210,6 +1210,15 @@ def process_chart(
     fitz = _load_fitz()
     if fitz is None:
         raise RuntimeError("PyMuPDF is not available")
+    from .transfer_raster import is_raster_figure, process_raster_transfer
+
+    try:
+        _validate_transfer_panel_semantics(chart)
+        own_semantics = True
+    except RuntimeError:
+        own_semantics = False  # the established path below owns the refusal
+    if own_semantics and is_raster_figure(chart, crop_path):
+        return process_raster_transfer(chart, crop_path, out_dir, rel_stem, anchor)
     image = cv2.imread(str(crop_path), cv2.IMREAD_COLOR)
     if image is None:
         raise RuntimeError(f"could not read crop {crop_path}")

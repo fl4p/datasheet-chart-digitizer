@@ -48,8 +48,10 @@ def compact_formula_chart_kind(title: str) -> str | None:
         return "rds_on"
     if re.fullmatch(r"i(?:dr|s)v(?:ds|sd)", compact):
         return "body_diode"
-    if re.fullmatch(r"(?:normalized)?vbrdsst(?:a|j|c)", compact):
+    if re.fullmatch(r"(?:normalized)?vbrdsst(?:a|j|c|ch)", compact):
         return "breakdown_voltage"
+    if re.fullmatch(r"(?:normalized)?v(?:th|gsth)t(?:a|j|c|ch)", compact):
+        return "threshold_voltage"
     return None
 
 
@@ -275,6 +277,8 @@ def classify_chart(title: str, text: str) -> str:
         )
     ):
         return "breakdown_voltage"
+    if "threshold voltage" in haystack and "temperature" in haystack:
+        return "threshold_voltage"
     if "transfer characteristics" in haystack:
         return "transfer"
     if "output characteristics" in haystack:

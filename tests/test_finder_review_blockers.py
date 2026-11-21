@@ -330,7 +330,8 @@ class FinderProductionPathGuardTests(unittest.TestCase):
             panels = find_charts.process_page_texts(pdf, Path(tmp), 180, pages)
         self.assertEqual(
             [(panel.page, panel.diagram) for panel in panels],
-            [(4, 951), (6, 5), (6, 6), (7, 8), (7, 11), (7, 12)],
+            # (6, 2): the safe-operating-area panel, admitted since the SOA kind exists
+            [(4, 951), (6, 5), (6, 6), (6, 2), (7, 8), (7, 11), (7, 12)],
         )
 
     def test_toshiba_compact_formula_titles_route_only_supported_axes(self) -> None:
@@ -347,7 +348,8 @@ class FinderProductionPathGuardTests(unittest.TestCase):
 
         self.assertEqual(find_charts.rdson_formula_direction("R DS(ON) - I D"), "current")
         self.assertEqual(find_charts.rdson_formula_direction("R DS(ON) - T a"), "temperature")
-        for unsupported in ("I D - V DS", "V DS - V GS", "V th - T a", "R DS(ON) - V GS"):
+        self.assertEqual(find_charts.classify_chart("V th - T a", ""), "threshold_voltage")
+        for unsupported in ("I D - V DS", "V DS - V GS", "R DS(ON) - V GS"):
             with self.subTest(unsupported=unsupported):
                 self.assertEqual(find_charts.classify_chart(unsupported, ""), "chart" if not unsupported.startswith("R DS") else "rds_on")
                 self.assertIsNone(find_charts.rdson_formula_direction(unsupported))
@@ -363,13 +365,18 @@ class FinderProductionPathGuardTests(unittest.TestCase):
         self.assertEqual(
             [(panel.diagram, panel.kind) for panel in panels],
             [(87, "transfer"), (88, "rds_on"), (89, "rds_on"),
-             (810, "body_diode"), (811, "breakdown_voltage")],
+             (810, "body_diode"), (811, "breakdown_voltage"), (812, "threshold_voltage")],
         )
         by_diagram = {panel.diagram: panel for panel in panels}
+        # 87 is a whole-figure raster panel bound to its image rect (labels included),
+        # which ends 0.4 pt right of the page centre; columns must still not overlap.
         for left, right in ((87, 88), (89, 810)):
-            self.assertLess(by_diagram[left].bbox_pt[2], 306.0)
+            self.assertLess(by_diagram[left].bbox_pt[2], 307.0)
             self.assertGreater(by_diagram[right].bbox_pt[0], 306.0)
-            self.assertAlmostEqual(by_diagram[left].bbox_pt[1], by_diagram[right].bbox_pt[1], delta=1.0)
+            self.assertLess(by_diagram[left].bbox_pt[2], by_diagram[right].bbox_pt[0])
+        self.assertAlmostEqual(by_diagram[89].bbox_pt[1], by_diagram[810].bbox_pt[1], delta=1.0)
+        self.assertLess(by_diagram[87].bbox_pt[1], by_diagram[88].bbox_pt[1])
+        self.assertLess(by_diagram[88].bbox_pt[1], by_diagram[87].bbox_pt[3])
         self.assertLess(by_diagram[88].bbox_pt[3], by_diagram[89].bbox_pt[1])
         self.assertLess(by_diagram[810].bbox_pt[3], by_diagram[811].bbox_pt[1])
 

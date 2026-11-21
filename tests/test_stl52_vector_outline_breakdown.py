@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from datasheet_chart_digitizer import breakdown_voltage as bv
+from datasheet_chart_digitizer import linear_tick_axis, raster_tick_ocr
 from datasheet_chart_digitizer import find_charts
 
 
@@ -109,7 +110,9 @@ class NativeVectorTextControl(unittest.TestCase):
             INFINEON / "BSZ018N04LS6.pdf", "breakdown_voltage"
         )
         with patch.object(
-            bv, "ocr_words_in_rect", side_effect=AssertionError("unexpected OCR")
+            linear_tick_axis, "ocr_words_in_rect", side_effect=AssertionError("unexpected OCR")
+        ), patch.object(
+            raster_tick_ocr, "_ocr_label", side_effect=AssertionError("unexpected OCR")
         ):
             result = bv.process_chart(
                 chart, crop, out / "digitized", Path(chart["crop_png"]).with_suffix("")
