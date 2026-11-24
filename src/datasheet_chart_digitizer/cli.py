@@ -36,7 +36,7 @@ _COMMANDS = {
     "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
     "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
     "digitize-breakdown-voltage": "digitize V(BR)DSS vs Tj charts (Infineon Diagram 15 style)",
-    "digitize-threshold-voltage": "digitize Vth vs temperature charts (unvalidated: overlays need review)",
+    "digitize-threshold-voltage": "digitize Vth vs temperature charts (validated on Toshiba raster; overlays need review)",
     "digitize-reverse-leakage": "digitize diode Ir(Vr) leakage families at several Tj",
     "digitize-rds-vgs": "digitize MOSFET RDS(on) vs VGS, checked against the RDS(on) table",
     "digitize-transfer": "digitize Id(Vgs,Tj) saturation transfer curves and fit temp-co",

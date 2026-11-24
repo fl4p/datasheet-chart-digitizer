@@ -4,8 +4,11 @@ One curve on linear/linear axes, the same panel shape as breakdown voltage, so
 the calibration and trace come from ``breakdown_voltage.calibrated_temperature_trace``
 (vector panels, and whole-figure raster panels via ``raster_figure``).
 
-UNVALIDATED CLASS: every served panel is ``overlay-review-required`` until Fab
-has approved sample overlays.  Nothing is ever ``ok``.
+Validation: Fab approved the overlays of the Toshiba raster packet on 2026-11-21
+("all overlays pass", merge 32aa388).  The packet's part list is not recorded; the
+tests cover TPH1R306PL, TK100E10N1, TPCC8105 and XPW4R10ANB.  Other vendors and
+vector layouts are unvalidated.  Every served panel stays ``overlay-review-required``
+(per-panel review, as for transfer curves); nothing is ever ``ok``.
 
 Per panel:
   * the calibrated (T, Vth) curve as printed, with the temperature kind the
@@ -150,7 +153,8 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path) -
         spec = spec_vth_window(doc)
     check = _table_check(v25, spec)
 
-    warnings = ["HUMAN REVIEW REQUIRED: unvalidated chart class; verify axes and the trace on the overlay"]
+    warnings = [("HUMAN REVIEW REQUIRED: class approved on Toshiba raster figures only; "
+                "verify axes and the trace on the overlay")]
     if slope * np.sign(volts[0]) >= 0:
         warnings.append("|Vth| rises with temperature: physically unexpected; check the axis direction")
     if check["verdict"] == "inconsistent":

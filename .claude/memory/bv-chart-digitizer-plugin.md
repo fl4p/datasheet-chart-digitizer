@@ -1,6 +1,6 @@
 ---
 name: bv-chart-digitizer-plugin
-description: "datasheet-chart-digitizer breakdown_voltage plugin (V(BR)DSS vs Tj, Infineon Diagram 15) — unblocks dcdc-tools#19 item 1 avalanche BV(Tj); samples verified against manual reads, min-anchor auto-checked"
+description: "datasheet-chart-digitizer breakdown_voltage plugin (V(BR)DSS vs Tj, Infineon Diagram 15) — unblocks dcdc-tools#19 item 1 avalanche BV(Tj); samples verified against manual reads, min-anchor auto-checked; Fab overlay-verified 2026-07-14 (69ed408), Toshiba raster 2026-11-21 (32aa388)"
 metadata: 
   node_type: memory
   type: project
@@ -52,8 +52,13 @@ space). The C(V) pipeline (capacitance_axis.py:58) still uses the no-margin
 transform — values cancel the same way but its overlays likely carry the
 same few-px edge offset; PROPOSED to Fab, deliberately not changed
 (human-verified corpus).
-Human overlay verification by Fab: PENDING as of 2026-07-14 — do NOT batch
-or consume downstream before that. Downstream: [[dcdc-loss-derived-channel]]
+Status history: an earlier 2026-07-14 draft of this note said "human overlay
+verification by Fab: PENDING, do not batch or consume downstream". Superseded the
+same day: Fab verified overlays + values on both layouts, recorded in the commit
+body of 69ed408 ("Human-verified samples (Fab, 2026-07-14, overlays + values, both
+layouts)"). 2026-11-21: Toshiba raster BV figures approved with merge 32aa388 ("Fab:
+all overlays pass"); the raster path still serves `unverified` per panel. Scope:
+Infineon + Toshiba layouts only ([[validated-chart-classes]]). Downstream: [[dcdc-loss-derived-channel]]
 item 1 (deck avalanche BV(Tj), currently fixed `BV={vds_max+5}` in the lm/tt
 branches of loss/lib/models.py); transfer-characteristic plugin is the next
 digitizer target (arbiter for IPP022's p, item 3 temp-co).

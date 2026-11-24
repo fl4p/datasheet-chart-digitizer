@@ -1,12 +1,19 @@
 ---
 name: rds-vgs-chart-class
-description: dsdig digitize-rds-vgs (RDS(on) vs VGS) on branch feat/rds-vgs, unmerged; batch-15 from the seeded solar-charger order awaits independent Codex review and Fab's overlay pass
+description: dsdig digitize-rds-vgs (RDS(on) vs VGS), merged to main 2026-09-30..10-04 (337f358, 05057b7, 490d384, 993ec34) after Fab's overlay rounds; history of the feat/rds-vgs review rounds, goldens and mutation harness
 metadata:
   type: project
 ---
 
+**Merged (updated 2026-11-24).** `feat/rds-vgs` landed on main in four merges:
+`337f358` (2026-09-30, class + goldens), `05057b7` (2026-09-30, batch_all fixes, 41
+goldens), `490d384` (2026-10-03, Astra F01-F12, v5 re-freeze, 42 goldens), `993ec34`
+(2026-10-04, TI page-1 duplicate goldens retired, Fab: "all green"); follow-up
+`650ddb8` (2026-10-13, packet rds-vgs-004 3/3 green). Approval scope:
+[[validated-chart-classes]]. The rest of this note is the pre-merge history.
+
 Built 2026-09-28 in worktree `~/dev/ee/dsdig-rds-vgs`, branch `feat/rds-vgs`
-(unmerged, unpushed). Modules `rdson_gate_voltage*.py` + `rdson_spec_table.py`,
+(unmerged and unpushed at the time). Modules `rdson_gate_voltage*.py` + `rdson_spec_table.py`,
 CLI `dsdig digitize-rds-vgs charts.json|--pdf ... --out DIR`, tests
 `tests/test_rdson_gate_voltage.py` (real PDFs in `~/dev/ee/solar-charger-eval/ds`).
 Not wired into `annotate` on purpose (unvalidated class; annotate output is served).
@@ -71,10 +78,11 @@ band edge; columns with rule columns bridged only on ink); points only added; en
 served or named. Re-blessing/freezing goldens on a coordinator's say-so was blocked by
 the permission check: only Fab's own words authorize it -- REBLESSED/PENDING untouched.
 
-**Why:** a later session will find the branch and the batch and must not treat
-`ok` as human-verified or batch the class further.
-**How to apply:** no further batch use before the Codex review and Fab's overlay
-verdicts. Known weak spots: raster column tracking (thin steep near-threshold
+**Why:** `ok` from this class means the automated gates passed, not that a human
+checked that chart; the approval covers the golden set, visually.
+**How to apply:** batch use is limited to the scope in [[validated-chart-classes]];
+change goldens only through REBLESSED.json on Fab's own words. (Until the merges the
+rule was: no further batch use before the Codex review and Fab's overlay verdicts.) Known weak spots: raster column tracking (thin steep near-threshold
 curves, merged curves, leader remnants), raster label OCR/binding. Tesseract must
 run with OMP_THREAD_LIMIT=1 (set by the CLI) -- see
 `~/dev/kb/tooling/tesseract-lstm-readings-vary-between-runs-unless-omp-thread-limit-is-1.md`.

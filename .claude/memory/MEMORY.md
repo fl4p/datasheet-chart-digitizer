@@ -9,7 +9,7 @@
 - [dsdig-sweep-green-axis-integrity-retro](dsdig-sweep-green-axis-integrity-retro.md) — sweep-GREEN pool (227) had axis/box/tick defects; checklist gained §0-diagnostic-override + §3 axis-integrity gates
 - [dsdig-collateral-acceptance-discipline](dsdig-collateral-acceptance-discipline.md) — accepting an extractor change needs FULL-corpus re-extract via authoritative tool/selection + box-ownership on every box delta
 - [lineformer-local-clone](lineformer-local-clone.md) — LineFormer clone at /Users/fab/dev/pv/LineFormer for crossing chart-line segmentation
-- [bv-chart-digitizer-plugin](bv-chart-digitizer-plugin.md) — dsdig breakdown_voltage plugin (V(BR)DSS vs Tj); samples pending Fab's overlay verification
+- [bv-chart-digitizer-plugin](bv-chart-digitizer-plugin.md) — dsdig breakdown_voltage plugin (V(BR)DSS vs Tj); Fab overlay-verified 2026-07-14 (69ed408), Toshiba raster 2026-11-21
 - [rr-chart-digitizer-plugin](rr-chart-digitizer-plugin.md) — dsdig RR plugin (AO Qrr charts = N_TAU source); AOT414 human-verified, n_tau ≈0.3-0.9
 - [cv-anchor-assignment](cv-anchor-assignment.md) — dsdig #2 (8e978f6): Ciss/Coss/Crss trace assignment via anchor log-residuals + shape priors, conservative gates
 - [cv-crop-transform](cv-crop-transform.md) — dsdig #7 (d4773ce): persisted crop_box_pt, shared CropTransform for C(V)/BV
@@ -67,5 +67,5 @@
 - [C(V) full-span grid capture hole](cv-full-span-grid-capture-hole.md) — approach window measured inside the capture; trace born on a rule scored perfect; off-rule approach + abandoned-stroke fallback
 - [cv-rank-is-not-identity-lane-assignment](cv-rank-is-not-identity-lane-assignment.md) — the bottom frame rail was served as Crss on every gray-grid panel; rank-in-column is not curve identity
 - [cv-coer-energy-and-anchor-only-tiers](cv-coer-energy-and-anchor-only-tiers.md) — pass_coer_energy / coss_anchor_only tiers for the 26/30 parts with no Qoss; coer_vint_v is unpopulated in fetlib
-- [rds-vgs-chart-class](rds-vgs-chart-class.md) — dsdig digitize-rds-vgs on unmerged feat/rds-vgs; batch-15 awaits Codex review + Fab overlay pass; no further batching
+- [rds-vgs-chart-class](rds-vgs-chart-class.md) — dsdig digitize-rds-vgs, merged 337f358..993ec34 (2026-09-30..10-04) + 650ddb8; review-round history, goldens, mutation harness
 - [validated-chart-classes](validated-chart-classes.md) — which dsdig classes have a recorded Fab overlay approval (sources, date, commit, scope) and which have none
