@@ -12,6 +12,7 @@ This plugin extracts the three dominant dark trace components from each
 from __future__ import annotations
 
 import argparse
+import hashlib
 import csv
 import json
 from pathlib import Path
@@ -690,6 +691,10 @@ def process_chart(
         "table_check": table_check,
         "identity_diagnostics": identity_diagnostics,
         "output_charge_reference": output_charge_reference,
+        # content identity of the source PDF, so evidence digitized later from the
+        # same sheet (e.g. a Qoss(VDS) diagram) can be bound to THIS row
+        "source_pdf": str(chart.get("pdf") or ""),
+        "source_pdf_sha256": _file_sha256(chart.get("pdf")),
         "qoss_metrics": qoss_metrics,
         "qoss_diagnostic_metrics": qoss_diagnostic_metrics,
         "qoss_metrics_physical_output_available": qoss_metrics_available,
@@ -726,6 +731,15 @@ def process_chart(
             for trace in traces
         ],
     }
+
+
+def _file_sha256(path: object) -> str | None:
+    if not path:
+        return None
+    p = Path(str(path))
+    if not p.is_file():
+        return None
+    return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
 def parse_args() -> argparse.Namespace:

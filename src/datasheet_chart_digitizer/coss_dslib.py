@@ -41,7 +41,9 @@ from pathlib import Path
 import numpy as np
 
 from .output_charge import ANCHOR_TOL as OUTPUT_CHARGE_ANCHOR_TOL
-from .output_charge import file_sha256, producer_sha256
+from .output_charge import DERIV_REL_TOL_EDGE as OUTPUT_CHARGE_EDGE_TOL
+from .output_charge import EFF_INTEGRAL_TOL as OUTPUT_CHARGE_EFF_TOL
+from .output_charge import integrate_knots, producer_sha256
 from .coss_export import (
     build_adaptive_coss_model,
     evaluate_coss_knots,
@@ -142,67 +144,74 @@ def _finite_positive(x: object) -> float | None:
     return f if math.isfinite(f) and f > 0 else None
 
 
-def _row_pdf(row: dict, base_dir: Path) -> Path | None:
-    """The PDF a C(V) row was digitized from: its own `pdf`, else the charts.json entry
-    (next to the manifest) whose crop is this row's crop."""
-    if row.get("pdf"):
-        return Path(str(row["pdf"]))
-    crop = row.get("crop")
-    index = base_dir / "charts.json"
-    if not crop or not index.is_file():
-        return None
-    try:
-        charts = json.loads(index.read_text())
-    except (OSError, ValueError):
-        return None
-    want = Path(str(crop)).resolve()
-    hits = [c for c in charts if isinstance(c, dict) and c.get("crop_png")
-            and (base_dir / str(c["crop_png"])).resolve() == want]
-    return Path(str(hits[0]["pdf"])) if len(hits) == 1 and hits[0].get("pdf") else None
-
-
-def _matching_output_charge(row: dict, panels: list[dict], base_dir: Path) -> dict | None:
+def _matching_output_charge(row: dict, panels: list[dict]) -> dict | None:
     """The Qoss(VDS) diagram digitized from the same PDF CONTENT as this C(V) row.
 
-    Same part, and the diagram's recorded PDF sha256 equals the row's PDF as it is on
-    disk now.  A row whose PDF cannot be resolved matches nothing; more than one
-    matching panel is ambiguous and matches nothing."""
-    pdf = _row_pdf(row, base_dir)
-    sha = file_sha256(pdf)
-    if sha is None:
+    Both sides record the sha256 of the PDF they were digitized from (the C(V) row
+    since this change; older manifests carry none and match nothing).  Same part and
+    same digest; more than one matching panel is ambiguous and matches nothing."""
+    if not panels:
+        return None
+    sha = row.get("source_pdf_sha256")
+    if not isinstance(sha, str) or len(sha) != 64:
         return None
     found = [p for p in panels if isinstance(p, dict) and p.get("part") == row.get("part")
              and (p.get("provenance") or {}).get("pdf_sha256") == sha]
     return found[0] if len(found) == 1 else None
 
 
-def _diagram_problems(diagram: dict) -> list[str]:
-    """Re-check a stored diagram verdict instead of trusting its `status`."""
+def _served_curve_problems(curve: object, ref: dict) -> list[str]:
+    """Validate the exact Coss_eff knots that will be served, against THIS row's
+    table Qoss: at least 3 finite knots, strictly increasing from 0 V, positive
+    capacitance, covering the table Vds, and integrating (linearly, from 0 V, as a
+    consumer does) to the table Qoss within the diagram anchor tolerance."""
+    try:
+        kv = np.asarray([float(k[0]) for k in curve], float)  # type: ignore[union-attr]
+        kc = np.asarray([float(k[1]) for k in curve], float)  # type: ignore[union-attr]
+    except (TypeError, ValueError, IndexError):
+        return ["coss_eff_curve_invalid:malformed"]
+    if (len(kv) < 3 or not np.all(np.isfinite(kv)) or not np.all(np.isfinite(kc))
+            or kv[0] != 0.0 or np.any(np.diff(kv) <= 0) or np.any(kc <= 0)):
+        return ["coss_eff_curve_invalid:need >=3 finite knots, increasing from 0 V, C > 0"]
+    ref_q, ref_v = _finite_positive(ref.get("qoss_pc")), _finite_positive(ref.get("vint_v"))
+    if ref_q is None or ref_v is None:
+        return ["coss_eff_table_reference_unavailable"]
+    if ref_v > kv[-1]:
+        return [f"coss_eff_curve_does_not_reach_table_vds:{ref_v:g} V"]
+    q = float(integrate_knots(list(zip(kv, kc)), np.array([ref_v]))[0])
+    rel = q / ref_q - 1.0
+    if not abs(rel) <= OUTPUT_CHARGE_ANCHOR_TOL:
+        return [f"coss_eff_integral_vs_table:{rel:+.1%} at {ref_v:g} V "
+                f"(tol {OUTPUT_CHARGE_ANCHOR_TOL:.0%})"]
+    return []
+
+
+def _diagram_problems(diagram: dict, row: dict) -> list[str]:
+    """Re-check a stored diagram verdict instead of trusting its `status`: the code
+    that produced it, its stored gates, and the served curve itself."""
     problems = []
     prov = diagram.get("provenance") or {}
     if prov.get("producer_sha256") != producer_sha256():
         problems.append("output_charge_stale:produced by different digitizer code")
-    table_csv = prov.get("table_csv")
-    if not table_csv or file_sha256(Path(str(table_csv))) != prov.get("table_csv_sha256"):
-        problems.append("output_charge_stale:table csv missing or changed since digitization")
-    a = diagram.get("anchor") or {}
-    table, got, eff = (_finite_positive(a.get(k)) for k in
-                       ("table_pc", "diagram_pc", "coss_eff_integral_pc"))
-    if table is None or got is None or eff is None or _finite_positive(a.get("vds_v")) is None:
-        problems.append("output_charge_anchor_unevaluable")
-    else:
-        for name, val in (("diagram", got), ("coss_eff", eff)):
-            rel = val / table - 1.0
-            if not abs(rel) <= OUTPUT_CHARGE_ANCHOR_TOL:
-                problems.append(f"output_charge_anchor_mismatch:{name} {rel:+.1%}")
-    curve = diagram.get("coss_eff_curve") or []
-    if (not curve or float(curve[0][0]) != 0.0
-            or any(_finite_positive(c) is None for _, c in curve)):
-        problems.append("coss_eff_curve_invalid")
+    if diagram.get("method") != "vector":
+        problems.append(f"output_charge_method:{diagram.get('method')}")
+    grid = (diagram.get("calibration") or {}).get("grid_check")
+    axes = list(grid.values()) if isinstance(grid, dict) else []
+    if len(axes) < 2 or not all(isinstance(a, dict) and a.get("status") == "verified" for a in axes):
+        problems.append("output_charge_grid_check_not_verified")
+    err = diagram.get("coss_eff_integral_max_error")
+    if not (isinstance(err, (int, float)) and math.isfinite(err) and err <= OUTPUT_CHARGE_EFF_TOL):
+        problems.append(f"output_charge_integral_error:{err}")
+    unc = diagram.get("coss_eff_rel_uncertainty")
+    if (not isinstance(unc, list) or not unc
+            or not all(isinstance(u, (int, float)) and u <= OUTPUT_CHARGE_EDGE_TOL for u in unc)):
+        problems.append("output_charge_uncertainty_missing_or_above_tolerance")
+    problems.extend(_served_curve_problems(diagram.get("coss_eff_curve"),
+                                           row.get("output_charge_reference") or {}))
     return problems
 
 
-def _apply_coss_eff(res: DslibCossResult, diagram: dict | None) -> list[str]:
+def _apply_coss_eff(res: DslibCossResult, diagram: dict | None, row: dict) -> list[str]:
     """Fill the Coss_eff verdict; returns the problems that bar the diagram as evidence."""
     if diagram is None:
         return ["no_output_charge_diagram"]
@@ -217,7 +226,7 @@ def _apply_coss_eff(res: DslibCossResult, diagram: dict | None) -> list[str]:
         res.coss_eff_status = "unverified" if status == "unverified" else "rejected"
         res.coss_eff_reasons = list(diagram.get("reasons") or [f"output_charge_status:{status}"])
         return res.coss_eff_reasons
-    problems = _diagram_problems(diagram)
+    problems = _diagram_problems(diagram, row)
     if problems:
         res.coss_eff_status = "rejected"
         res.coss_eff_reasons = problems
@@ -238,6 +247,9 @@ def _source_contradiction(row: dict, diagram: dict | None, diagram_ok: bool) -> 
     if (ref_q is None or ref_v is None
             or _finite_positive(anchor.get("table_pc")) != ref_q
             or _finite_positive(anchor.get("vds_v")) != ref_v):
+        return None
+    diagram_pc = _finite_positive(anchor.get("diagram_pc"))
+    if diagram_pc is None or not abs(diagram_pc / ref_q - 1.0) <= OUTPUT_CHARGE_ANCHOR_TOL:
         return None
     chart_pc = _finite_positive(
         (row.get("qoss_metrics") or row.get("qoss_diagnostic_metrics") or {}).get("Qoss_pc"))
@@ -276,8 +288,12 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     res.crss_reasons.extend(trace_reasons["Crss"])
     res.ciss_reasons.extend(trace_reasons["Ciss"])
 
-    diagram = _matching_output_charge(row, output_charge or [], base_dir)
-    diagram_ok = not _apply_coss_eff(res, diagram)
+    diagram = _matching_output_charge(row, output_charge or [])
+    diagram_ok = not _apply_coss_eff(res, diagram, row)
+    if diagram is None and any(isinstance(p, dict) and p.get("part") == part
+                               for p in output_charge or []):
+        # a diagram of this part exists but is not provably from this row's PDF
+        res.coss_eff_reasons = ["output_charge_diagram_not_bound_to_this_pdf"]
     qoss_status = row.get("qoss_validation_status")
     explained = (_source_contradiction(row, diagram, diagram_ok)
                  if qoss_status == "graph_table_inconsistent" else None)

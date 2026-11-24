@@ -17,7 +17,6 @@ import numpy as np
 from datasheet_chart_digitizer.coss_dslib import export_row
 from datasheet_chart_digitizer.output_charge import (
     charge_unit_scale_pc,
-    file_sha256,
     producer_sha256,
     evaluate_trace,
     integrate_knots,
@@ -174,6 +173,39 @@ class EvaluateTraceTests(unittest.TestCase):
         self.assertEqual(r["status"], "rejected")
         self.assertTrue(any(s.startswith("coss_eff_unresolved") for s in r["reasons"]))
 
+    def test_known_bad_wide_window_must_not_erase_a_local_peak(self):
+        # C = 1000 + 2000 exp(-(V-70)^2/2) pF; Q quantized to 500 pC, V to 0.2 V.
+        # Any served knot near the peak must be within 10% of truth, or be refused.
+        for q_step in (250.0, 500.0):
+            for sigma in (1.0, 0.3):
+                v = np.round(np.linspace(0.0, 100.0, 501) / 0.2) * 0.2
+                vv = np.linspace(0.0, 100.0, 200_001)
+                cc = 1000.0 + 2000.0 * np.exp(-((vv - 70.0) ** 2) / (2 * sigma ** 2))
+                qq = np.concatenate([[0.0], np.cumsum(0.5 * (cc[1:] + cc[:-1]) * np.diff(vv))])
+                q = np.round(np.interp(v, vv, qq) / q_step) * q_step
+                ref = {"qoss_pc": float(np.interp(50.0, vv, qq)), "vint_v": 50.0}
+                r = evaluate_trace(v, q, ref, q_quantum_pc=q_step, v_quantum_v=0.2)
+                if r["status"] != "pass":
+                    continue
+                for kv, c in r["coss_eff_curve"]:
+                    if abs(kv - 70.0) <= 3 * sigma:
+                        truth = 1000.0 + 2000.0 * math.exp(-((kv - 70.0) ** 2) / (2 * sigma ** 2))
+                        self.assertAlmostEqual(c / truth, 1.0, delta=0.10, msg=(q_step, sigma, kv))
+
+    def test_uncertainty_uses_the_fits_true_sensitivity(self):
+        # a line through N uniform points over width W has sum|w| -> 3/W (not 1/W)
+        from datasheet_chart_digitizer.output_charge import _window_slope
+        x = np.linspace(-1.5, 1.5, 301)
+        slope, bound, _ = _window_slope(x, 1000.0 * x, 0.0, 1, q_err=50.0, v_err=0.0)
+        self.assertAlmostEqual(slope, 1000.0, places=6)
+        width = 3.0
+        self.assertAlmostEqual(bound, 50.0 * 3.0 / width, delta=0.02 * 50.0)  # 1.5x of 2*q_err/W
+        # adversarial +/-q_err pattern matching the weight signs reaches the bound
+        X = np.vander(x, 2, increasing=True)
+        w = np.linalg.pinv(X)[1]
+        s_adv, _, _ = _window_slope(x, 1000.0 * x + 50.0 * np.sign(w), 0.0, 1, 50.0, 0.0)
+        self.assertAlmostEqual(s_adv - 1000.0, bound, delta=1e-6 * bound)
+
     def test_short_or_nonfinite_trace_rejected(self):
         self.assertEqual(evaluate_trace(np.arange(5.0), np.arange(5.0), REF)["status"], "rejected")
         v, q = _sqrt_trace()
@@ -182,56 +214,64 @@ class EvaluateTraceTests(unittest.TestCase):
         self.assertEqual(evaluate_trace(v, q, REF)["status"], "rejected")
 
 
-def _contradiction_row(pdf: Path) -> dict:
+Q50 = 93_000.0
+K93 = Q50 / (math.sqrt(51.0) - 1.0)
+
+
+def _served_curve() -> list:
+    """Coss_eff knots of a clean synthetic diagram whose Qoss(50 V) is 93 nC."""
+    v = np.linspace(0.0, 100.0, 500)
+    r = evaluate_trace(v, K93 * (np.sqrt(1.0 + v) - 1.0), {"qoss_pc": Q50, "vint_v": 50.0},
+                       q_quantum_pc=1.0, v_quantum_v=0.001)
+    assert r["status"] == "pass", r["reasons"]
+    return r
+
+
+def _contradiction_row(sha: str) -> dict:
     """A C(V) row whose chart integrates to 0.386x the table: the M8 situation."""
     row = _good_row()
     row.update({
-        "pdf": str(pdf),
+        "source_pdf_sha256": sha,
         "qoss_validation_status": "graph_table_inconsistent",
         "qoss_validation_error": "Qoss: extracted 3.59e+04, datasheet 9.3e+04, rel 61.4%",
         "qoss_metrics": None,
         "qoss_diagnostic_metrics": {"Qoss_pc": 35_900.0},
-        "output_charge_reference": {"qoss_pc": 93_000.0, "vint_v": 50.0},
+        "output_charge_reference": {"qoss_pc": Q50, "vint_v": 50.0},
     })
     return row
 
 
 class ExportGateTests(unittest.TestCase):
-    def setUp(self):
-        self._tmp = TemporaryDirectory()
-        self.base = Path(self._tmp.name)
-        self.pdf = self.base / "TESTFET.pdf"
-        self.pdf.write_bytes(b"%PDF-1.7 test sheet")
-        self.table = self.base / "TESTFET.pdf.nop.csv"
-        self.table.write_text("Output charge,Qoss,93,nC\n")
+    SHA = "a" * 64
 
-    def tearDown(self):
-        self._tmp.cleanup()
+    @classmethod
+    def setUpClass(cls):
+        cls.trace = _served_curve()
 
     def _row(self):
-        return _contradiction_row(self.pdf)
+        return _contradiction_row(self.SHA)
 
     def _diagram(self, **over) -> dict:
+        t = self.trace
+        verified = {"status": "verified"}
         d = {
-            "part": "TESTFET", "pdf": str(self.pdf), "diagram": 12, "page": 9,
-            "status": "pass", "reasons": [],
-            "anchor": {"vds_v": 50.0, "table_pc": 93_000.0, "diagram_pc": 93_100.0,
-                       "rel_error": 0.001, "coss_eff_integral_pc": 93_300.0},
-            "coss_eff_curve": [[0.0, 3700.0], [50.0, 1076.0], [100.0, 382.0]],
-            "coss_eff_integral_max_error": 0.008,
-            "provenance": {
-                "pdf_sha256": file_sha256(self.pdf),
-                "table_csv": str(self.table),
-                "table_csv_sha256": file_sha256(self.table),
-                "producer_sha256": producer_sha256(),
-            },
+            "part": "TESTFET", "diagram": 12, "page": 9, "status": "pass", "reasons": [],
+            "method": "vector",
+            "calibration": {"grid_check": {"x": dict(verified), "y": dict(verified)}},
+            "anchor": t["anchor"],
+            "coss_eff_curve": [list(k) for k in t["coss_eff_curve"]],
+            "coss_eff_rel_uncertainty": t["coss_eff_rel_uncertainty"],
+            "coss_eff_integral_max_error": t["coss_eff_integral_max_error"],
+            "provenance": {"pdf_sha256": self.SHA, "producer_sha256": producer_sha256()},
         }
         d.update(over)
         return d
 
     def _export(self, row, panels):
-        _write_points_csv(self.base / row["points"])
-        return export_row(row, self.base, output_charge=panels)
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            _write_points_csv(base / row["points"])
+            return export_row(row, base, output_charge=panels)
 
     def test_matching_diagram_explains_contradiction_and_serves_both_curves(self):
         res = self._export(self._row(), [self._diagram()])
@@ -239,8 +279,8 @@ class ExportGateTests(unittest.TestCase):
         self.assertEqual(res.qoss_check["status"], "source_contradiction")
         self.assertAlmostEqual(res.qoss_check["coss_chart_integral_over_table"], 0.386, places=3)
         self.assertEqual(res.coss_basis, "small_signal_chart")
-        self.assertEqual(res.coss_eff_status, "pass")
-        self.assertEqual(res.coss_eff_curve[1], (50.0, 1076.0))
+        self.assertEqual(res.coss_eff_status, "pass", res.coss_eff_reasons)
+        self.assertEqual(res.coss_eff_curve[0][0], 0.0)
 
     def test_known_bad_without_diagram_stays_rejected(self):
         res = self._export(self._row(), [])
@@ -256,66 +296,77 @@ class ExportGateTests(unittest.TestCase):
             self.assertEqual(res.coss_eff_status, status)
             self.assertEqual(res.coss_eff_curve, [])
 
-    def test_known_bad_diagram_anchored_to_another_reference(self):
-        good = self._diagram()["anchor"]
-        for change in ({"table_pc": 114_000.0, "diagram_pc": 114_000.0,
-                        "coss_eff_integral_pc": 114_000.0},
-                       {"vds_v": 80.0}):
-            res = self._export(self._row(), [self._diagram(anchor={**good, **change})])
-            self.assertEqual(res.coss_status, "rejected", change)
-
-    def test_known_bad_stored_status_pass_is_rechecked(self):
-        good = self._diagram()["anchor"]
-        for change in ({"diagram_pc": 10_000.0}, {"diagram_pc": None},
-                       {"diagram_pc": float("nan")}, {"table_pc": float("nan")},
-                       {"coss_eff_integral_pc": 60_000.0}, {"coss_eff_integral_pc": None},
-                       {"vds_v": float("inf")}):
-            res = self._export(self._row(), [self._diagram(anchor={**good, **change})])
-            self.assertEqual(res.coss_status, "rejected", change)
-            self.assertEqual(res.coss_eff_status, "rejected", change)
-        for curve in ([], [[1.0, 3700.0], [50.0, 1076.0]], [[0.0, 3700.0], [50.0, -1.0]],
-                      [[0.0, float("nan")], [50.0, 1076.0]]):
+    def test_known_bad_served_curve_is_rechecked_not_trusted(self):
+        good = self._diagram()["coss_eff_curve"]
+        bad_curves = {
+            "times_10": [[v, c * 10] for v, c in good],
+            "times_0.9": [[v, c * 0.9] for v, c in good],
+            "singleton": good[:1],
+            "two_knots": good[:2],
+            "nan_v": [[float("nan"), good[0][1]]] + good[1:],
+            "nan_c": [good[0]] + [[good[1][0], float("nan")]] + good[2:],
+            "unsorted": [good[0], good[2], good[1]] + good[3:],
+            "repeated_v": [good[0], good[1], good[1]] + good[2:],
+            "not_from_zero": good[1:],
+            "negative_c": [good[0], [good[1][0], -1.0]] + good[2:],
+            "short_of_table_vds": [k for k in good if k[0] < 40.0],
+            "malformed": [[1.0], "x"],
+        }
+        for name, curve in bad_curves.items():
             res = self._export(self._row(), [self._diagram(coss_eff_curve=curve)])
-            self.assertEqual(res.coss_eff_status, "rejected", curve)
-            self.assertEqual(res.coss_status, "rejected", curve)
+            self.assertEqual(res.coss_eff_status, "rejected", name)
+            self.assertEqual(res.coss_status, "rejected", name)
+
+    def test_known_bad_stored_gates_contradicting_pass(self):
+        unc = list(self._diagram()["coss_eff_rel_uncertainty"])
+        mutations = {
+            "raster": {"method": "raster"},
+            "grid_unverified": {"calibration": {"grid_check": {"x": {"status": "verified"},
+                                                               "y": {"status": "unverified"}}}},
+            "grid_missing": {"calibration": {}},
+            "uncertainty_90pct": {"coss_eff_rel_uncertainty": unc[:-1] + [0.9]},
+            "uncertainty_missing": {"coss_eff_rel_uncertainty": None},
+            "integral_error_90pct": {"coss_eff_integral_max_error": 0.9},
+            "integral_error_nan": {"coss_eff_integral_max_error": float("nan")},
+            "stale_producer": {"provenance": {"pdf_sha256": self.SHA, "producer_sha256": "0" * 64}},
+        }
+        for name, over in mutations.items():
+            res = self._export(self._row(), [self._diagram(**over)])
+            self.assertEqual(res.coss_eff_status, "rejected", name)
+            self.assertEqual(res.coss_status, "rejected", name)
+
+    def test_known_bad_anchor_to_another_reference_or_wrong_measurement(self):
+        good = self._diagram()["anchor"]
+        for change in ({"table_pc": 114_000.0}, {"vds_v": 80.0}, {"diagram_pc": 10_000.0},
+                       {"diagram_pc": None}, {"diagram_pc": float("nan")}):
+            res = self._export(self._row(), [self._diagram(anchor={**good, **change})])
+            self.assertEqual(res.coss_status, "rejected", change)
 
     def test_known_bad_nonfinite_row_reference_or_integral(self):
-        for ref in ({"qoss_pc": float("nan"), "vint_v": 50.0}, {"qoss_pc": 93_000.0, "vint_v": None}):
+        for ref in ({"qoss_pc": float("nan"), "vint_v": 50.0}, {"qoss_pc": Q50, "vint_v": None},
+                    {"qoss_pc": 2 * Q50, "vint_v": 50.0}):
             row = self._row()
             row["output_charge_reference"] = ref
-            self.assertEqual(self._export(row, [self._diagram()]).coss_status, "rejected", ref)
+            res = self._export(row, [self._diagram()])
+            self.assertEqual(res.coss_status, "rejected", ref)
+            self.assertEqual(res.coss_eff_status, "rejected", ref)
         for metrics in (None, {"Qoss_pc": float("nan")}, {"Qoss_pc": float("inf")}, {"Qoss_pc": 0.0}):
             row = self._row()
             row["qoss_diagnostic_metrics"] = metrics
             self.assertEqual(self._export(row, [self._diagram()]).coss_status, "rejected", metrics)
 
-    def test_known_bad_stale_or_foreign_provenance(self):
-        d = self._diagram()
-        d["provenance"] = {**d["provenance"], "producer_sha256": "0" * 64}
-        res = self._export(self._row(), [d])
-        self.assertEqual(res.coss_status, "rejected")
-        self.assertTrue(any("different digitizer code" in r for r in res.coss_eff_reasons))
-        # table edited after the diagram was digitized
-        d = self._diagram()
-        self.table.write_text("Output charge,Qoss,94,nC\n")
-        res = self._export(self._row(), [d])
-        self.assertEqual(res.coss_status, "rejected")
-        self.assertTrue(any("table csv" in r for r in res.coss_eff_reasons))
-
-    def test_known_bad_pdf_content_changed_or_other_part(self):
-        d = self._diagram()
-        self.pdf.write_bytes(b"%PDF-1.7 another revision, same file name")
-        res = self._export(self._row(), [d])
-        self.assertEqual(res.coss_status, "rejected")
-        self.assertEqual(res.coss_eff_status, "absent")
-        self.pdf.write_bytes(b"%PDF-1.7 test sheet")
+    def test_known_bad_source_not_bound(self):
+        for sha in (None, "", "b" * 64, "a" * 63):
+            row = self._row()
+            row["source_pdf_sha256"] = sha
+            res = self._export(row, [self._diagram()])
+            self.assertEqual(res.coss_status, "rejected", sha)
+            self.assertEqual(res.coss_eff_status, "absent", sha)
+            self.assertEqual(res.coss_eff_reasons, ["output_charge_diagram_not_bound_to_this_pdf"])
         res = self._export(self._row(), [self._diagram(part="OTHERFET")])
         self.assertEqual(res.coss_status, "rejected")
         res = self._export(self._row(), [self._diagram(), self._diagram(diagram=13)])
         self.assertEqual(res.coss_status, "rejected")
-        row = self._row()
-        row["pdf"] = str(self.base / "missing.pdf")
-        self.assertEqual(self._export(row, [self._diagram()]).coss_status, "rejected")
 
     def test_known_bad_other_qoss_failures_are_not_explained(self):
         for status in ("unreliable_extrapolation", "chart_clipped_table_authoritative", None):
@@ -332,16 +383,24 @@ class ExportGateTests(unittest.TestCase):
         self.assertTrue(any(r.startswith("coss_anchor_mismatch") for r in res.coss_reasons))
         self.assertEqual(res.coss_eff_status, "pass")  # independent evidence
 
-    def test_row_without_pdf_resolves_through_charts_json(self):
-        import json
-        row = self._row()
-        del row["pdf"]
-        row["crop"] = str(self.base / "crops/TESTFET/p09_diagram_11.png")
-        (self.base / "charts.json").write_text(json.dumps([
-            {"crop_png": "crops/TESTFET/p09_diagram_11.png", "pdf": str(self.pdf)}]))
-        self.assertEqual(self._export(row, [self._diagram()]).coss_status, "pass")
-        (self.base / "charts.json").unlink()
-        self.assertEqual(self._export(row, [self._diagram()]).coss_status, "rejected")
+    def test_no_panels_reads_nothing(self):
+        # a row with no diagrams in play must export exactly as before, whatever lies around
+        row = _good_row()
+        row["crop"] = "/nonexistent/crops/TESTFET/p09_diagram_11.png"
+        res = self._export(row, [])
+        self.assertEqual(res.coss_status, "pass", res.coss_reasons)
+        self.assertEqual(res.coss_eff_status, "absent")
+
+    def test_producer_fingerprint_covers_the_whole_package(self):
+        import hashlib
+        import datasheet_chart_digitizer.output_charge as oc
+        here = Path(oc.__file__).resolve().parent
+        h = hashlib.sha256()
+        for path in sorted(here.glob("*.py")):
+            h.update(path.name.encode())
+            h.update(path.read_bytes())
+        self.assertEqual(producer_sha256(), h.hexdigest())
+        self.assertIn("capacitance_refs.py", [p.name for p in here.glob("*.py")])
 
 
 ROOT = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"

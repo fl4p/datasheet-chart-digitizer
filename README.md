@@ -370,10 +370,13 @@ knots and optional `(VDS, Ciss)` pairs. When `digitize-output-charge` has run in
 the same directory, it also exports `coss_eff_curve`: large-signal `(VDS,
 dQoss/dV)` knots from a printed Qoss(VDS) diagram. The knots start at 0 V (the first
 slope is held below the first traced point), and their linear integral from 0 V must
-match the diagram at every knot and the table Qoss at its Vds. Each knot's
-pixel-quantization uncertainty must stay within 10%; the bound is reported as
-`coss_eff_rel_uncertainty`. The diagram is bound to the PDF content, the table CSV
-and the digitizer code that produced it. `coss_curve` remains the small-signal
+match the diagram at every knot and the table Qoss at its Vds. Each knot reports
+`coss_eff_rel_uncertainty`: the fit's worst-case pixel-quantization error plus a
+model-bias estimate. It must stay within 10%, or 25% for knots whose fit window is
+cut by the trace ends. The exporter does not trust the stored verdict. It requires
+the diagram and the C(V) row to have recorded the same PDF sha256, and the
+digitizer code to be unchanged. It then re-checks the served knots against the row's
+own table Qoss. `coss_curve` remains the small-signal
 chart. The intended use is `coss_curve` for ring tanks and `coss_eff_curve` for
 Qoss/Eoss; no downstream loss model has validated `coss_eff_curve` yet. They can disagree on the same sheet: on OptiMOS 8,
 the 1 MHz Coss integrates to about 0.39x the Qoss that the diagram and the table
