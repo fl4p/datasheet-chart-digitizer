@@ -2,6 +2,7 @@ import os
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from PIL import Image
@@ -1138,6 +1139,39 @@ class BodyDiodeAxisGutterOwnershipTests(unittest.TestCase):
         )
 
         self.assertAlmostEqual(expanded[0], 319.9 - 3.0)
+
+    def test_reverse_drain_title_ignores_neighbour_gutter_words(self) -> None:
+        # review 2026-11-24: a neighbouring column's "VDS" word at x 293.2 is
+        # not the rotated title's; widening to it crossed the 306-pt midpoint,
+        # and the evidenced-left-gutter column clamp kept that x0
+        title = [
+            ("(A)", 300.0, 312.0), ("Current", 314.0, 342.0),
+            ("Drain", 344.0, 364.0), ("Reverse", 366.0, 396.0),
+            ("S,", 398.0, 404.0), ("I", 404.0, 408.0),
+        ]
+        page = find_charts.PageText(
+            1,
+            612,
+            792,
+            [find_charts.Word(text, 319.9, y0, 330.9, y1) for text, y0, y1 in title]
+            + [
+                find_charts.Word("VDS", 293.2, 300.0, 306.2, 307.0),
+                find_charts.Word("(V)", 200, 470, 210, 480),
+                find_charts.Word("(V)", 440, 470, 450, 480),
+            ],
+        )
+        bbox = (336.173, 292.736, 555.328, 476.985)
+
+        expanded = find_charts._expand_caption_bbox_to_axis_labels(
+            page, bbox, "body_diode"
+        )
+        self.assertAlmostEqual(expanded[0], 319.9 - 3.0)
+
+        title_line = SimpleNamespace(bbox_pt=(350, 480, 530, 490))
+        clamped = find_charts._bound_caption_bbox_to_own_column(
+            page, title_line, expanded, preserve_evidenced_left_gutter=True
+        )
+        self.assertGreater(clamped[0], 306.0)
 
 
 class SyntheticGateChargeTableGuardTests(unittest.TestCase):

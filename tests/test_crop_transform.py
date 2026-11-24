@@ -44,6 +44,52 @@ class CropTransformTests(unittest.TestCase):
             CropTransform.for_chart({}, (100, 100))
 
 
+class BlankRotatedWordsTests(unittest.TestCase):
+    """Review 2026-11-24: a rotated curve label inside the plot erased frame ink
+    and moved the diode calibrator's plot hint from x0 100 to 150."""
+
+    @staticmethod
+    def _gridded_page(y_ticks: bool):
+        import fitz
+
+        doc = fitz.open()
+        page = doc.new_page(width=500, height=500)
+        for v in range(100, 401, 50):
+            page.draw_line((v, 100), (v, 400), color=(0, 0, 0))
+            page.draw_line((100, v), (400, v), color=(0, 0, 0))
+        page.insert_text((105, 280), "CurveLabel", fontsize=12, rotate=90)
+        if y_ticks:
+            for k, v in enumerate(range(400, 99, -50)):
+                page.insert_text((80, v + 3), str(k), fontsize=8)
+            page.insert_text((60, 300), "Current", fontsize=10, rotate=90)
+        pix = page.get_pixmap()
+        rgb = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)
+        return doc, page, rgb[:, :, :3].min(axis=2).copy()
+
+    def test_in_plot_rotated_label_keeps_frame_and_hint(self) -> None:
+        from datasheet_chart_digitizer.crop_transform import blank_rotated_words
+        from datasheet_chart_digitizer.diode_forward_voltage import _plot_hint
+
+        doc, page, gray = self._gridded_page(y_ticks=False)
+        with doc:
+            blank = blank_rotated_words(gray, page, CropTransform(0, 0, 1, 1))
+        self.assertEqual(int(np.count_nonzero((gray[:, 100] < 128) & (blank[:, 100] == 255))), 0)
+        self.assertEqual(_plot_hint(blank)[0].x0, _plot_hint(gray)[0].x0)
+        self.assertEqual(_plot_hint(blank)[0].x0, 100)
+
+    def test_only_gutter_title_left_of_tick_labels_is_blanked(self) -> None:
+        from datasheet_chart_digitizer.crop_transform import blank_rotated_words
+
+        doc, page, gray = self._gridded_page(y_ticks=True)
+        with doc:
+            blank = blank_rotated_words(gray, page, CropTransform(0, 0, 1, 1))
+            title = next(w for w in page.get_text("words") if w[4] == "Current")
+        changed = np.argwhere(blank != gray)
+        self.assertGreater(len(changed), 0)
+        self.assertLessEqual(changed[:, 1].max(), int(title[2]) + 1)   # the gutter title only
+        self.assertTrue((blank[:, 100] == gray[:, 100]).all())
+
+
 class CapacitanceCropTransformIntegrationTests(unittest.TestCase):
     @staticmethod
     def _fitz_stub(rectangles: list[object] | None = None):

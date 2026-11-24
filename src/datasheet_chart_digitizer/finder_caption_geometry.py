@@ -1086,14 +1086,30 @@ def expand_caption_bbox_to_axis_labels(
             and y0 <= 0.5 * (word.y0 + word.y1) <= y1
         ]
         left_tokens = {normalize(word.text) for word in left_words}
-        has_current_axis = (
-            {"sourcetodrain", "current", "a"} <= left_tokens
-            or {"i", "sd", "a"} <= left_tokens
-            or {"reverse", "drain", "current", "a"} <= left_tokens
+        title_tokens = next(
+            (
+                tokens
+                for tokens in (
+                    {"sourcetodrain", "current", "a"},
+                    {"i", "sd", "a"},
+                    {"reverse", "drain", "current", "a"},
+                )
+                if tokens <= left_tokens
+            ),
+            None,
         )
-        if has_current_axis:
-            # title words only: a neighbouring column's tick in the gutter must not widen the crop
-            title_x0 = min(word.x0 for word in left_words if not numeric(word))
+        if title_tokens is not None:
+            # the rotated title's own column only: a neighbouring column's tick
+            # or axis words in the gutter must not widen the crop
+            ref = max(
+                (word for word in left_words if normalize(word.text) in title_tokens),
+                key=lambda word: len(normalize(word.text)),
+            )
+            title_x0 = min(
+                word.x0
+                for word in left_words
+                if not numeric(word) and ref.x0 - 1.0 <= 0.5 * (word.x0 + word.x1) <= ref.x1 + 1.0
+            )
             new_x0 = min(new_x0, title_x0 - 3.0)
         bottom_words = [
             word
