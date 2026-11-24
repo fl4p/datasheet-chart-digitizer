@@ -28,7 +28,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import math
 import re
 from pathlib import Path
 
@@ -37,13 +39,19 @@ import numpy as np
 
 from . import served_axis_guard
 from .breakdown_voltage import _draw_overlay, calibrated_temperature_trace
-from .capacitance_refs import output_charge_reference_to_json, parse_output_charge_reference
+from .capacitance_refs import (
+    _anchor_csv_path,
+    output_charge_reference_to_json,
+    parse_output_charge_reference,
+)
 
 ANCHOR_TOL = 0.05
 EFF_INTEGRAL_TOL = 0.03
 ORIGIN_V_FRACTION = 0.02
 ORIGIN_Q_FRACTION = 0.03
 MONOTONE_DROP_FRACTION = 0.01
+DERIV_REL_TOL = 0.10
+MAX_HALF_WINDOW = 0.10
 # Knot voltages as fractions of the traced span: dense at low V, where dQ/dV is
 # steepest and a linear chord between sparse knots would misstate the charge.
 KNOT_FRACTIONS = (
@@ -77,36 +85,55 @@ def charge_unit_scale_pc(text: str) -> tuple[str, float] | None:
     return unit, _UNIT_PC[unit]
 
 
-def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] = ()) -> list:
-    """(Vds_V, Coss_eff_pF) knots from a monotone Qoss(V) trace.
+def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] = (),
+                   q_quantum_pc: float = 0.0, v_quantum_v: float = 0.0) -> list:
+    """(Vds_V, Coss_eff_pF, relative_uncertainty) knots from a monotone Qoss(V) trace.
 
-    The slope at each knot is the derivative of a least-squares polynomial through a uniform resample of the
-    trace within +/-1.5% of the span (one-sided at the ends), so polyline corners and
-    end caps of the vector path do not become spikes.  Knots are returned at
-    KNOT_FRACTIONS of the span plus any explicitly requested voltages.
+    The slope at each knot is the linear coefficient of a least-squares polynomial in
+    (V - kv) over a window of the trace.  The traced points are pixel-quantized, so a
+    slope over a window of width W can be off by about (dQ_px + C*dV_px) / W.  Each
+    window starts at +/-1.5% of the span and widens (to at most +/-10%) until that
+    bound is within DERIV_REL_TOL of the slope; the bound actually reached is returned
+    so the caller can withhold unresolved knots.  Resampling adds no resolution: the
+    quanta come from the axis calibration.
+
+    In a symmetric window a line and a quadratic give the same slope.  At the low-V
+    end, where Coss falls fastest, the window is cut by V0 and a line reads the
+    window's average slope (23% low on a sqrt-law die), so fit a quadratic there.  At
+    the high-V end Q is nearly linear and the pixel staircase makes a quadratic noisy,
+    so keep the line.
+
+    When the trace starts above 0 V a knot at 0 V holds the first slope, the same
+    zero-hold convention the dslib exporter applies to every curve, so the knots
+    integrate from 0 V like a consumer's.
     """
     v0, v1 = float(v[0]), float(v[-1])
+    span = v1 - v0
     grid = np.linspace(v0, v1, 4001)
     qg = np.interp(grid, v, q_pc)
-    half = 0.015 * (v1 - v0)
     extra = {round(float(x), 6) for x in extra_v if v0 <= x <= v1}
-    near = 0.003 * (v1 - v0)
+    near = 0.003 * span
     knots_v = sorted(extra | {
-        kv for kv in (round(v0 + f * (v1 - v0), 6) for f in KNOT_FRACTIONS)
+        kv for kv in (round(v0 + f * span, 6) for f in KNOT_FRACTIONS)
         if kv in (v0, v1) or all(abs(kv - x) > near for x in extra)
     })
     out = []
     for kv in knots_v:
-        m = (grid >= kv - half) & (grid <= kv + half)
-        # Polynomial in (V - kv); its linear coefficient is dQ/dV at kv.  In a
-        # symmetric window a line and a quadratic give the same slope.  At the low-V
-        # end, where Coss falls fastest, the window is one-sided and a line reads the
-        # window's average slope (23% low on a sqrt-law die), so fit a quadratic there.
-        # At the high-V end Q is nearly linear and the pixel staircase of the trace
-        # makes a quadratic noisy, so keep the line.
-        deg = 2 if kv - half < v0 else 1
-        coeffs = np.polyfit(grid[m] - kv, qg[m], deg)
-        out.append((float(kv), float(coeffs[-2])))
+        half = 0.015 * span
+        while True:
+            lo, hi = max(v0, kv - half), min(v1, kv + half)
+            m = (grid >= lo) & (grid <= hi)
+            deg = 2 if kv - half < v0 else 1
+            slope = float(np.polyfit(grid[m] - kv, qg[m], deg)[-2])
+            width = hi - lo
+            unc = (q_quantum_pc + max(slope, 0.0) * v_quantum_v) / width if width > 0 else math.inf
+            rel = unc / slope if slope > 0 else math.inf
+            if rel <= DERIV_REL_TOL or half >= MAX_HALF_WINDOW * span:
+                break
+            half = min(half * 1.5, MAX_HALF_WINDOW * span)
+        out.append((float(kv), slope, rel))
+    if v0 > 0:
+        out.insert(0, (0.0, out[0][1], out[0][2]))
     return out
 
 
@@ -123,8 +150,20 @@ def integrate_knots(knots: list, v_query: np.ndarray) -> np.ndarray:
     return np.array(out)
 
 
-def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None) -> dict:
-    """Gate a traced Qoss(V) curve and derive Coss_eff knots. Pure; testable."""
+def _finite_positive(x: object) -> float | None:
+    try:
+        f = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
+
+
+def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
+                   q_quantum_pc: float = 0.0, v_quantum_v: float = 0.0) -> dict:
+    """Gate a traced Qoss(V) curve and derive Coss_eff knots. Pure; testable.
+
+    Charges are ABSOLUTE: the knots start at 0 V and their integral from 0 V must
+    reproduce the diagram's Qoss(V) at every knot and the table Qoss at its Vds."""
     reasons: list[str] = []
     order = np.argsort(v)
     v, q_pc = np.asarray(v, float)[order], np.asarray(q_pc, float)[order]
@@ -132,47 +171,53 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None) -> d
         return {"status": "rejected", "reasons": ["qoss_trace_too_short_or_nonfinite"]}
     span = float(v[-1] - v[0])
     q_max = float(np.max(q_pc))
-    if span <= 0 or q_max <= 0:
+    if span <= 0 or q_max <= 0 or float(v[0]) < 0:
         return {"status": "rejected", "reasons": ["qoss_trace_degenerate"]}
-    if float(v[0]) > ORIGIN_V_FRACTION * float(v[-1]) or float(q_pc[0]) > ORIGIN_Q_FRACTION * q_max:
+    if float(v[0]) > ORIGIN_V_FRACTION * float(v[-1]) or abs(float(q_pc[0])) > ORIGIN_Q_FRACTION * q_max:
         reasons.append(
-            f"qoss_trace_not_from_origin:first V {v[0]:.3g}, Q {q_pc[0] / q_max:.1%} of max")
+            f"qoss_trace_not_from_origin:first V {v[0]:.3g}, Q {q_pc[0] / q_max:+.1%} of max")
     running = np.maximum.accumulate(q_pc)
     worst_drop = float(np.max(running - q_pc)) / q_max
     if worst_drop > MONOTONE_DROP_FRACTION:
         reasons.append(f"qoss_not_monotone:drop {worst_drop:.1%} of max")
     q_mono = running
 
+    ref_q = _finite_positive((reference or {}).get("qoss_pc"))
+    ref_v = _finite_positive((reference or {}).get("vint_v"))
+    extra = (ref_v,) if ref_v is not None else ()
+    knots3 = coss_eff_knots(v, q_mono, extra, q_quantum_pc, v_quantum_v)
+    knots = [(kv, c) for kv, c, _ in knots3]
+    kv = np.array([k[0] for k in knots])
+    q_target = np.where(kv < v[0], 0.0, np.interp(kv, v, q_mono))
+    q_int = integrate_knots(knots, kv)
+    eff_err = float(np.max(np.abs(q_int - q_target))) / q_max
+
     anchor: dict[str, object] | None = None
-    ref_q = (reference or {}).get("qoss_pc")
-    ref_v = (reference or {}).get("vint_v")
-    if not ref_q or ref_v is None:
+    if ref_q is None or ref_v is None:
         reasons.append("qoss_table_reference_unavailable")
-    elif not (v[0] <= float(ref_v) <= v[-1]):
+    elif not (v[0] <= ref_v <= v[-1]):
         reasons.append(f"qoss_reference_vds_outside_trace:{ref_v:g} V")
     else:
-        got = float(np.interp(float(ref_v), v, q_mono))
-        rel = got / float(ref_q) - 1.0
-        anchor = {"vds_v": float(ref_v), "table_pc": float(ref_q),
-                  "diagram_pc": round(got, 2), "rel_error": round(rel, 4)}
-        if abs(rel) > ANCHOR_TOL:
+        got = float(np.interp(ref_v, v, q_mono))
+        rel = got / ref_q - 1.0
+        knots_q = float(integrate_knots(knots, np.array([ref_v]))[0])
+        rel_knots = knots_q / ref_q - 1.0
+        anchor = {"vds_v": ref_v, "table_pc": ref_q, "diagram_pc": round(got, 2),
+                  "rel_error": round(rel, 4), "coss_eff_integral_pc": round(knots_q, 2),
+                  "coss_eff_rel_error": round(rel_knots, 4)}
+        if not abs(rel) <= ANCHOR_TOL:
             reasons.append(f"qoss_diagram_anchor_mismatch:{rel:+.1%} (tol {ANCHOR_TOL:.0%})")
+        if not abs(rel_knots) <= ANCHOR_TOL:
+            reasons.append(
+                f"coss_eff_anchor_mismatch:{rel_knots:+.1%} from 0 V (tol {ANCHOR_TOL:.0%})")
 
-    extra = (float(ref_v),) if ref_v is not None else ()
-    knots = coss_eff_knots(v, q_mono, extra)
-    kv = np.array([k[0] for k in knots])
-    q_knots = np.interp(kv, v, q_mono) - float(np.interp(kv[0], v, q_mono))
-    q_int = integrate_knots(knots, kv)
-    eff_err = float(np.max(np.abs(q_int - q_knots))) / q_max
-    # dQ/dV below what the diagram resolves reads as a flat line (slope ~0).  The
-    # small-signal Coss chart is the better evidence there; refuse rather than serve 0.
-    resolvable = 0.002 * q_max / span
-    flat = [kv_ for kv_, c in knots if c <= resolvable]
-    if flat:
+    unresolved = [kv_ for kv_, c, rel in knots3 if not (c > 0 and rel <= DERIV_REL_TOL)]
+    if unresolved:
         reasons.append(
-            f"coss_eff_unresolved_by_diagram:{len(flat)} knots {flat[0]:g}-{flat[-1]:g} V "
-            f"below {resolvable:.3g} pF")
-    if eff_err > EFF_INTEGRAL_TOL:
+            f"coss_eff_unresolved_by_diagram:{len(unresolved)} knots "
+            f"{unresolved[0]:g}-{unresolved[-1]:g} V above {DERIV_REL_TOL:.0%} "
+            "pixel-quantization uncertainty")
+    if not eff_err <= EFF_INTEGRAL_TOL:
         reasons.append(
             f"coss_eff_integral_mismatch:{eff_err:.1%} of Qoss max (tol {EFF_INTEGRAL_TOL:.0%})")
     return {
@@ -180,11 +225,29 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None) -> d
         "reasons": reasons,
         "anchor": anchor,
         "coss_eff_curve": [(round(kv_, 4), float(f"{c:.4g}")) for kv_, c in knots],
+        "coss_eff_rel_uncertainty": [round(min(r, 9.99), 4) for _, _, r in knots3],
         "coss_eff_integral_max_error": round(eff_err, 5),
+        "quantum": {"q_pc": q_quantum_pc, "v_v": v_quantum_v},
         "vds_range_v": [round(float(v[0]), 4), round(float(v[-1]), 4)],
         "qoss_max_pc": round(q_max, 2),
         "monotone_worst_drop": round(worst_drop, 5),
     }
+
+
+def file_sha256(path: Path | None) -> str | None:
+    if path is None or not Path(path).is_file():
+        return None
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def producer_sha256() -> str:
+    """Fingerprint of the code that derives a diagram verdict (this module and the
+    tracer).  The exporter refuses a verdict produced by different code."""
+    here = Path(__file__).resolve().parent
+    h = hashlib.sha256()
+    for name in ("output_charge.py", "breakdown_voltage.py"):
+        h.update((here / name).read_bytes())
+    return h.hexdigest()
 
 
 def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
@@ -197,10 +260,14 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
     q_axis = np.array([p[1] for p in data])
     reference = output_charge_reference_to_json(
         parse_output_charge_reference(str(chart["part"]), datasheet_root))
+    # one pixel of the traced (integer-pixel) points, in charge and voltage units
+    q_px = abs(traced.y_axis.value(1.0) - traced.y_axis.value(0.0))
+    v_px = abs(traced.x_axis.value(1.0) - traced.x_axis.value(0.0))
     if unit is None:
         result = {"status": "rejected", "reasons": ["qoss_axis_unit_unresolved"]}
     else:
-        result = evaluate_trace(v, q_axis * unit[1], reference)
+        result = evaluate_trace(v, q_axis * unit[1], reference,
+                                q_quantum_pc=q_px * unit[1], v_quantum_v=v_px)
     if result["status"] == "pass" and (grid_unverified or traced.trace_method != "vector"):
         result["status"] = "unverified"
         if grid_unverified:
@@ -228,6 +295,12 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
         "frame_method": traced.frame_method,
         "axis_unit": unit[0] if unit else None,
         "output_charge_reference": reference,
+        "provenance": {
+            "pdf_sha256": file_sha256(Path(str(chart["pdf"]))),
+            "table_csv": str(_anchor_csv_path(str(chart["part"]), datasheet_root) or ""),
+            "table_csv_sha256": file_sha256(_anchor_csv_path(str(chart["part"]), datasheet_root)),
+            "producer_sha256": producer_sha256(),
+        },
         "calibration": {
             "x_ticks": len(traced.x_axis.ticks), "x_resid": round(traced.x_axis.resid, 6),
             "y_ticks": len(traced.y_axis.ticks), "y_resid": round(traced.y_axis.resid, 6),

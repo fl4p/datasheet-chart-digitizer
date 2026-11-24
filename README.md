@@ -368,9 +368,14 @@ portable Coss/Qoss model artifacts, while `export-coss-dslib` converts only
 validation-gated capacitance manifests into dslib-style `(VDS, Coss, Crss)`
 knots and optional `(VDS, Ciss)` pairs. When `digitize-output-charge` has run in
 the same directory, it also exports `coss_eff_curve`: large-signal `(VDS,
-dQoss/dV)` knots from a printed Qoss(VDS) diagram, gated against the table Qoss.
-`coss_curve` remains the small-signal chart. Use it for ring tanks, and use
-`coss_eff_curve` for Qoss/Eoss. They can disagree on the same sheet: on OptiMOS 8,
+dQoss/dV)` knots from a printed Qoss(VDS) diagram. The knots start at 0 V (the first
+slope is held below the first traced point), and their linear integral from 0 V must
+match the diagram at every knot and the table Qoss at its Vds. Each knot's
+pixel-quantization uncertainty must stay within 10%; the bound is reported as
+`coss_eff_rel_uncertainty`. The diagram is bound to the PDF content, the table CSV
+and the digitizer code that produced it. `coss_curve` remains the small-signal
+chart. The intended use is `coss_curve` for ring tanks and `coss_eff_curve` for
+Qoss/Eoss; no downstream loss model has validated `coss_eff_curve` yet. They can disagree on the same sheet: on OptiMOS 8,
 the 1 MHz Coss integrates to about 0.39x the Qoss that the diagram and the table
 agree on (issue #17). `qoss_check.status == "source_contradiction"` records that
 case. The latter records pass/rejection

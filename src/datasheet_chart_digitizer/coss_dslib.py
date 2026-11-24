@@ -40,6 +40,8 @@ from pathlib import Path
 
 import numpy as np
 
+from .output_charge import ANCHOR_TOL as OUTPUT_CHARGE_ANCHOR_TOL
+from .output_charge import file_sha256, producer_sha256
 from .coss_export import (
     build_adaptive_coss_model,
     evaluate_coss_knots,
@@ -132,73 +134,123 @@ def _trace_gate_reasons(row: dict) -> dict[str, list[str]]:
     return out
 
 
-def _same_path(a: object, b: object) -> bool:
-    if not a or not b:
-        return False
+def _finite_positive(x: object) -> float | None:
     try:
-        return Path(str(a)).resolve() == Path(str(b)).resolve()
-    except OSError:
-        return str(a) == str(b)
+        f = float(x)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return f if math.isfinite(f) and f > 0 else None
 
 
-def _same_source(panel: dict, row: dict) -> bool:
-    """Same part, and the same PDF: compared directly when both carry it, else via the
-    crop directory `dsdig find` wrote both panels' crops into (one per source PDF)."""
-    if not panel.get("part") or panel.get("part") != row.get("part"):
-        return False
-    if panel.get("pdf") and row.get("pdf"):
-        return _same_path(panel["pdf"], row["pdf"])
-    pc, rc = panel.get("crop"), row.get("crop")
-    return bool(pc and rc) and _same_path(Path(str(pc)).parent, Path(str(rc)).parent)
+def _row_pdf(row: dict, base_dir: Path) -> Path | None:
+    """The PDF a C(V) row was digitized from: its own `pdf`, else the charts.json entry
+    (next to the manifest) whose crop is this row's crop."""
+    if row.get("pdf"):
+        return Path(str(row["pdf"]))
+    crop = row.get("crop")
+    index = base_dir / "charts.json"
+    if not crop or not index.is_file():
+        return None
+    try:
+        charts = json.loads(index.read_text())
+    except (OSError, ValueError):
+        return None
+    want = Path(str(crop)).resolve()
+    hits = [c for c in charts if isinstance(c, dict) and c.get("crop_png")
+            and (base_dir / str(c["crop_png"])).resolve() == want]
+    return Path(str(hits[0]["pdf"])) if len(hits) == 1 and hits[0].get("pdf") else None
 
 
-def _matching_output_charge(row: dict, panels: list[dict]) -> dict | None:
-    """The Qoss(VDS) diagram digitized from the same PDF as this C(V) row, if any.
+def _matching_output_charge(row: dict, panels: list[dict], base_dir: Path) -> dict | None:
+    """The Qoss(VDS) diagram digitized from the same PDF CONTENT as this C(V) row.
 
-    More than one matching panel is ambiguous and matches nothing."""
-    found = [p for p in panels if isinstance(p, dict) and _same_source(p, row)]
+    Same part, and the diagram's recorded PDF sha256 equals the row's PDF as it is on
+    disk now.  A row whose PDF cannot be resolved matches nothing; more than one
+    matching panel is ambiguous and matches nothing."""
+    pdf = _row_pdf(row, base_dir)
+    sha = file_sha256(pdf)
+    if sha is None:
+        return None
+    found = [p for p in panels if isinstance(p, dict) and p.get("part") == row.get("part")
+             and (p.get("provenance") or {}).get("pdf_sha256") == sha]
     return found[0] if len(found) == 1 else None
 
 
-def _apply_coss_eff(res: DslibCossResult, diagram: dict | None) -> None:
+def _diagram_problems(diagram: dict) -> list[str]:
+    """Re-check a stored diagram verdict instead of trusting its `status`."""
+    problems = []
+    prov = diagram.get("provenance") or {}
+    if prov.get("producer_sha256") != producer_sha256():
+        problems.append("output_charge_stale:produced by different digitizer code")
+    table_csv = prov.get("table_csv")
+    if not table_csv or file_sha256(Path(str(table_csv))) != prov.get("table_csv_sha256"):
+        problems.append("output_charge_stale:table csv missing or changed since digitization")
+    a = diagram.get("anchor") or {}
+    table, got, eff = (_finite_positive(a.get(k)) for k in
+                       ("table_pc", "diagram_pc", "coss_eff_integral_pc"))
+    if table is None or got is None or eff is None or _finite_positive(a.get("vds_v")) is None:
+        problems.append("output_charge_anchor_unevaluable")
+    else:
+        for name, val in (("diagram", got), ("coss_eff", eff)):
+            rel = val / table - 1.0
+            if not abs(rel) <= OUTPUT_CHARGE_ANCHOR_TOL:
+                problems.append(f"output_charge_anchor_mismatch:{name} {rel:+.1%}")
+    curve = diagram.get("coss_eff_curve") or []
+    if (not curve or float(curve[0][0]) != 0.0
+            or any(_finite_positive(c) is None for _, c in curve)):
+        problems.append("coss_eff_curve_invalid")
+    return problems
+
+
+def _apply_coss_eff(res: DslibCossResult, diagram: dict | None) -> list[str]:
+    """Fill the Coss_eff verdict; returns the problems that bar the diagram as evidence."""
     if diagram is None:
-        return
+        return ["no_output_charge_diagram"]
     res.coss_eff_source = {
         "diagram": diagram.get("diagram"), "page": diagram.get("page"),
         "overlay": diagram.get("overlay"), "anchor": diagram.get("anchor"),
         "integral_max_error": diagram.get("coss_eff_integral_max_error"),
+        "provenance": diagram.get("provenance"),
     }
     status = str(diagram.get("status"))
-    if status == "pass" and diagram.get("coss_eff_curve"):
-        res.coss_eff_status = "pass"
-        res.coss_eff_curve = [tuple(k) for k in diagram["coss_eff_curve"]]
-    else:
+    if status != "pass":
         res.coss_eff_status = "unverified" if status == "unverified" else "rejected"
         res.coss_eff_reasons = list(diagram.get("reasons") or [f"output_charge_status:{status}"])
+        return res.coss_eff_reasons
+    problems = _diagram_problems(diagram)
+    if problems:
+        res.coss_eff_status = "rejected"
+        res.coss_eff_reasons = problems
+        return problems
+    res.coss_eff_status = "pass"
+    res.coss_eff_curve = [(float(v), float(c)) for v, c in diagram["coss_eff_curve"]]
+    return []
 
 
-def _source_contradiction(row: dict, diagram: dict | None) -> dict | None:
-    """qoss_check payload when a passing Qoss diagram, anchored to the SAME table Qoss
-    this row was checked against, explains a graph/table inconsistency; else None."""
-    if diagram is None or diagram.get("status") != "pass":
+def _source_contradiction(row: dict, diagram: dict | None, diagram_ok: bool) -> dict | None:
+    """qoss_check payload when a passing, re-validated Qoss diagram anchored to the SAME
+    table Qoss this row was checked against explains a graph/table inconsistency."""
+    if diagram is None or not diagram_ok:
         return None
     anchor = diagram.get("anchor") or {}
     ref = row.get("output_charge_reference") or {}
-    if (not anchor or ref.get("qoss_pc") is None or ref.get("vint_v") is None
-            or anchor.get("table_pc") != ref.get("qoss_pc")
-            or anchor.get("vds_v") != ref.get("vint_v")):
+    ref_q, ref_v = _finite_positive(ref.get("qoss_pc")), _finite_positive(ref.get("vint_v"))
+    if (ref_q is None or ref_v is None
+            or _finite_positive(anchor.get("table_pc")) != ref_q
+            or _finite_positive(anchor.get("vds_v")) != ref_v):
         return None
-    chart_pc = (row.get("qoss_metrics") or row.get("qoss_diagnostic_metrics") or {}).get("Qoss_pc")
+    chart_pc = _finite_positive(
+        (row.get("qoss_metrics") or row.get("qoss_diagnostic_metrics") or {}).get("Qoss_pc"))
     if chart_pc is None:
         return None
     return {
         "status": "source_contradiction",
         "basis": "qoss_diagram_matches_table",
-        "vds_v": ref["vint_v"],
-        "table_qoss_pc": ref["qoss_pc"],
+        "vds_v": ref_v,
+        "table_qoss_pc": ref_q,
         "diagram_qoss_pc": anchor.get("diagram_pc"),
-        "coss_chart_integral_pc": round(float(chart_pc), 2),
-        "coss_chart_integral_over_table": round(float(chart_pc) / float(ref["qoss_pc"]), 4),
+        "coss_chart_integral_pc": round(chart_pc, 2),
+        "coss_chart_integral_over_table": round(chart_pc / ref_q, 4),
         "note": "integrate coss_eff_curve, not coss_curve, for Qoss/Eoss",
     }
 
@@ -224,10 +276,11 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     res.crss_reasons.extend(trace_reasons["Crss"])
     res.ciss_reasons.extend(trace_reasons["Ciss"])
 
-    diagram = _matching_output_charge(row, output_charge or [])
-    _apply_coss_eff(res, diagram)
+    diagram = _matching_output_charge(row, output_charge or [], base_dir)
+    diagram_ok = not _apply_coss_eff(res, diagram)
     qoss_status = row.get("qoss_validation_status")
-    explained = _source_contradiction(row, diagram) if qoss_status == "graph_table_inconsistent" else None
+    explained = (_source_contradiction(row, diagram, diagram_ok)
+                 if qoss_status == "graph_table_inconsistent" else None)
     if qoss_status == "pass":
         res.qoss_check = {"status": "pass", "basis": "chart_integral_vs_table"}
     elif explained is not None:
