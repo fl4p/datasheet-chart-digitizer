@@ -131,7 +131,10 @@ looks right and reads wrong. Measure the ticks against their printed rules.
 
 If the page answers it, the fix belongs in dsdig: extend the library (see
 [`IMPROVING.md`](IMPROVING.md)). A new chart class first needs a few human-verified
-overlays approved by Fab before it is used in bulk. Meanwhile, for the task at hand,
+overlays approved by Fab before it is used in bulk. **An overlay is the digitized curves plus at least two
+labelled tick values per axis**, drawn at their calibrated positions so they can be checked against the printed
+ones. Never show Fab an overlay without them (Fab, 2026-11-24). Look at the overlay yourself first; if the renderer draws no
+labelled ticks, fix it before showing anything. Meanwhile, for the task at hand,
 climb this ladder in order and stop at the first rung that gives a definite answer:
 
 1. **Read it by hand.**
