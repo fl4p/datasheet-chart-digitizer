@@ -13,7 +13,11 @@ from .capacitance_grid_mask import (
 )
 from .capacitance_pair_tracking import bridge_flat_ciss_occlusions, track_ciss_coss_pair
 from .capacitance_types import CapAnchor, PlotBox, Trace
-from .capacitance_validation import UNPHYSICAL_VALUE_RISE_FRACTION, value_rise_fraction
+from .capacitance_validation import (
+    UNPHYSICAL_VALUE_RISE_FRACTION,
+    fall_then_rise_fractions,
+    value_rise_fraction,
+)
 
 
 SHARED_CISS_COSS_DISTANCE_FRACTION = 0.008
@@ -609,12 +613,17 @@ def trace_semantic_diagnostics(traces: list[Trace], plot: PlotBox) -> dict[str, 
             continue
         xs = [x for x, _ in points]
         ys = [y for _, y in points]
-        diagnostics[name] = {
+        trace_diag: dict[str, object] = {
             "points": len(points),
             "x_span_fraction": (max(xs) - min(xs)) / max(1, plot.width - 1),
             "y_range_px": max(ys) - min(ys),
             "value_rise_fraction": value_rise_fraction(points, plot_height),
         }
+        fall_rise = fall_then_rise_fractions(points, plot_height)
+        if fall_rise is not None:
+            trace_diag["fall_before_min_fraction"] = fall_rise[0]
+            trace_diag["rise_after_min_fraction"] = fall_rise[1]
+        diagnostics[name] = trace_diag
 
     if all(name in by_name and by_name[name] for name in ("Ciss", "Coss", "Crss")):
         x_min = max(min(x for x, _ in by_name[name]) for name in ("Ciss", "Coss", "Crss"))

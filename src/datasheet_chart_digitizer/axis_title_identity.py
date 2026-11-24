@@ -296,3 +296,75 @@ def frame_owned_axis_titles(page, transform, find_frame) -> tuple[str, str]:
     frame = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
     rules = page_rules(page.get_drawings(), _RULE_FRACTION * min(frame[2] - frame[0], frame[3] - frame[1]))
     return owned_axis_titles(page.get_text("words"), rules, frame)
+
+
+# ---------------------------------------------------------------------------
+# C(V) panel confirmation.
+
+# A capacitance unit, the word, or a Ciss/Coss/Crss symbol. A bare "C" is NOT
+# enough: it is also the coulomb ("Qoss [C]", "Qg [n C]") and part of "°C"
+# (codex review pass 2, 2026-11-24). Unit case matters: "pF"/"nF", never "nC".
+CAPACITANCE_Y_TITLE_RE = re.compile(
+    r"(?<![A-Za-z])[pnµu]F(?![a-z])|(?i:capacitance)|(?<![A-Za-z])C\s*_?\s*(?i:iss|oss|rss)(?![a-z])"
+)
+CAPACITANCE_X_TITLE_RE = re.compile(
+    r"(?<![a-z])V\s*_?\s*DS(?![a-z])|drain[\s\-‐–−]*(to[\s\-‐–−]*)?source\s+voltage", re.I
+)
+_CAPACITANCE_Y_OTHER_RE = re.compile(
+    r"(?<![a-z])(I\s*_?\s*D|Z\s*_?\s*th|R\s*_?\s*DS|Q\s*_?\s*(g|oss|rr|gs|gd)|E\s*_?\s*oss)(?![a-z])"
+    r"|K\s*/\s*W|°\s*C|current|impedance|resistance|charge|energy|temperature|(?<![A-Za-z])[nµu]?J(?![a-z])"
+    # a capacitance unit in a denominator or squared is another quantity:
+    # "1/C^2 (1/pF^2)" (codex review pass 3)
+    r"|1\s*/\s*[pnµu]?[CF]|\^\s*2|²",
+    re.I,
+)
+# The x axis must be VDS itself: a title that also names the gate voltage,
+# frequency, time or temperature plots against that, with VDS at most a
+# condition ("Gate voltage VGS (V) at VDS 25 V", "Frequency (MHz), VDS 25 V").
+_CAPACITANCE_X_OTHER_RE = re.compile(
+    r"(?<![a-z])V\s*_?\s*GS(?![a-z])|gate|frequency|(?<![A-Za-z])[kMG]?Hz(?![a-z])|time|temperature|°\s*C",
+    re.I,
+)
+
+
+def capacitance_titles_confirmed(x_title: str, y_title: str) -> tuple[bool, str]:
+    """(confirmed, reason): the panel's own titles name C vs VDS and nothing else.
+
+    Positive evidence only. Empty titles (raster pages, no owned text) are
+    "unevaluated", never a confirmation; a y title that also names a current,
+    impedance or resistance is a contradiction.
+    """
+
+    x_title, y_title = normalize_dashes(x_title), normalize_dashes(y_title)
+    if not x_title.strip() or not y_title.strip():
+        return False, "capacitance_titles_unevaluated"
+    if _CAPACITANCE_Y_OTHER_RE.search(y_title):
+        return False, "capacitance_y_title_contradicted"
+    if _CAPACITANCE_X_OTHER_RE.search(x_title):
+        return False, "capacitance_x_title_contradicted"
+    if not CAPACITANCE_Y_TITLE_RE.search(y_title):
+        return False, "capacitance_y_title_unconfirmed"
+    if not CAPACITANCE_X_TITLE_RE.search(x_title):
+        return False, "capacitance_x_title_unconfirmed"
+    return True, "capacitance_titles_confirmed"
+
+
+def capacitance_panel_titles(chart: dict, image_shape, plot) -> dict[str, object]:
+    """Owned axis titles of a C(V) crop and whether they confirm a C(V) panel.
+
+    Any failure to read the page is recorded and is NOT a confirmation.
+    """
+
+    from .crop_transform import CropTransform
+
+    try:
+        transform = CropTransform.for_chart(chart, image_shape)
+        with pymupdf.open(str(chart["pdf"])) as document:
+            x_title, y_title = frame_owned_axis_titles(
+                document[int(chart["page"]) - 1], transform, lambda: plot
+            )
+    except Exception as exc:  # unreadable page: unevaluated, never confirmed
+        return {"confirmed": False, "reason": f"capacitance_titles_error:{type(exc).__name__}",
+                "x_title": "", "y_title": ""}
+    confirmed, reason = capacitance_titles_confirmed(x_title, y_title)
+    return {"confirmed": confirmed, "reason": reason, "x_title": x_title, "y_title": y_title}

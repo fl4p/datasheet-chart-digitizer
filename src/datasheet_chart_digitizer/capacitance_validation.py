@@ -17,6 +17,12 @@ from .capacitance_types import AxisCalibration, OutputChargeReference, PlotBox, 
 # medians).  Calibrated: 24 good PASS charts top out at +0.011, while the SOA
 # (NCE2010E, +0.221) and Zth (FDD6612A, +0.097) leaks sit far above 0.05.
 UNPHYSICAL_VALUE_RISE_FRACTION = 0.05
+# Exception: superjunction Crss falls by decades to a minimum, then rises a
+# little (IPLT60R160CM8: fall 0.254, rise 0.088 of plot height).  A rise is
+# accepted only when the fall before the minimum exceeds it and the rise after
+# the minimum stays at or below this cap (about 2.8x IPLT's).  A large climb
+# stays flagged however much the trace fell first.
+MAX_PHYSICAL_RISE_AFTER_MIN_FRACTION = 0.25
 MIN_MATERIAL_TRACE_X_SPAN_FRACTION = 0.65
 MAX_CRSS_PEER_X_SPAN_DEFICIT = 0.06
 MAX_TRACE_LEFT_EDGE_GAP_FRACTION = 0.03
@@ -128,8 +134,13 @@ def trace_validation_summary(
     left_start_fractions: dict[str, float] | None = None,
     source_support_diagnostics: dict[str, object] | None = None,
     right_end_fractions: dict[str, float] | None = None,
+    capacitance_titles_confirmed: bool = False,
 ) -> dict[str, object]:
-    """Fail closed on incomplete or semantically untrusted C(V) traces."""
+    """Fail closed on incomplete or semantically untrusted C(V) traces.
+
+    ``capacitance_titles_confirmed``: the panel's own axis titles name C vs
+    VDS. Without it a rising trace is never exempted as fall-then-rise.
+    """
 
     flat_span_gate = (
         FLAT_GRID_CAPTURE_VECTOR_MIN_X_SPAN_FRACTION
@@ -267,6 +278,10 @@ def trace_validation_summary(
         if (
             float(trace_diag.get("value_rise_fraction") or 0.0)
             > UNPHYSICAL_VALUE_RISE_FRACTION
+            and not (
+                capacitance_titles_confirmed
+                and rise_is_physical_fall_then_rise(trace_diag)
+            )
         ):
             reasons.append(f"{name}_rises_with_vds_unphysical")
 
@@ -430,6 +445,48 @@ def value_rise_fraction(points: list[tuple[int, int]], plot_height: int) -> floa
     if not left or not right:
         return 0.0
     return (float(np.median(left)) - float(np.median(right))) / max(1, plot_height)
+
+
+def fall_then_rise_fractions(
+    points: list[tuple[int, int]], plot_height: int
+) -> tuple[float, float] | None:
+    """(fall before the minimum, rise after it) as fractions of plot height.
+
+    Superjunction Crss falls by decades to a minimum and then climbs back a
+    little (IPLT60R160CM8: fall 0.254, rise 0.088). A non-capacitance panel
+    mis-seated as C(V) rises without that prior fall (NCE2010E SOA: fall
+    <= 0.026, rise 0.125-0.807). The fall is measured from the left 5 % of
+    the span to the minimum of a moving average, so a single-pixel dip at
+    the edge cannot pose as a fall. Returns None when the trace is too short
+    to evaluate; callers must treat that as "no exemption".
+    """
+    if len(points) < 20:
+        return None
+    pts = sorted(points)
+    xs = np.array([x for x, _ in pts], dtype=float)
+    values = -np.array([y for _, y in pts], dtype=float)  # up = larger value
+    span = xs[-1] - xs[0]
+    if span <= 0:
+        return None
+    window = max(3, len(values) // 40)
+    smoothed = np.convolve(values, np.ones(window) / window, mode="valid")
+    v_min = float(smoothed.min())
+    edge = float(np.median(values[xs <= xs[0] + 0.05 * span]))
+    right = float(np.median(values[xs >= xs[-1] - 0.2 * span]))
+    height = max(1, plot_height)
+    return (edge - v_min) / height, (right - v_min) / height
+
+
+def rise_is_physical_fall_then_rise(trace_diag: dict) -> bool:
+    """True only when a measured fall before the minimum exceeds the later rise.
+
+    Missing measurements give False, so the unphysical-rise flag stays on.
+    """
+    fall = trace_diag.get("fall_before_min_fraction")
+    rise = trace_diag.get("rise_after_min_fraction")
+    if fall is None or rise is None:
+        return False
+    return float(fall) > float(rise) and float(rise) <= MAX_PHYSICAL_RISE_AFTER_MIN_FRACTION
 
 
 def coss_metrics_to_json(metrics: object) -> dict[str, float]:

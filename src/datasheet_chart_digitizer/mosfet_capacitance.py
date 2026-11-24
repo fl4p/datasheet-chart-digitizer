@@ -168,6 +168,7 @@ from .capacitance_vector import (
     _vector_curve_edges,
     extract_vector_trace_components_with_provenance,
 )
+from .axis_title_identity import capacitance_panel_titles
 from .chart_classifier import strong_noncapacitance_panel_kind
 
 
@@ -381,6 +382,9 @@ def process_chart(
         anchors,
     )
     diagnostics = trace_semantic_diagnostics(traces, plot)
+    # Positive C-vs-VDS title evidence is required before a rising trace may
+    # be read as a superjunction fall-then-rise rather than a mis-seated panel.
+    panel_titles = capacitance_panel_titles(chart, image.shape, plot)
     validation = trace_validation_summary(
         diagnostics,
         extraction_method,
@@ -388,6 +392,7 @@ def process_chart(
         trace_left_start_fractions(traces, plot),
         source_support_diagnostics,
         trace_right_end_fractions(traces, plot),
+        capacitance_titles_confirmed=bool(panel_titles["confirmed"]),
     )
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
@@ -666,6 +671,7 @@ def process_chart(
         "coss_top_decade_clip": coss_clip_diag,
         "trace_validation_status": validation["status"],
         "trace_validation_reasons": validation["reasons"],
+        "axis_title_evidence": panel_titles,
         "shared_collapse_spans": shared_spans,
         "source_support_diagnostics": source_support_diagnostics,
         "shared_collapse_thresholds": {
