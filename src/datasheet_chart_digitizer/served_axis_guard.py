@@ -94,3 +94,11 @@ def problems(checks: dict[str, GridCheck] | None) -> tuple[list[str], list[str]]
     failed = [c.reason for c in checks.values() if c.status == "failed"]
     unverified = [c.reason for c in checks.values() if c.status == "unverified"]
     return failed, unverified
+
+
+def refuse_unevaluable(checks: dict[str, GridCheck] | None, name: str) -> None:
+    """Raise when a check ran but evaluated no labelled tick on an axis: a
+    served axis that cannot be checked is refused, not served unverified."""
+    bad = [c.reason for c in (checks or {}).values() if c.status == "unverified" and not c.ticks]
+    if bad:
+        raise RuntimeError(f"{name}: served axis grid check evaluated no tick: " + "; ".join(bad))

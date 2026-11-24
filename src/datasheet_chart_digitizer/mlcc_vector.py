@@ -50,7 +50,7 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
-from .axis_calibration import _explicit_power_labels
+from .axis_calibration import power_tick_words
 
 # --------------------------------------------------------------------------- #
 # chart classes and units
@@ -680,31 +680,12 @@ def _words(page):
 
 
 def _power_words(page, words):
-    """*words* with ``10``+superscript tick labels, which word extraction
-    flattens ("10"+"2" -> "102"), re-read as ``1e<exp>`` from span geometry;
-    and the numeric words typeset in mixed glyph sizes that are no such
-    power (unreadable: dropped from the returned words)."""
-    powers = _explicit_power_labels(page)
-    chars = []
-    for blk in page.get_text("rawdict")["blocks"]:
-        for ln in blk.get("lines", []):
-            for sp in ln["spans"]:
-                chars += [(c["bbox"], sp["size"]) for c in sp["chars"] if not c["c"].isspace()]
-    out, mixed = [], []
-    for w in words:
-        if _num(w.text) is None and not re.fullmatch(r"10[-−]\d+", w.text):
-            out.append(w)
-            continue
-        x0, y0, x1, y1 = w.bbox
-        hit = [v for v, cx, cy, _ in powers if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5]
-        exps = {round(math.log10(v)) for v in hit}
-        if len(exps) == 1 and w.text.replace("−", "-") == f"10{next(iter(exps))}":
-            out.append(type(w)(f"1e{next(iter(exps))}", w.bbox))
-            continue
-        sizes = [sz for bb, sz in chars if x0 - 0.2 <= (bb[0] + bb[2]) / 2 <= x1 + 0.2
-                 and y0 - 0.5 <= (bb[1] + bb[3]) / 2 <= y1 + 0.5]
-        (mixed if sizes and max(sizes) > 1.1 * min(sizes) else out).append(w)
-    return out, mixed
+    """*words* with ``10``+superscript tick labels re-read as ``1e<exp>``
+    (axis_calibration.power_tick_words), and the numeric words carrying a
+    superscript or mixed glyph sizes that read as no such power (dropped)."""
+    kept, unread = power_tick_words(page, [(*w.bbox, w.text) for w in words])
+    out = [Word(f"1e{t[4][3:]}" if t[4].startswith("10^") else t[4], tuple(t[:4])) for t in kept]
+    return out, [Word(t[4], tuple(t[:4])) for t in unread]
 
 
 def _rotated_lines(page):
@@ -929,8 +910,10 @@ def _value_at(x, y, xq, scale_x="linear", reach=0.01):
 def digitize_chart(page, panel, words, rot_lines, shapes, small_fills):
     fx0, fy0, fx1, fy1 = panel.frame
     out = dict(frame_pt=[round(v, 3) for v in panel.frame], status="refused", reasons=[])
-    # title: words above the frame, within its x range, up to 32 pt
-    tw = [w for w in words if fx0 - 40 <= w.cx <= fx1 + 10 and fy0 - 34 <= w.cy < fy0 - 1]
+    pw, mixed = _power_words(page, words)
+    # title: words above the frame, within its x range, up to 32 pt (a top
+    # tick label's raised exponent is consumed by its 10^n word)
+    tw = [w for w in pw if fx0 - 40 <= w.cx <= fx1 + 10 and fy0 - 34 <= w.cy < fy0 - 1]
     lines = {}
     for w in sorted(tw, key=lambda w: (round(w.cy), w.bbox[0])):
         lines.setdefault(round(w.cy), []).append(w.text)
@@ -954,7 +937,6 @@ def digitize_chart(page, panel, words, rot_lines, shapes, small_fills):
     # the windows reach well past the frame ends on purpose: a label row bound
     # one pitch off pushes its last label past the frame, and that label must be
     # seen (it then binds to no rule and the axis is refused)
-    pw, mixed = _power_words(page, words)
     in_x = lambda w: fy1 < w.bbox[1] + 1 and w.cy < fy1 + 16 and fx0 - 40 < w.cx < fx1 + 40
     in_y = lambda w: w.bbox[2] < fx0 + 1 and w.bbox[2] > fx0 - 40 and fy0 - 25 < w.cy < fy1 + 25
     xl = [w for w in pw if _num(w.text) is not None and in_x(w)]

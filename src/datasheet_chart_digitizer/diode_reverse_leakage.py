@@ -50,6 +50,7 @@ import numpy as np
 
 import pymupdf
 
+from .axis_calibration import UNREAD_POWER
 from .axis_title_identity import frame_owned_axis_titles
 from .capacitance_plot_box import find_closed_frame_plot_box
 from .capacitance_types import PlotBox
@@ -337,6 +338,10 @@ def _calibrate(
 
     height, width = image.shape[:2]
     in_rows = [label for label in labels if 0 <= label.cy <= height]
+    unread = [label.text for label in in_rows
+              if label.text.startswith(UNREAD_POWER) and (0 <= label.cx <= width or label.x0 < 0 <= label.x1)]
+    if unread:
+        raise RuntimeError(f"tick labels {unread} carry a superscript read as no 10^n")
     # X labels use the plain numeric grammar (volts); the current ladder also
     # admits the decade forms leakage axes print (10^n, 10⁻ⁿ, 1E-2, 100n,
     # 10µA). A Y label may overhang the crop's LEFT edge -- that is where this

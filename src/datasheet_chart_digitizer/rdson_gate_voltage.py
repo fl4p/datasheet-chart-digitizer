@@ -56,6 +56,7 @@ import cv2
 import numpy as np
 import pymupdf
 
+from .axis_calibration import UNREAD_POWER, power_tick_words
 from .capacitance_types import PlotBox
 from .crop_transform import CropTransform
 from .diode_forward_voltage import TextLabel, _full_span_grid_lines
@@ -188,10 +189,12 @@ def digitize_panel(
 
 
 def _panel_words(page, ocr_words: PageText) -> PageText:
-    """Text-layer words (PyMuPDF) plus the locator's OCR words for this panel."""
+    """Text-layer words (PyMuPDF; 10 + superscript read as ``10^n``, unreadable ones
+    marked ``UNREAD_POWER``) plus the locator's OCR words for this panel."""
+    words, unread = power_tick_words(page)
     text_layer = [
-        Word(str(w[4]), float(w[0]), float(w[1]), float(w[2]), float(w[3]))
-        for w in page.get_text("words") if str(w[4]).strip()
+        Word(mark + str(w[4]), float(w[0]), float(w[1]), float(w[2]), float(w[3]))
+        for mark, ws in (("", words), (UNREAD_POWER, unread)) for w in ws if str(w[4]).strip()
     ]
     return PageText(ocr_words.page_num, ocr_words.width_pt, ocr_words.height_pt,
                     [*text_layer, *ocr_words.words], ocr_words.text_source)
@@ -221,6 +224,9 @@ def _digitize(panel, page, words, image, transform, spec_rows, row, out_dir, ste
         return ocr_labels
 
     hint = _plot_frame_px(panel, transform, gray)
+    unread = [label.text[len(UNREAD_POWER):] for label in layer_labels if label.text.startswith(UNREAD_POWER)]
+    if unread:
+        raise PanelRefused(f"axes_uncalibrated: tick labels {unread} carry a superscript read as no 10^n")
 
     def bands() -> list[TextLabel]:
         nonlocal band_labels

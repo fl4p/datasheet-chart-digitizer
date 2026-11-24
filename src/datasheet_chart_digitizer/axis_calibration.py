@@ -21,6 +21,7 @@ required on two-charts-per-row pages where both tick rows share the y band.
 """
 from __future__ import annotations
 
+import bisect
 import math
 import re
 from dataclasses import dataclass
@@ -242,6 +243,184 @@ def _explicit_power_labels(
                     )
                 )
     return labels
+
+
+# Text prefix a caller may put on an unread power label to keep it visible.
+UNREAD_POWER = "unread-10^n:"
+_FLAT_NUMBER_RE = re.compile(r"[+-]?\d[\d.,]*[+-]?\d*")
+_DIGITS = "0123456789"
+
+
+def _page_chars(page):
+    """Distinct non-space horizontal glyphs ``(char, bbox, baseline_y, size,
+    (span id, index))``, by x0."""
+    try:
+        payload = page.get_text("rawdict")
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+    seen, out = set(), []
+    for b, block in enumerate(payload.get("blocks", [])):
+        for n, line in enumerate(block.get("lines", [])):
+            if abs(line.get("dir", (1.0, 0.0))[1]) > 1e-3:
+                continue
+            for m, span in enumerate(line.get("spans", [])):
+                for k, c in enumerate(span.get("chars", [])):
+                    if c["c"].isspace():
+                        continue
+                    key = (c["c"], round(c["bbox"][0], 1), round(c["origin"][1], 1))
+                    if key not in seen:
+                        seen.add(key)
+                        out.append((c["c"], tuple(float(v) for v in c["bbox"]), float(c["origin"][1]),
+                                    float(span["size"]), ((b, n, m), k)))
+    return sorted(out, key=lambda c: c[1][0])
+
+
+def _chars_from(chars, x_lo, x_hi):
+    lo = bisect.bisect_left(chars, x_lo, key=lambda c: c[1][0])
+    hi = bisect.bisect_right(chars, x_hi, key=lambda c: c[1][0])
+    return chars[lo:hi]
+
+
+def _raised_power_pairs(chars):
+    """``(label, base_bbox, exponent_bbox, strict)`` for each lone "10" glyph
+    pair (an adjacent sign glyph included) followed by a raised, or smaller,
+    signed-integer glyph run; *label* is the flattened text ("-10-3").
+    *strict* is False for a smaller run too far right to be read with trust."""
+    def same_line(a, b):
+        return abs(a[2] - b[2]) <= 0.15 * a[3]
+
+    def adjacent(left, right, gap, overlap=0.8):
+        return -overlap <= right[1][0] - left[1][2] <= gap
+
+    out = []
+    for one in chars:
+        if one[0] != "1":
+            continue
+        size = one[3]
+        near = _chars_from(chars, one[1][0] - 3 * size, one[1][2] + 3 * size)
+        zero = next((c for c in near if c[0] == "0" and same_line(one, c) and abs(c[3] - size) <= 0.1 * size
+                     and adjacent(one, c, 0.3 * size)), None)
+        if zero is None:
+            continue
+        left = [c for c in near if c is not one and same_line(one, c) and adjacent(c, one, 0.3 * size)]
+        sign = left[0] if len(left) == 1 and left[0][0] in "-−–+" else None
+        if (left and sign is None) or any(c is not zero and c[0] in _DIGITS + ".," and same_line(one, c)
+                                          and adjacent(zero, c, 0.3 * size) for c in near) or (
+                sign is not None and any(same_line(one, c) and adjacent(c, sign, 0.3 * size) for c in near)):
+            continue
+
+        def raised(c):
+            rise = zero[2] - c[2]
+            return c[3] <= 1.05 * size and rise < 0.9 * size and (
+                rise >= 0.15 * size or (c[3] < 0.95 * size and rise >= -0.05 * size))
+
+        first = [c for c in near if c[0] in _DIGITS + "-−–+" and raised(c) and (
+            adjacent(zero, c, 0.5 * size + 0.5, 0.3 * size)
+            or (c[3] < 0.95 * size and adjacent(zero, c, 1.5 * size, 0.3 * size)))]
+        if not first:
+            continue
+        # nearest glyph first; overlapping steps only within one span: an
+        # overprinted copy of the label sits about one glyph to the right
+        run = [min(first, key=lambda c: abs(c[1][0] - zero[1][2]))]
+        while True:
+            last = run[-1]
+            nxt = [c for c in _chars_from(chars, last[1][0] + 1e-6, last[1][2] + last[3])
+                   if c[0] in _DIGITS and same_line(last, c) and adjacent(
+                       last, c, 0.3 * last[3],
+                       0.8 if c[4][0] == last[4][0] and 0 < c[4][1] - last[4][1] <= 2 else 0.25)]
+            if not nxt:
+                break
+            run.append(min(nxt, key=lambda c: abs(c[1][0] - run[-1][1][2])))
+        exp = "".join(c[0] for c in run).replace("−", "-").replace("–", "-")
+        if not re.fullmatch(r"[+-]?\d{1,3}", exp):
+            continue
+        head = [c for c in (sign, one, zero) if c is not None]
+        base = (head[0][1][0], min(c[1][1] for c in head), zero[1][2], max(c[1][3] for c in head))
+        ebox = (run[0][1][0], min(c[1][1] for c in run), run[-1][1][2], max(c[1][3] for c in run))
+        gap = run[0][1][0] - zero[1][2]
+        label = ("-" if sign is not None and sign[0] != "+" else "") + "10" + exp
+        out.append((label, base, ebox, gap <= 0.5 * size + 0.5 or (run[0][3] < 0.95 * size and gap <= 0.8 * size + 0.5)))
+    return out
+
+
+def power_tick_words(page, words=None):
+    """Read tick labels typeset as "10" + raised exponent as one ``10^n`` word.
+
+    *words* are PyMuPDF word tuples ``(x0, y0, x1, y1, text, ...)`` (default:
+    ``page.get_text("words")``). Glyph geometry decides, not the word text: the
+    exponent is a signed integer run right of a lone "10" whose baseline is
+    raised (or, on the base line, whose glyphs are smaller). The word stream
+    may carry it flattened ("102", "10-1"), split ("10" + "2", also across
+    lines) or flattened at the base glyph size; each form returns one word
+    ``10^n`` (``-10^n`` with a sign glyph), the other words of the label
+    consumed. A flattened word keeps its box; a split label spans its words
+    in x and keeps the base word's y extent.
+
+    Returns ``(words, unread)``: *unread* are numeric words carrying such a
+    raised or mixed-size glyph run that read as no ``10^n`` (removed from
+    *words*); a caller must refuse any axis they fall on. Plain single-size
+    numbers ("102", glued "100010000") pass unchanged.
+    """
+    words = [tuple(w) for w in (page.get_text("words") if words is None else words)]
+    chars = _page_chars(page)
+
+    def holds(w, box, pad=0.5):
+        cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+        return w[0] - pad <= cx <= w[2] + pad and w[1] - pad <= cy <= w[3] + pad
+
+    def norm(t):
+        return t.strip().replace("−", "-").replace("–", "-")
+
+    repl, drop, unread = {}, set(), set()
+    for label, base, ebox, strict in _raised_power_pairs(chars):
+        text = f"{label[:label.index('10')]}10^{int(label[label.index('10') + 2:])}"
+        ends = [(ebox[0] + 0.3, ebox[1], ebox[0] + 0.3, ebox[3]), (ebox[2] - 0.3, ebox[1], ebox[2] - 0.3, ebox[3])]
+        group = [i for i, w in enumerate(words) if i not in repl and (
+            holds(w, base) or holds(w, ebox) or any(holds(w, b, 0.0) for b in ends))]
+        rest = []
+        for i in group:
+            if strict and norm(words[i][4]) == label and holds(words[i], base) and holds(words[i], ebox):
+                repl[i] = (*words[i][:4], text, *words[i][5:])
+            else:
+                rest.append(i)
+        heads = [i for i in rest if holds(words[i], base)]
+        seen = {}
+        for i in sorted(rest, key=lambda i: words[i][0]):
+            seen.setdefault((norm(words[i][4]), round(words[i][0], 1), round(words[i][1], 1)), i)
+        joined = "".join(key[0] for key in seen)
+        if not rest:
+            continue
+        if strict and heads and joined == label:
+            # x spans the whole label, y stays on the base glyphs (the tick)
+            x0, x1 = min(words[i][0] for i in rest), max(words[i][2] for i in rest)
+            for i in heads:
+                repl[i] = (x0, words[i][1], x1, words[i][3], text, *words[i][5:])
+            drop.update(i for i in rest if i not in heads)
+        elif not heads and all(norm(words[i][4]) == label[label.index("10") + 2:] for i in rest):
+            drop.update(rest)
+        else:
+            unread.update(rest)
+    for i, w in enumerate(words):
+        if i in repl or i in drop or i in unread or not _FLAT_NUMBER_RE.fullmatch(norm(w[4])):
+            continue
+        inside = sorted((c for c in _chars_from(chars, w[0] - 0.5, w[2]) if c[1][2] <= w[2] + 0.5
+                         and w[1] - 0.5 <= c[1][1] and c[1][3] <= w[3] + 0.5), key=lambda c: c[1][0])
+        if not inside:
+            continue
+        # a superscript the pairing did not read: trailing digits raised or smaller
+        digits = [c for c in inside if c[0] in _DIGITS]
+        head = digits[0]
+        k = next((k for k, c in enumerate(digits) if abs(c[2] - head[2]) > 0.15 * head[3]
+                  or abs(c[3] - head[3]) > 0.05 * head[3]), len(digits))
+        if k < len(digits) and all(c[2] <= head[2] - 0.15 * head[3] or (
+                c[3] < 0.95 * head[3] and c[2] <= head[2] + 0.05 * head[3]) for c in digits[k:]):
+            unread.add(i)
+    unread -= set(repl)
+    drop -= set(repl)
+    kept = [repl.get(i, w) for i, w in enumerate(words) if i not in drop and i not in unread]
+    return kept, [words[i] for i in sorted(unread)]
 
 
 def _inside_box(cx: float, cy: float, bbox: tuple[float, float, float, float]) -> bool:
@@ -483,35 +662,38 @@ def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=Non
     """
     xt, yd_explicit, yd_plain, yd_numeric = [], [], [], []
     y_units: set[str] = set()
-    explicit_labels = _explicit_power_labels(page)
-    for w in page.get_text("words"):
+    words, unread = power_tick_words(page)
+
+    def in_x(cx, cy):
+        return x_row_band[0] < cy < x_row_band[1] and (x_col_band is None or x_col_band[0] < cx < x_col_band[1])
+
+    def in_y(cx, cy):
+        return y_label_x_band[0] < cx < y_label_x_band[1] and plot_y_band[0] < cy < plot_y_band[1]
+
+    bad = [w[4] for w in unread if in_x((w[0] + w[2]) / 2, (w[1] + w[3]) / 2) or in_y((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)]
+    if bad:
+        raise RuntimeError(f"tick labels {bad} carry a superscript read as no 10^n")
+    for w in words:
         cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
         t = w[4].strip()
-        flattened_power = any(_inside_box(cx, cy, label[3]) for label in explicit_labels)
-        if (
-            x_row_band[0] < cy < x_row_band[1]
-            and (x_col_band is None or x_col_band[0] < cx < x_col_band[1])
-            and _X_TICK_RE.fullmatch(t)
-            and not flattened_power
-        ):
+        power = re.fullmatch(r"10\^(-?\d+)", t)
+        if power is not None:
+            if in_x(cx, cy):
+                xt.append((10.0 ** int(power.group(1)), cx))
+            if in_y(cx, cy):
+                yd_explicit.append((float(int(power.group(1))), cy))
+            continue
+        if in_x(cx, cy) and _X_TICK_RE.fullmatch(t):
             xt.append((float(t.replace("−", "-")), cx))
-        if y_label_x_band[0] < cx < y_label_x_band[1] and plot_y_band[0] < cy < plot_y_band[1]:
+        if in_y(cx, cy):
             value = _exact_number_token(t)
-            if value is not None and not flattened_power:
+            if value is not None:
                 yd_numeric.append((value, cy))
                 if _is_plain_decade(value):
                     yd_plain.append((math.log10(value), cy))
             unit = _capacitance_unit_token(t)
             if unit is not None:
                 y_units.add(unit)
-    for value, cx, cy, _ in explicit_labels:
-        if (
-            x_row_band[0] < cy < x_row_band[1]
-            and (x_col_band is None or x_col_band[0] < cx < x_col_band[1])
-        ):
-            xt.append((value, cx))
-        if y_label_x_band[0] < cx < y_label_x_band[1] and plot_y_band[0] < cy < plot_y_band[1]:
-            yd_explicit.append((math.log10(value), cy))
     numeric_values = [value for value, _pixel in yd_numeric]
     if len(set(numeric_values)) != len(numeric_values):
         raise RuntimeError("duplicate Y tick values cannot own distinct positions")

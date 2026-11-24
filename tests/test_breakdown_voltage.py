@@ -140,8 +140,10 @@ class KnownBadInputsRefuse(unittest.TestCase):
         # breakdown forces model="linear", so the collinear axis still calibrates
         # and the input reaches the downstream curve-count guard exactly as before
         # (CurveCountGuardUnit covers that guard directly too).
+        # since the served-axis grid check refuses when it evaluates no tick, the
+        # refusal may come from that check before the curve-count guard
         cap = self._chart("capacitances")
-        with self.assertRaisesRegex(RuntimeError, "expected exactly 1"):
+        with self.assertRaisesRegex(RuntimeError, "expected exactly 1|evaluated no tick"):
             bv.process_chart(cap, self.out / cap["crop_png"], self.out / "bad", Path("bad/cap"))
 
     def test_wrong_spec_anchor_fails_loud(self):

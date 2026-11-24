@@ -169,6 +169,15 @@ class _FakePage:
     def get_text(self, kind):
         if kind == "words":
             return self._words
+        if kind == "rawdict":
+            # glyphs split evenly over each span, baseline at the span bottom
+            def chars(span):
+                x0, y0, x1, y1 = span["bbox"]
+                step = (x1 - x0) / len(span["text"])
+                return [{"c": c, "bbox": (x0 + i * step, y0, x0 + (i + 1) * step, y1), "origin": (x0 + i * step, y1)}
+                        for i, c in enumerate(span["text"])]
+            return {"blocks": [{"lines": [{"spans": [dict(s, chars=chars(s)) for s in spans]}
+                                          for spans in self._lines]}]}
         return {"blocks": [{"lines": [{"spans": spans} for spans in self._lines]}]}
 
 

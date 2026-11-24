@@ -312,6 +312,21 @@ def process_chart(
             + "; ".join(grid_failed)
             + "); physical vds_V/cap_pF columns and Qoss validation are disabled"
         )
+    elif grid_unevaluable := [
+        f"{axis}: {check['reason']}"
+        for axis in ("x", "y")
+        if axis_trusted and axis_calibration is not None
+        and (check := getattr(axis_calibration, f"{axis}_grid_check")) is not None
+        and check["status"] == "unverified"
+        and not check.get("ticks")
+    ]:
+        # a served axis no labelled tick could be checked on is not served
+        axis_trusted = False
+        axis_warning = (
+            "served axis grid check evaluated no tick ("
+            + "; ".join(grid_unevaluable)
+            + "); physical vds_V/cap_pF columns and Qoss validation are disabled"
+        )
     elif axis_calibration is not None and not axis_trusted:
         axis_warning = (
             "untrusted text-order axis fallback; physical vds_V/cap_pF columns "

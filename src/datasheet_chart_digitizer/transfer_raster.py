@@ -89,6 +89,7 @@ def process_raster_transfer(chart: dict, crop_path: Path, out_dir: Path, rel_ste
         failed, unverified = served_axis_guard.problems(checks)
         if failed:
             raise RuntimeError("served axis misses its gridlines: " + "; ".join(failed))
+        served_axis_guard.refuse_unevaluable(checks, "transfer")
         widest = rule_width(native, plot, x_grid, y_grid)
         mask, kernel = curve_mask(native, plot, widest)
         _boxes, glyph_h = gutter_label_boxes(native, plot, "y")

@@ -1091,6 +1091,7 @@ def calibrated_temperature_trace(
         grid_failed, grid_unverified = served_axis_guard.problems(grid_checks)
         if grid_failed:
             raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
+        served_axis_guard.refuse_unevaluable(grid_checks, "breakdown")
         if source_points_px is None:
             source_points_px = _extract_single_trace(page, transform, plot, fitz)
         points_px, withheld_points = _clip_points_to_one_unlabeled_interval(

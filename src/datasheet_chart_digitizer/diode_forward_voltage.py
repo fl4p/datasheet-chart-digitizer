@@ -19,7 +19,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from .axis_calibration import _explicit_power_labels
+from .axis_calibration import UNREAD_POWER, power_tick_words
 from .capacitance_traces import find_plot_box
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
@@ -163,6 +163,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     grid_failed, grid_unverified = served_axis_guard.problems(calibration.grid_checks)
     if grid_failed:
         raise RuntimeError("served axis misses its gridlines: " + "; ".join(grid_failed))
+    served_axis_guard.refuse_unevaluable(calibration.grid_checks, "body diode")
     voltage_on_y = _voltage_on_y_axis(calibration)
     labels = _panel_temperature_labels(panel)
     temperatures = _panel_temperatures(panel, labels)
@@ -827,39 +828,16 @@ def _snap_axis_to_grid(
 
 
 def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
+    """Page words as crop-pixel labels; "10" + superscript tick labels read as
+    ``10^n`` (axis_calibration.power_tick_words), unreadable ones marked
+    ``UNREAD_POWER`` so an axis they fall on refuses."""
+    words, unread = power_tick_words(page)
     labels = []
-    for word in page.get_text("words"):
+    for word, mark in [(w, "") for w in words] + [(w, UNREAD_POWER) for w in unread]:
         x0, y0 = transform.to_px(word[0], word[1])
         x1, y1 = transform.to_px(word[2], word[3])
-        text = _normalize_numeric_text(word[4].strip())
+        text = mark + _normalize_numeric_text(word[4].strip())
         labels.append(TextLabel(text, (x0 + x1) / 2, (y0 + y1) / 2, x0, x1))
-
-    # PyMuPDF word text flattens 10 + superscript 0 into "100" (and 10 +
-    # superscript -2 into "10-2").  Preserve the decisive span metadata as an
-    # explicit 10^n before generic axis fitting; the span pairing (smaller,
-    # adjacent exponent span after a "10" base) is axis_calibration's.
-    for value, cx_pt, cy_pt, bbox in _explicit_power_labels(page):
-        exponent = int(round(math.log10(value)))
-        x0, y0 = transform.to_px(bbox[0], bbox[1])
-        x1, y1 = transform.to_px(bbox[2], bbox[3])
-        raw = f"10{exponent}"
-        matches = [
-            (
-                abs(label.cx - (x0 + x1) / 2) + abs(label.cy - (y0 + y1) / 2),
-                index,
-            )
-            for index, label in enumerate(labels)
-            if label.text == raw
-        ]
-        distance, nearest = min(matches, default=(float("inf"), None))
-        if nearest is not None and distance <= 12.0:
-            labels[nearest] = TextLabel(
-                f"10^{exponent}",
-                (x0 + x1) / 2,
-                (y0 + y1) / 2,
-                x0,
-                x1,
-            )
     return labels
 
 
@@ -883,6 +861,7 @@ def _select_axis(
         for label in labels
         if _NUMERIC_RE.fullmatch(_normalize_numeric_text(label.text))
         or re.fullmatch(r"10\^[+-]?\d+", _normalize_numeric_text(label.text))
+        or label.text.startswith(UNREAD_POWER)
     ]
     if orientation == "x":
         nearby = [
@@ -906,6 +885,9 @@ def _select_axis(
         ]
         cluster_attr, position_attr, tolerance, edge_value = "x1", "cy", 9.0, hint.x0
 
+    unread = [label.text[len(UNREAD_POWER):] for label in nearby if label.text.startswith(UNREAD_POWER)]
+    if unread:
+        raise RuntimeError(f"{orientation.upper()} axis: tick labels {unread} carry a superscript read as no 10^n")
     groups = _cluster(nearby, attrgetter(cluster_attr), tolerance)
 
     def position(label: TextLabel) -> float:

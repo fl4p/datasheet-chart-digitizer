@@ -16,6 +16,7 @@ from unittest import mock
 
 import numpy as np
 
+from datasheet_chart_digitizer import axis_calibration
 from datasheet_chart_digitizer import mlcc_vector as M
 
 try:
@@ -47,11 +48,19 @@ def _clipped_bezier_chain(doc, pg, frame, P, col, width):
     doc.update_stream(xref, pg.read_contents() + ("\n" + "\n".join(ops) + "\n").encode())
 
 
+# exponent (glyph size, rise, leading text) next to an 8 pt "10"
+SUP_FORMS = {"flat": (5.0, 3.0, ""), "split_line": (5.0, 3.0, " "), "own_line": (5.0, 6.0, ""),
+             "same_size": (7.7, 2.0, "")}
+
+
 def _page(*, title="Impedance,ESR Freq.", label_shift_pt=0.0, minor_shift_pt=0.0, y_unit="OHM",
-          legend=("ESR", "Z"), series=None, log_y=True, xdec=(-3, 4), ydec=(-4, 2), superscript=""):
+          legend=("ESR", "Z"), series=None, log_y=True, xdec=(-3, 4), ydec=(-4, 2), superscript="",
+          sup_form="flat"):
     """*superscript*: the axes ("x", "y", "xy") whose decade tick labels are
-    typeset as "10" + a smaller raised exponent span (word extraction flattens
-    10^2 to "102")."""
+    typeset as "10" + a raised exponent span; *sup_form* (SUP_FORMS) picks how
+    word extraction sees it: "flat" "102", "split_line" "10" + "2" on one
+    line, "own_line" the exponent on its own line, "same_size" "102" at the
+    base glyph size."""
     doc = fitz.open()
     pg = doc.new_page(width=595, height=842)
     x0, y0, x1, y1 = 330.0, 355.0, 480.0, 475.0
@@ -87,10 +96,11 @@ def _page(*, title="Impedance,ESR Freq.", label_shift_pt=0.0, minor_shift_pt=0.0
             w = fitz.get_text_length(t, fontsize=8)
             pg.insert_text((x - w * anchor, y), t, fontsize=8)
             return
-        w0, w1 = fitz.get_text_length("10", fontsize=8), fitz.get_text_length(str(d), fontsize=5)
+        size, rise, lead = SUP_FORMS[sup_form]
+        w0, w1 = fitz.get_text_length("10", fontsize=8), fitz.get_text_length(lead + str(d), fontsize=size)
         left = x - (w0 + w1) * anchor
         pg.insert_text((left, y), "10", fontsize=8)
-        pg.insert_text((left + w0, y - 3), str(d), fontsize=5)
+        pg.insert_text((left + w0, y - rise), lead + str(d), fontsize=size)
     for d in range(xdec[0], xdec[1] + 1):
         label(d, X(10.0 ** d) + label_shift_pt, y1 + 11, 0.5, "x" in superscript)
     for d in range(ydec[0], ydec[1] + 1):
@@ -285,12 +295,21 @@ class SuperscriptDecadeLabels(unittest.TestCase):
             self._assert_truth(ch, truth, xdec, (-4, 2))
 
     def test_unpaired_superscript_label_refuses_axis(self):
-        with mock.patch.object(M, "_explicit_power_labels", return_value=[], create=True):
+        with mock.patch.object(axis_calibration, "_raised_power_pairs", return_value=[]):
             ch, _ = self._run(superscript="x", xdec=(0, 7))
         self.assertEqual(ch["status"], "refused")
         self.assertEqual(ch["axes"]["x"]["status"], "refused")
         self.assertIn("mix glyph sizes", " ".join(ch["axes"]["x"]["reasons"]))
         self.assertNotIn("curves", ch)
+
+    def test_every_word_form_reads_as_powers_of_ten(self):
+        # on bfeb0b5 split_line/own_line kept "10" + "2" and same_size "102":
+        # refused or served on a linear 100..107 axis
+        for form in SUP_FORMS:
+            for kw in (dict(superscript="x", xdec=(0, 7)), dict(superscript="xy", xdec=(-3, 4))):
+                with self.subTest(form=form, **kw):
+                    ch, truth = self._run(sup_form=form, **kw)
+                    self._assert_truth(ch, truth, kw["xdec"], (-4, 2))
 
     def test_plain_number_labels_unchanged(self):
         ch, _ = self._run()

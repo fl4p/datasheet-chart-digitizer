@@ -58,7 +58,7 @@ from .crop_transform import CropTransform
 from .chart_classifier import compact_formula_chart_kind
 from . import axis_title_identity as titles
 from .source_color_binding import bind_two_source_color_legend
-from .axis_calibration import _explicit_power_labels
+from .axis_calibration import _explicit_power_labels, power_tick_words
 from .transfer_axis_calibration import calibrate_transfer as _calibrate_transfer
 from .transfer_axis_calibration import require_seated_sparse_axes
 from .transfer_axis_calibration import select_horizontal_tick_row as _select_horizontal_tick_row  # noqa: F401
@@ -655,6 +655,24 @@ def _power_labels_px(page, transform: CropTransform):
     return out
 
 
+def _refuse_unpaired_powers(page, transform: CropTransform, plot: PlotBox, power_labels) -> None:
+    """Refuse when a 10 + superscript tick label near the axes is unread, or
+    read by glyph geometry but not by the span pairing *power_labels* use."""
+    words, unread = power_tick_words(page)
+    bad = []
+    for w in [*unread, *(w for w in words if "10^" in w[4])]:
+        x0, y0 = transform.to_px(w[0], w[1])
+        x1, y1 = transform.to_px(w[2], w[3])
+        cx, cy = 0.5 * (x0 + x1), 0.5 * (y0 + y1)
+        if any(b[0] - 1 <= cx <= b[2] + 1 and b[1] - 1 <= cy <= b[3] + 1 for *_v, b in power_labels):
+            continue
+        if (plot.x0 - 0.22 * plot.width <= cx <= plot.x1 + 0.14 * plot.width
+                and plot.y0 - 0.02 * plot.height <= cy <= plot.y1 + 0.25 * plot.height):
+            bad.append(w[4])
+    if bad:
+        raise RuntimeError(f"tick labels {bad} carry a superscript the axis fit cannot read")
+
+
 def _extract_panel_curves(
     page,
     transform: CropTransform,
@@ -672,7 +690,9 @@ def _extract_panel_curves(
     refused valid 1/10/100/1000 A ticks.
     """
     plot = _vector_plot_frame(page, transform, gray.shape) or find_closed_frame_plot_box(gray)
-    label_x, label_y, sparse_axes = _calibrate_transfer(words, plot, _power_labels_px(page, transform))
+    power_labels = _power_labels_px(page, transform)
+    _refuse_unpaired_powers(page, transform, plot, power_labels)
+    label_x, label_y, sparse_axes = _calibrate_transfer(words, plot, power_labels)
     major_x, major_y = _full_span_grid_lines(gray, plot, plot)
     x_axis = _snap_axis_to_grid(label_x, major_x, "X axis (VGS)", authoritative=True)
     y_axis = _snap_axis_to_grid(label_y, major_y, "Y axis (ID)", authoritative=True)
@@ -684,6 +704,7 @@ def _extract_panel_curves(
     failed, _unverified = served_axis_guard.problems(grid_checks)
     if failed:
         raise RuntimeError("served axis misses its gridlines: " + "; ".join(failed))
+    served_axis_guard.refuse_unevaluable(grid_checks, "transfer")
     require_seated_sparse_axes(grid_checks, sparse_axes)
     pixel_curves = _extract_curves(page, transform, plot, fitz, expected_count)
     return plot, x_axis, y_axis, pixel_curves, grid_checks
