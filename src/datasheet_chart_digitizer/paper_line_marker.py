@@ -13,9 +13,16 @@ colour with the series marker at its centre and the label to its right.
 
 Calibration: every tick label is bound to its tick mark (mlcc_vector.calibrate_axis,
 tick marks as the major rules); gridlines are checked against the fitted label
-lattice. Identity: a series binds to the legend entry with the same colour AND
-the same marker signature; the signature of a series is the majority over its
-vertices and must be unique, or the chart is ``unverified``.
+lattice. Tick labels typeset as 10 + superscript exponent are read as powers of
+ten from span geometry; a numeric label of mixed glyph sizes that is not such a
+power refuses the axis. Identity: a series binds to the legend entry with the
+same colour AND the same marker signature; the signature of a series is the
+majority over its vertices and must be unique, or the chart is ``unverified``.
+
+Served points are the vertices that carry the series marker; others are withheld.
+A curve is ``ok`` only when bound, both axes are verified and no vertex was
+withheld, else ``unverified``; an ``unbound`` path is not served (no x/y), only
+drawn on the overlay. The CSV carries each row's curve and chart status.
 """
 
 from __future__ import annotations
@@ -24,11 +31,13 @@ import argparse
 import csv
 import json
 import math
+import re
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
+from .axis_calibration import _explicit_power_labels
 from .mlcc_vector import (_cell, _chromatic, _colour, _darkness, _fitz, _git_rev, _num, _rotated_lines, _words,
                           calibrate_axis, draw_axis_map, overlay_canvas)
 
@@ -180,16 +189,45 @@ def _signature_at(marks, colour, p, tol=MARKER_TO_VERTEX_PT):
     return _marker_kind(fill, toks)
 
 
+def _power_words(page, words):
+    """*words* with ``10``+superscript tick labels, which word extraction
+    flattens ("10"+"2" -> "102"), re-read as ``1e<exp>`` from span geometry;
+    and the numeric words typeset in mixed glyph sizes that are no such
+    power (unreadable: dropped from the returned words)."""
+    powers = _explicit_power_labels(page)
+    chars = []
+    for blk in page.get_text("rawdict")["blocks"]:
+        for ln in blk.get("lines", []):
+            for sp in ln["spans"]:
+                chars += [(c["bbox"], sp["size"]) for c in sp["chars"] if not c["c"].isspace()]
+    out, mixed = [], []
+    for w in words:
+        if _num(w.text) is None and not re.fullmatch(r"10[-−]\d+", w.text):
+            out.append(w)
+            continue
+        x0, y0, x1, y1 = w.bbox
+        hit = [v for v, cx, cy, _ in powers if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5]
+        exps = {round(math.log10(v)) for v in hit}
+        if len(exps) == 1 and w.text.replace("−", "-") == f"10{next(iter(exps))}":
+            out.append(type(w)(f"1e{next(iter(exps))}", w.bbox))
+            continue
+        sizes = [sz for bb, sz in chars if x0 - 0.2 <= (bb[0] + bb[2]) / 2 <= x1 + 0.2
+                 and y0 - 0.5 <= (bb[1] + bb[3]) / 2 <= y1 + 0.5]
+        (mixed if sizes and max(sizes) > 1.1 * min(sizes) else out).append(w)
+    return out, mixed
+
+
 def digitize_panel(page, frame, lines, polys, marks, words, rot):
     fx0, fy0, fx1, fy1 = frame
     out = dict(chart_class="paper_line_marker", frame_pt=[round(v, 3) for v in frame], status="refused",
                reasons=[], validation_state="UNVALIDATED chart class (needs human-verified overlays)")
     xt, yt = _ticks(lines, frame)
     gh, gv = _gridlines(lines, frame)
-    xl = [w for w in words if _num(w.text) is not None and fy1 < w.bbox[1] + 1 and w.cy < fy1 + 16
-          and fx0 - 20 < w.cx < fx1 + 20]
-    yl = [w for w in words if _num(w.text) is not None and fx0 - 40 < w.bbox[2] < fx0 + 1
-          and fy0 - 15 < w.cy < fy1 + 15]
+    words, mixed = _power_words(page, words)
+    in_x = lambda w: fy1 < w.bbox[1] + 1 and w.cy < fy1 + 16 and fx0 - 20 < w.cx < fx1 + 20
+    in_y = lambda w: fx0 - 40 < w.bbox[2] < fx0 + 1 and fy0 - 15 < w.cy < fy1 + 15
+    xl = [w for w in words if _num(w.text) is not None and in_x(w)]
+    yl = [w for w in words if _num(w.text) is not None and in_y(w)]
     if xl:
         row = min(round(w.cy) for w in xl)
         xl = [w for w in xl if abs(w.cy - row) < 3]
@@ -200,6 +238,11 @@ def digitize_panel(page, frame, lines, polys, marks, words, rot):
                           [(t, 1.0) for t in xt] + [(g, 0.1) for g in gv], fx0, fx1)
     ycal = calibrate_axis("y", [(_num(w.text), w.cy) for w in yl],
                           [(t, 1.0) for t in yt] + [(g, 0.1) for g in gh], fy1, fy0)
+    for cal, band in ((xcal, in_x), (ycal, in_y)):
+        bad = [w.text for w in mixed if band(w)]
+        if bad:
+            cal.status = "refused"
+            cal.reasons.append(f"tick labels {bad} mix glyph sizes (superscript?) and read as no 10^n")
     xt_title = " ".join(w.text for w in sorted(words, key=lambda w: w.bbox[0])
                         if fx0 - 10 < w.cx < fx1 + 10 and fy1 + 9 < w.cy < fy1 + 28 and _num(w.text) is None)
     yt_c = [t for t, bb in rot if bb[2] <= fx0 and bb[0] >= fx0 - 60 and bb[1] < fy1 and bb[3] > fy0]
@@ -270,6 +313,7 @@ def digitize_panel(page, frame, lines, polys, marks, words, rot):
         cnt = Counter(s for s in sigs if s is not None)
         top, ntop = cnt.most_common(1)[0] if cnt else (None, 0)
         series.append(dict(poly=p, sigs=sigs, marker=top, marker_frac=ntop / len(N)))
+    axes_note = [f"{k} axis {c.status}" for k, c in (("x", xcal), ("y", ycal)) if c.status != "verified"]
     curves = []
     for s in series:
         col = s["poly"]["colour"]
@@ -279,29 +323,42 @@ def digitize_panel(page, frame, lines, polys, marks, words, rot):
             reasons.append(f"marker signature {s['marker']} on only {s['marker_frac']:.0%} of vertices")
         if len(cands) != 1:
             reasons.append(f"colour {col} + marker {s['marker']} binds {len(cands)} legend entries")
+        bound = not reasons
         label = cands[0]["label"] if len(cands) == 1 else f"unbound {col} {s['marker']}"
         N = s["poly"]["nodes"]
         keep = np.r_[True, np.hypot(*np.diff(N, axis=0).T) > 0.01]
         n_dup = int((~keep).sum())
-        N = N[keep]
-        xs, ys = xcal.to_value(N[:, 0]), ycal.to_value(N[:, 1])
+        marked = np.array([g is not None and g == s["marker"] for g in s["sigs"]])
+        n_withheld = int((keep & ~marked).sum())
+        P = N[keep & marked] if bound else N[:0]
+        if bound:
+            reasons += axes_note
+            if n_withheld:
+                reasons.append(f"{n_withheld} vertices without the {s['marker']} marker withheld (no sample evidence)")
+        xs, ys = xcal.to_value(P[:, 0]), ycal.to_value(P[:, 1])
         no_marker = [i for i, g in enumerate(s["sigs"]) if g is None]
         curves.append(dict(label=label, colour=list(col), marker=s["marker"],
                            marker_vertex_fraction=round(s["marker_frac"], 3),
                            vertices_without_marker=no_marker,
-                           point_basis="polyline vertices (the plotted samples)",
-                           status="ok" if not reasons else "unbound", reasons=reasons,
-                           n_points=int(len(N)), repeated_vertices_dropped=n_dup, x=[float(v) for v in xs], y=[float(v) for v in ys],
-                           _nodes=N))
-    used = Counter(c["label"] for c in curves if c["status"] == "ok")
+                           point_basis=("polyline vertices carrying the series marker (the plotted samples)" if bound
+                                        else "none: unbound path, not served"),
+                           binding="bound" if bound else "unbound",
+                           status="unbound" if not bound else "ok" if not reasons else "unverified", reasons=reasons,
+                           n_points=int(len(P)), repeated_vertices_dropped=n_dup,
+                           vertices_withheld=n_withheld if bound else int(keep.sum()),
+                           x=[float(v) for v in xs], y=[float(v) for v in ys], _nodes=N[keep]))
+    used = Counter(c["label"] for c in curves if c["binding"] == "bound")
     for lab, n in used.items():
         if n > 1:
             out["reasons"].append(f"legend {lab!r} bound by {n} series")
     missing = [e["label"] for e in legend if e["label"] not in used]
     if missing:
         out["reasons"].append(f"legend entries without a series: {missing}")
-    if any(c["status"] != "ok" for c in curves):
+    if any(c["binding"] != "bound" for c in curves):
         out["reasons"].append("some series unbound")
+    for c in curves:
+        if c["binding"] == "bound" and c["vertices_withheld"]:
+            out["reasons"].append(f"{c['label']!r}: {c['vertices_withheld']} unmarked vertices withheld")
     for k, c in (("x", xcal), ("y", ycal)):
         if c.status != "verified":
             out["reasons"] += [f"{k}: {r}" for r in c.reasons]
@@ -334,11 +391,12 @@ def render_overlay(page, chart, cals, out_png, dpi=600):
     for k, c in enumerate(chart.get("curves", [])):
         col = palette[k % len(palette)]
         P = [px(float(xcal.to_pt(x)), float(ycal.to_pt(y))) for x, y in zip(c["x"], c["y"])]
-        for a_, b_ in zip(P[:-1], P[1:]):
+        Q = [px(float(a), float(b)) for a, b in c["_nodes"]]
+        for a_, b_ in zip(Q[:-1], Q[1:]):
             cv2.line(img, a_, b_, col, 1, cv2.LINE_AA)
         for p_ in P:
             cv2.drawMarker(img, p_, col, cv2.MARKER_CROSS, 22, 2, cv2.LINE_AA)
-        t = f"+ {c['label']} [{c['marker']}] ({len(P)})"
+        t = f"+ {c['label']} [{c['marker']}] ({len(P)}) {c['status']}"
         cv2.putText(img, t, (8 + 520 * (k % 3), 56 + 26 * (k // 3)), font, 0.6, col, 2, cv2.LINE_AA)
     cv2.imwrite(str(out_png), img)
     return out_png
@@ -375,10 +433,10 @@ def main(argv=None) -> int:
         if cal is not None and ch.get("curves"):
             with (out / f"{ch['id']}.csv").open("w", newline="") as fh:
                 w = csv.writer(fh)
-                w.writerow(["series", "marker", "x", "y"])
+                w.writerow(["series", "marker", "x", "y", "curve_status", "chart_status"])
                 for c in ch["curves"]:
-                    for x, y in zip(c["x"], c["y"]):
-                        w.writerow([_cell(c["label"]), c["marker"], f"{x:.4f}", f"{y:.5f}"])
+                    for x, y in zip(c["x"], c["y"]):     # unbound paths carry no points
+                        w.writerow([_cell(c["label"]), c["marker"], f"{x:.4f}", f"{y:.5f}", c["status"], ch["status"]])
             render_overlay(page, ch, cal, out / f"{ch['id']}_overlay.png")
         print(f"{ch['id']}\tframe={ch['frame_pt']}\t{ch['status']}\t"
               f"{','.join(_cell(c['label']) + ':' + str(c['n_points']) for c in ch.get('curves', []))}\t"

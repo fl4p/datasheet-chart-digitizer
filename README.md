@@ -87,11 +87,16 @@ marked `overlay-review-required`; fail-closed statuses still remain excluded.
 
 `digitize-paper-lines` reads vector line-with-marker plots from scientific papers
 (MATLAB "box off" style: left and bottom axis lines only, inward tick marks, light
-gridlines, an in-plot legend). Each tick label is bound to its tick mark, a series binds
-to the legend entry with the same colour and marker shape, and the served points are the
-polyline vertices (the plotted samples), one JSON per page plus a CSV and an overlay per
-panel. Validated on one paper only (Keil et al. 2016, MATLAB export; Fig. 2c approved
-2026-11-24), so every panel is at best `unverified`, never `ok`: check the overlay.
+gridlines, an in-plot legend). Each tick label is bound to its tick mark (`10` with a
+superscript exponent reads as a power of ten; a numeric label of mixed glyph sizes that
+is not one refuses the axis), a series binds to the legend entry with the same colour and
+marker shape, and the served points are the polyline vertices that carry the series
+marker (the plotted samples), one JSON per page plus a CSV and an overlay per panel. A
+curve is `ok` only when bound, both axes are verified and no vertex was withheld, else
+`unverified`; `unbound` paths serve no values and appear on the overlay only. Every CSV
+row carries its `curve_status` and `chart_status`. Validated on one paper only (Keil et
+al. 2016, MATLAB export; Fig. 2c approved 2026-11-24), so every panel is at best
+`unverified`, never `ok`: check the overlay.
 
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
 package-owned experimental `GateChargeResult` records the selected panel, Vpl

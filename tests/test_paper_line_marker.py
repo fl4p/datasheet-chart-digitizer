@@ -8,9 +8,12 @@ approved output. The PDF is not committed: the test skips when it is absent.
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from datasheet_chart_digitizer import paper_line_marker as P
 
@@ -57,8 +60,10 @@ class KeilFig2c(unittest.TestCase):
                                    "40°C 9 months": "diamond", "50°C 9 months": "circle"})
         for c in self.curves.values():
             self.assertEqual(c["status"], "ok")
+            self.assertEqual(c["binding"], "bound")
             self.assertEqual(c["reasons"], [])
             self.assertEqual(c["vertices_without_marker"], [])
+            self.assertEqual(c["vertices_withheld"], 0)
 
     def test_point_counts_and_soc_grid(self):
         for lab in ("before storage", "25°C 9 months", "40°C 9 months"):
@@ -114,6 +119,105 @@ class Gridlines(unittest.TestCase):
         gh, gv = P._gridlines(lines, (200, 0, 300, 100))
         self.assertEqual(gh, [50])
         self.assertEqual(gv, [240])
+
+
+def _synthetic(path=None, marker_indices=range(5), bad_grid=False, errorbars=False, superscript=False):
+    """One 300x200 pt box-off panel, x ticks 0..4 (or 10^0..10^4 typeset as
+    10 + superscript), y ticks 0..4, one red square-marked series of 5 vertices
+    and its legend entry (review 2026-11-24 probes)."""
+    doc = fitz.open()
+    pg = doc.new_page(width=500, height=400)
+    pg.draw_line((100, 100), (100, 300), color=(0, 0, 0))
+    pg.draw_line((100, 300), (400, 300), color=(0, 0, 0))
+    for i in range(5):
+        x, y = 100 + 75 * i, 300 - 50 * i
+        pg.draw_line((x, 300), (x, 297), color=(0, 0, 0))
+        pg.draw_line((100, y), (103, y), color=(0, 0, 0))
+        if superscript:
+            w0 = fitz.get_text_length("10", fontsize=8)
+            left = x - (w0 + fitz.get_text_length(str(i), fontsize=5)) / 2
+            pg.insert_text((left, 311), "10", fontsize=8)
+            pg.insert_text((left + w0, 308), str(i), fontsize=5)
+        else:
+            pg.insert_text((x - fitz.get_text_length(str(i), fontsize=8) / 2, 311), str(i), fontsize=8)
+        pg.insert_text((94 - fitz.get_text_length(str(i), fontsize=8), y + 2.3), str(i), fontsize=8)
+    if bad_grid:
+        pg.draw_line((100, 212), (400, 212), color=(.87, .87, .87))
+    col = (.8, 0, 0)
+    nodes = [(140, 250), (200, 220), (260, 240), (320, 180), (370, 200)]
+    pg.draw_polyline(nodes, color=col, closePath=False)
+    for i in marker_indices:
+        x, y = nodes[i]
+        pg.draw_rect(fitz.Rect(x - 2, y - 2, x + 2, y + 2), color=col)
+    pg.draw_line((200, 120), (220, 120), color=col)
+    pg.draw_rect(fitz.Rect(208, 118, 212, 122), color=col)
+    pg.insert_text((226, 122.3), "Series A", fontsize=8)
+    if errorbars:
+        for x, y in nodes:
+            pg.draw_polyline([(x - 3, y - 12), (x + 3, y - 12), (x, y - 12), (x, y + 12), (x - 3, y + 12),
+                              (x + 3, y + 12)], color=col, closePath=False)
+    if path is not None:
+        doc.save(str(path))
+    lines, polys, marks = P._collect(pg)
+    ch, cals = P.digitize_panel(pg, (100, 100, 400, 300), lines, polys, marks, P._words(pg), P._rotated_lines(pg))
+    return ch
+
+
+@unittest.skipUnless(fitz is not None, "PyMuPDF unavailable")
+class SyntheticReviewCases(unittest.TestCase):
+    """Review 2026-11-24 findings on synthetic panels; each served wrong or
+    unqualified values on 6386165."""
+
+    def test_clean_panel_is_ok(self):
+        c = _synthetic()["curves"]
+        self.assertEqual([(k["label"], k["status"], k["n_points"]) for k in c], [("Series A", "ok", 5)])
+
+    def test_superscript_decade_labels_read_as_powers_of_ten(self):
+        ch = _synthetic(superscript=True)
+        ax = ch["axes"]["x"]
+        self.assertEqual((ax["scale"], ax["status"]), ("log10", "verified"))
+        self.assertEqual([lab["value"] for lab in ax["labels"]], [1.0, 10.0, 100.0, 1000.0, 10000.0])
+        self.assertAlmostEqual(ch["curves"][0]["x"][0], 10 ** (40 / 75), places=6)   # not 100.53
+
+    def test_unpaired_superscript_label_refuses_axis(self):
+        with mock.patch.object(P, "_explicit_power_labels", return_value=[], create=True):
+            ch = _synthetic(superscript=True)
+        self.assertEqual(ch["status"], "refused")
+        self.assertEqual(ch["axes"]["x"]["status"], "refused")
+        self.assertIn("mix glyph sizes", " ".join(ch["axes"]["x"]["reasons"]))
+        self.assertNotIn("curves", ch)
+
+    def test_unverified_axis_keeps_curve_below_ok(self):
+        ch = _synthetic(bad_grid=True)
+        self.assertEqual(ch["axes"]["y"]["status"], "unverified")
+        (c,) = ch["curves"]
+        self.assertEqual(c["status"], "unverified")
+        self.assertIn("y axis unverified", c["reasons"])
+        self.assertEqual(c["binding"], "bound")
+
+    def test_unmarked_vertices_are_withheld(self):
+        (c,) = _synthetic(marker_indices=(0, 2, 4))["curves"]
+        self.assertEqual((c["status"], c["n_points"]), ("unverified", 3))
+        self.assertEqual([round(x, 4) for x in c["x"]], [0.5333, 2.1333, 3.6])
+        self.assertEqual((c["binding"], c["vertices_withheld"]), ("bound", 2))
+
+    def test_unbound_error_bar_paths_carry_no_values(self):
+        curves = _synthetic(errorbars=True)["curves"]
+        unbound = [c for c in curves if c["status"] == "unbound"]
+        self.assertEqual(len(unbound), 5)
+        for c in unbound:
+            self.assertEqual((c["status"], c["n_points"], c["x"], c["y"]), ("unbound", 0, [], []))
+
+    def test_csv_rows_carry_status_and_skip_unbound_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pdf = Path(tmp) / "bad_grid_errorbars.pdf"
+            _synthetic(pdf, bad_grid=True, errorbars=True)
+            self.assertEqual(P.main([str(pdf), "--page", "1", "--out", tmp]), 0)
+            with (Path(tmp) / "bad_grid_errorbars_p1_panel0.csv").open() as fh:
+                rows = list(csv.reader(fh))
+        self.assertEqual(rows[0], ["series", "marker", "x", "y", "curve_status", "chart_status"])
+        self.assertEqual(len(rows), 6)
+        self.assertTrue(all(r[0] == "Series A" and r[4:] == ["unverified", "unverified"] for r in rows[1:]))
 
 
 if __name__ == "__main__":
