@@ -8,8 +8,9 @@ metadata:
 **Merged (updated 2026-11-24).** `feat/rds-vgs` landed on main in four merges:
 `337f358` (2026-09-30, class + goldens), `05057b7` (2026-09-30, batch_all fixes, 41
 goldens), `490d384` (2026-10-03, Astra F01-F12, v5 re-freeze, 42 goldens), `993ec34`
-(2026-10-04, TI page-1 duplicate goldens retired, Fab: "all green"); follow-up
-`650ddb8` (2026-10-13, packet rds-vgs-004 3/3 green). Approval scope:
+(2026-10-04, TI page-1 duplicate goldens retired, Fab: "all green"). `650ddb8`
+(2026-10-13, packet rds-vgs-004 3/3 green) changed the shared label module, but its
+charts are RDS vs I_D and RDS(Tj), so it is no RDS-vs-VGS approval. Approval scope:
 [[validated-chart-classes]]. The rest of this note is the pre-merge history.
 
 Built 2026-09-28 in worktree `~/dev/ee/dsdig-rds-vgs`, branch `feat/rds-vgs`
