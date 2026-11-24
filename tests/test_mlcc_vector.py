@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import math
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -47,12 +48,13 @@ def _clipped_bezier_chain(doc, pg, frame, P, col, width):
 
 
 def _page(*, title="Impedance,ESR Freq.", label_shift_pt=0.0, minor_shift_pt=0.0, y_unit="OHM",
-          legend=("ESR", "Z"), series=None, log_y=True):
+          legend=("ESR", "Z"), series=None, log_y=True, xdec=(-3, 4), ydec=(-4, 2), superscript=""):
+    """*superscript*: the axes ("x", "y", "xy") whose decade tick labels are
+    typeset as "10" + a smaller raised exponent span (word extraction flattens
+    10^2 to "102")."""
     doc = fitz.open()
     pg = doc.new_page(width=595, height=842)
     x0, y0, x1, y1 = 330.0, 355.0, 480.0, 475.0
-    xdec = (-3, 4)          # 0.001 .. 10000 MHz
-    ydec = (-4, 2) if log_y else None
 
     def X(f_mhz):
         return x0 + (math.log10(f_mhz) - xdec[0]) / (xdec[1] - xdec[0]) * (x1 - x0)
@@ -78,14 +80,21 @@ def _page(*, title="Impedance,ESR Freq.", label_shift_pt=0.0, minor_shift_pt=0.0
         shp.draw_line((x0, Y(10.0 ** d)), (x1, Y(10.0 ** d)))
     shp.finish(color=(0, 0, 0), width=0.63)
     shp.commit()
+
+    def label(d, x, y, anchor, sup):
+        if not sup:
+            t = f"{10.0 ** d:g}"
+            w = fitz.get_text_length(t, fontsize=8)
+            pg.insert_text((x - w * anchor, y), t, fontsize=8)
+            return
+        w0, w1 = fitz.get_text_length("10", fontsize=8), fitz.get_text_length(str(d), fontsize=5)
+        left = x - (w0 + w1) * anchor
+        pg.insert_text((left, y), "10", fontsize=8)
+        pg.insert_text((left + w0, y - 3), str(d), fontsize=5)
     for d in range(xdec[0], xdec[1] + 1):
-        t = f"{10.0 ** d:g}"
-        w = fitz.get_text_length(t, fontsize=8)
-        pg.insert_text((X(10.0 ** d) - w / 2 + label_shift_pt, y1 + 11), t, fontsize=8)
+        label(d, X(10.0 ** d) + label_shift_pt, y1 + 11, 0.5, "x" in superscript)
     for d in range(ydec[0], ydec[1] + 1):
-        t = f"{10.0 ** d:g}"
-        w = fitz.get_text_length(t, fontsize=8)
-        pg.insert_text((x0 - 3 - w, Y(10.0 ** d) + 3), t, fontsize=8)
+        label(d, x0 - 3, Y(10.0 ** d) + 3, 1.0, "y" in superscript)
     pg.insert_text((385, y1 + 24), "Frequency[MHz]", fontsize=8)
     pg.insert_text((x0 - 28, 440), f"Z,ESR[{y_unit}]", fontsize=8, rotate=90)
     pg.insert_text((375, y0 - 22), "SYNTH000", fontsize=8)
@@ -96,10 +105,10 @@ def _page(*, title="Impedance,ESR Freq.", label_shift_pt=0.0, minor_shift_pt=0.0
         "ESR": (NAVY, lambda f: 0.002 + 0.1 / (f * 1e3) ** 0.5),
     }
     for lab, (col, fn) in series.items():
-        f = np.logspace(-4, 3.5, 60)          # starts left of the frame: the clip hides it
+        f = np.logspace(xdec[0] - 1, xdec[1] - 0.5, 60)    # starts left of the frame: the clip hides it
         P = [fitz.Point(X(v), Y(fn(v))) for v in f]
         _clipped_bezier_chain(doc, pg, (x0, y0, x1, y1), P, col, 0.63)
-        inside = (f >= 1e-3) & (f <= 1e4) & np.array([10 ** ydec[0] <= fn(v) <= 10 ** ydec[1] for v in f])
+        inside = (f >= 10.0 ** xdec[0]) & (f <= 10.0 ** xdec[1]) & np.array([10 ** ydec[0] <= fn(v) <= 10 ** ydec[1] for v in f])
         truth[lab] = (f[inside] * 1e6, np.array([fn(v) for v in f[inside]]))
     if legend:
         for i, lab in enumerate(legend):
@@ -243,6 +252,62 @@ class GluedLabels(unittest.TestCase):
             self.assertEqual(len(M._split_glued_number(self._chars(t, 0.0, 4.48))), 1)
         # an even advance gives no boundary even for a 10..10.. word
         self.assertEqual(len(M._split_glued_number(self._chars("1010", 0.0, 4.48))), 1)
+
+
+@unittest.skipIf(fitz is None, "PyMuPDF missing")
+class SuperscriptDecadeLabels(unittest.TestCase):
+    """Tick labels typeset as "10" + superscript exponent: word extraction
+    flattens 10^2 to "102" and drops 10^-3 ("10-3"). On e2d8ddc 10^0..10^7
+    calibrated linear as 100..107 and served x ~1e8 Hz for 1.04 MHz."""
+
+    _run = MlccVectorSynthetic._run
+
+    def _assert_truth(self, ch, truth, xdec, ydec):
+        self.assertEqual(ch["status"], "ok", ch["reasons"])
+        for k, dec in (("x", xdec), ("y", ydec)):
+            ax = ch["axes"][k]
+            self.assertEqual((ax["scale"], ax["status"]), ("log10", "verified"))
+            self.assertEqual([lab["value"] for lab in ax["labels"]], [10.0 ** d for d in range(dec[0], dec[1] + 1)])
+        got = {c["label"]: c for c in ch["curves"]}
+        for lab, (fx, fy) in truth.items():
+            for x, y in zip(got[lab]["x_si"], got[lab]["y_si"]):
+                k = int(np.argmin(np.abs(np.log10(fx) - math.log10(x))))
+                self.assertLess(abs(math.log10(fx[k]) - math.log10(x)), 1e-3)
+                self.assertLess(abs(math.log10(fy[k]) - math.log10(y)), 1e-3)
+
+    def test_positive_exponents_read_as_powers_of_ten(self):
+        ch, truth = self._run(superscript="x", xdec=(0, 7))
+        self._assert_truth(ch, truth, (0, 7), (-4, 2))
+
+    def test_negative_exponents_far_tail_both_axes(self):
+        for xdec in ((-1, 4), (-3, 4)):
+            ch, truth = self._run(superscript="xy", xdec=xdec)
+            self._assert_truth(ch, truth, xdec, (-4, 2))
+
+    def test_unpaired_superscript_label_refuses_axis(self):
+        with mock.patch.object(M, "_explicit_power_labels", return_value=[], create=True):
+            ch, _ = self._run(superscript="x", xdec=(0, 7))
+        self.assertEqual(ch["status"], "refused")
+        self.assertEqual(ch["axes"]["x"]["status"], "refused")
+        self.assertIn("mix glyph sizes", " ".join(ch["axes"]["x"]["reasons"]))
+        self.assertNotIn("curves", ch)
+
+    def test_plain_number_labels_unchanged(self):
+        ch, _ = self._run()
+        self.assertEqual([lab["value"] for lab in ch["axes"]["x"]["labels"]], [10.0 ** d for d in range(-3, 5)])
+        self.assertEqual([lab["value"] for lab in ch["axes"]["y"]["labels"]], [10.0 ** d for d in range(-4, 3)])
+
+    def test_single_size_numbers_pass_power_words_unchanged(self):
+        doc = fitz.open()
+        pg = doc.new_page()
+        w = fitz.get_text_length("1000", fontsize=8)
+        pg.insert_text((100, 100), "1000", fontsize=8)
+        pg.insert_text((100 + w + 0.6, 100), "10000", fontsize=8)    # Excel-glued: one word "100010000"
+        pg.insert_text((200, 100), "102", fontsize=8)
+        pg.insert_text((250, 100), "1000", fontsize=8)
+        words, mixed = M._power_words(pg, M._words(pg))
+        self.assertEqual([w.text for w in words], ["1000", "10000", "102", "1000"])
+        self.assertEqual(mixed, [])
 
 
 # --------------------------------------------------------------------------- #

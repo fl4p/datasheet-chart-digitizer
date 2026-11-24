@@ -22,6 +22,9 @@ positions, and every other full-span gridline is then checked against the
 label lattice (log: major rules on decades, minor rules on 2..9 x decade;
 linear: rules on multiples of the label step or its half). A failed or
 unevaluable check makes the chart ``unverified`` -- never ``ok``.
+Tick labels typeset as 10 + superscript exponent are read as powers of ten from
+span geometry; a numeric label of mixed glyph sizes that is no such power
+refuses its axis.
 
 Curve identity: single-series charts (C-f, DC bias, temperature) must carry
 exactly one curve colour; multi-series charts (|Z|/ESR, ripple) are bound by
@@ -47,6 +50,7 @@ from pathlib import Path
 import numpy as np
 
 from . import __version__
+from .axis_calibration import _explicit_power_labels
 
 # --------------------------------------------------------------------------- #
 # chart classes and units
@@ -675,6 +679,34 @@ def _words(page):
     return out
 
 
+def _power_words(page, words):
+    """*words* with ``10``+superscript tick labels, which word extraction
+    flattens ("10"+"2" -> "102"), re-read as ``1e<exp>`` from span geometry;
+    and the numeric words typeset in mixed glyph sizes that are no such
+    power (unreadable: dropped from the returned words)."""
+    powers = _explicit_power_labels(page)
+    chars = []
+    for blk in page.get_text("rawdict")["blocks"]:
+        for ln in blk.get("lines", []):
+            for sp in ln["spans"]:
+                chars += [(c["bbox"], sp["size"]) for c in sp["chars"] if not c["c"].isspace()]
+    out, mixed = [], []
+    for w in words:
+        if _num(w.text) is None and not re.fullmatch(r"10[-−]\d+", w.text):
+            out.append(w)
+            continue
+        x0, y0, x1, y1 = w.bbox
+        hit = [v for v, cx, cy, _ in powers if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5]
+        exps = {round(math.log10(v)) for v in hit}
+        if len(exps) == 1 and w.text.replace("−", "-") == f"10{next(iter(exps))}":
+            out.append(type(w)(f"1e{next(iter(exps))}", w.bbox))
+            continue
+        sizes = [sz for bb, sz in chars if x0 - 0.2 <= (bb[0] + bb[2]) / 2 <= x1 + 0.2
+                 and y0 - 0.5 <= (bb[1] + bb[3]) / 2 <= y1 + 0.5]
+        (mixed if sizes and max(sizes) > 1.1 * min(sizes) else out).append(w)
+    return out, mixed
+
+
 def _rotated_lines(page):
     out = []
     for b in page.get_text("dict")["blocks"]:
@@ -922,10 +954,11 @@ def digitize_chart(page, panel, words, rot_lines, shapes, small_fills):
     # the windows reach well past the frame ends on purpose: a label row bound
     # one pitch off pushes its last label past the frame, and that label must be
     # seen (it then binds to no rule and the axis is refused)
-    xl = [w for w in words if _num(w.text) is not None and fy1 < w.bbox[1] + 1 and w.cy < fy1 + 16
-          and fx0 - 40 < w.cx < fx1 + 40]
-    yl = [w for w in words if _num(w.text) is not None and w.bbox[2] < fx0 + 1 and w.bbox[2] > fx0 - 40
-          and fy0 - 25 < w.cy < fy1 + 25]
+    pw, mixed = _power_words(page, words)
+    in_x = lambda w: fy1 < w.bbox[1] + 1 and w.cy < fy1 + 16 and fx0 - 40 < w.cx < fx1 + 40
+    in_y = lambda w: w.bbox[2] < fx0 + 1 and w.bbox[2] > fx0 - 40 and fy0 - 25 < w.cy < fy1 + 25
+    xl = [w for w in pw if _num(w.text) is not None and in_x(w)]
+    yl = [w for w in pw if _num(w.text) is not None and in_y(w)]
     if xl:
         row = min(round(w.cy) for w in xl)
         xl = [w for w in xl if abs(w.cy - row) < 3]
@@ -936,6 +969,11 @@ def digitize_chart(page, panel, words, rot_lines, shapes, small_fills):
                           [(r.pos, _darkness(r.colour)) for r in panel.vrules], fx0, fx1)
     ycal = calibrate_axis("y", [(_num(w.text), w.cy) for w in yl],
                           [(r.pos, _darkness(r.colour)) for r in panel.hrules], fy0, fy1)
+    for cal, band in ((xcal, in_x), (ycal, in_y)):
+        bad = [w.text for w in mixed if band(w)]
+        if bad:
+            cal.status = "refused"
+            cal.reasons.append(f"tick labels {bad} mix glyph sizes (superscript?) and read as no 10^n")
     # axis titles and units
     xt = " ".join(w.text for w in sorted(words, key=lambda w: w.bbox[0])
                   if fx0 - 10 < w.cx < fx1 + 10 and fy1 + 8 < w.cy < fy1 + 28 and _num(w.text) is None)

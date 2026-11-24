@@ -31,15 +31,13 @@ import argparse
 import csv
 import json
 import math
-import re
 from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
-from .axis_calibration import _explicit_power_labels
-from .mlcc_vector import (_cell, _chromatic, _colour, _darkness, _fitz, _git_rev, _num, _rotated_lines, _words,
-                          calibrate_axis, draw_axis_map, overlay_canvas)
+from .mlcc_vector import (_cell, _chromatic, _colour, _darkness, _fitz, _git_rev, _num, _power_words, _rotated_lines,
+                          _words, calibrate_axis, draw_axis_map, overlay_canvas)
 
 AXIS_DARK_MIN = 0.6          # axis lines / ticks: darkness >= this (MATLAB 0.149 grey -> 0.85)
 GRID_DARK_MAX = 0.3          # gridlines are light (MATLAB 0.873 grey -> 0.13)
@@ -187,34 +185,6 @@ def _signature_at(marks, colour, p, tol=MARKER_TO_VERTEX_PT):
         toks |= _seg_tokens(m["items"], m["centre"])   # spokes pass through their own centre
         fill = fill or m["fill"]
     return _marker_kind(fill, toks)
-
-
-def _power_words(page, words):
-    """*words* with ``10``+superscript tick labels, which word extraction
-    flattens ("10"+"2" -> "102"), re-read as ``1e<exp>`` from span geometry;
-    and the numeric words typeset in mixed glyph sizes that are no such
-    power (unreadable: dropped from the returned words)."""
-    powers = _explicit_power_labels(page)
-    chars = []
-    for blk in page.get_text("rawdict")["blocks"]:
-        for ln in blk.get("lines", []):
-            for sp in ln["spans"]:
-                chars += [(c["bbox"], sp["size"]) for c in sp["chars"] if not c["c"].isspace()]
-    out, mixed = [], []
-    for w in words:
-        if _num(w.text) is None and not re.fullmatch(r"10[-−]\d+", w.text):
-            out.append(w)
-            continue
-        x0, y0, x1, y1 = w.bbox
-        hit = [v for v, cx, cy, _ in powers if x0 - 0.5 <= cx <= x1 + 0.5 and y0 - 0.5 <= cy <= y1 + 0.5]
-        exps = {round(math.log10(v)) for v in hit}
-        if len(exps) == 1 and w.text.replace("−", "-") == f"10{next(iter(exps))}":
-            out.append(type(w)(f"1e{next(iter(exps))}", w.bbox))
-            continue
-        sizes = [sz for bb, sz in chars if x0 - 0.2 <= (bb[0] + bb[2]) / 2 <= x1 + 0.2
-                 and y0 - 0.5 <= (bb[1] + bb[3]) / 2 <= y1 + 0.5]
-        (mixed if sizes and max(sizes) > 1.1 * min(sizes) else out).append(w)
-    return out, mixed
 
 
 def digitize_panel(page, frame, lines, polys, marks, words, rot):

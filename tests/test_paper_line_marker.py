@@ -15,6 +15,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from datasheet_chart_digitizer import mlcc_vector as M
 from datasheet_chart_digitizer import paper_line_marker as P
 
 try:
@@ -180,7 +181,7 @@ class SyntheticReviewCases(unittest.TestCase):
         self.assertAlmostEqual(ch["curves"][0]["x"][0], 10 ** (40 / 75), places=6)   # not 100.53
 
     def test_unpaired_superscript_label_refuses_axis(self):
-        with mock.patch.object(P, "_explicit_power_labels", return_value=[], create=True):
+        with mock.patch.object(M, "_explicit_power_labels", return_value=[], create=True):
             ch = _synthetic(superscript=True)
         self.assertEqual(ch["status"], "refused")
         self.assertEqual(ch["axes"]["x"]["status"], "refused")
