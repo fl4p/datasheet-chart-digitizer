@@ -1,0 +1,190 @@
+{
+ "law": "%mu = 100 / (a + b * H_oe^c), percent of initial permeability, H in oersted",
+ "perms_left_to_right": [
+  125,
+  90,
+  75,
+  60,
+  40,
+  26
+ ],
+ "tolerance_pct_points": {
+  "rms_max": 0.5,
+  "abs_max": 0.9
+ },
+ "cases": [
+  {
+   "id": "ks184_vector",
+   "pdf": "/Users/fab/dev/pv/ee/datasheets/kdm/KS184-125A_semic_Ljf_T184-S-125A_KD.pdf",
+   "pdf_sha256": "5aa7be7a03717a95cd75b527c0cfddaf1e9f46f3a174ad2d2bf33410244e632d",
+   "page": 1,
+   "panel": "DC-Bias Curves(Typical), Sendust, bottom right",
+   "mode": "vector",
+   "args": [
+    "--clip",
+    "295,500,545,690",
+    "--dpi",
+    "600"
+   ],
+   "min_levels": 18,
+   "printed_rows": {
+    "26": [
+     1,
+     5.59e-05,
+     1.825
+    ],
+    "40": [
+     1,
+     0.000154,
+     1.769
+    ],
+    "60": [
+     1,
+     0.000357,
+     1.748
+    ],
+    "75": [
+     1,
+     0.000947,
+     1.641
+    ],
+    "90": [
+     1,
+     0.00109,
+     1.682
+    ],
+    "125": [
+     1,
+     0.00134,
+     1.78
+    ]
+   }
+  },
+  {
+   "id": "ljf_ks_raster",
+   "pdf": "/Users/fab/dev/pv/ee/datasheets/kdm/semic-2026-11-24/Ljf_KS.pdf",
+   "url": "https://semic.cz/!old/files/pdf_www/Ljf_KS.pdf",
+   "pdf_sha256": "ca5b5e132e5b0466d805fb986dc8ed23191156bd765420259e2617a4f9616a4f",
+   "page": 1,
+   "panel": "Percent Change of Permeability vs .DC Magnetizing Force, Sendust",
+   "mode": "raster",
+   "args": [
+    "--clip",
+    "40,415,580,700",
+    "--dpi",
+    "300"
+   ],
+   "blanks": [
+    [
+     1,
+     10,
+     45,
+     85
+    ],
+    [
+     1,
+     4,
+     0,
+     45
+    ]
+   ],
+   "min_levels": 14,
+   "printed_rows": {
+    "26": [
+     1,
+     3.46e-05,
+     1.861
+    ],
+    "40": [
+     1,
+     0.000154,
+     1.769
+    ],
+    "60": [
+     1,
+     0.000357,
+     1.748
+    ],
+    "75": [
+     1,
+     0.000947,
+     1.641
+    ],
+    "90": [
+     1,
+     0.00109,
+     1.682
+    ],
+    "125": [
+     1,
+     0.00134,
+     1.78
+    ]
+   }
+  },
+  {
+   "id": "catalog_p14_raster",
+   "pdf": "/Users/fab/dev/pv/ee/datasheets/kdm/semic-2026-11-24/k6_Catalogue_Alloy_Powder_Core.pdf",
+   "url": "https://www.semic.cz/!KATEGORIE/6K/k6_Catalogue%20Alloy%20Powder%20Core.pdf",
+   "pdf_sha256": "0debee5b6ce435224f25eb4cb6396923381bbb42fab9b871975e0b2b0cd6c15b",
+   "page": 14,
+   "panel": "printed page 014, top panel (Sendust)",
+   "mode": "raster",
+   "args": [
+    "--clip",
+    "90,205,520,465",
+    "--dpi",
+    "400",
+    "--ink-max",
+    "140"
+   ],
+   "blanks": [
+    [
+     1,
+     10,
+     45,
+     85
+    ],
+    [
+     1,
+     4,
+     0,
+     45
+    ]
+   ],
+   "min_levels": 10,
+   "printed_rows": {
+    "26": [
+     1,
+     5.59e-05,
+     1.825
+    ],
+    "40": [
+     1,
+     0.000154,
+     1.769
+    ],
+    "60": [
+     1,
+     0.000357,
+     1.748
+    ],
+    "75": [
+     1,
+     0.000947,
+     1.641
+    ],
+    "90": [
+     1,
+     0.00109,
+     1.682
+    ],
+    "125": [
+     1,
+     0.00134,
+     1.78
+    ]
+   }
+  }
+ ]
+}
