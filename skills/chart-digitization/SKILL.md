@@ -37,6 +37,7 @@ Use dsdig (its own `.venv`, CLI `dsdig`, `dsdig --help`), never a one-off extrac
 | `digitize-reverse-leakage` | diode Ir(Vr) at several Tj |
 | `digitize-breakdown-voltage` | V(BR)DSS vs Tj |
 | `digitize-core-loss` | powder-core loss vs the printed law |
+| `digitize-paper-lines` | line+marker plots in papers (MATLAB box-off axes), series bound by colour and marker; best status `unverified` |
 | `annotate` | annotated PDF copy of the charts it dispatches: capacitance, transfer, breakdown voltage, body diode, RDS(on) vs I_D, RDS(on) vs Tj, gate charge. It does **not** run RDS(on) vs VGS, reverse recovery, reverse leakage or core loss, and it filters overlays by status |
 | `export-coss-spice`, `export-coss-dslib` | Coss(V) knots / SPICE Qoss table / validation-gated dslib triples |
 
