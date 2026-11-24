@@ -293,3 +293,137 @@ def test_pdf_fallback_ignores_non_capacitance_conditions(tmp_path):
         "Input capacitance",
     ])
     assert parse_capacitance_anchors("GC", root) == {}
+
+
+def test_split_coer_symbol_skips_row_index_column(tmp_path):
+    # IMBG75R007M2H.pdf.nop.csv row 134: the symbol renders as "C o(er)" and the
+    # leading cell is the CSV row index. The value is 490, never the index 134.
+    root = _write_csv(tmp_path, "SPLIT", [
+        "134,energy related 9),C o(er),-,,490,-,,pF VDS = 0...500 VGS,,,",
+    ])
+    assert parse_output_charge_reference("SPLIT", root).coer_pf == 490.0
+
+
+def test_split_cotr_symbol_slices_original_text(tmp_path):
+    # Pins the spaced Co(tr) symbol through the generalised whitespace-tolerant
+    # match (the old Co(tr)-only fallback also passed this row).
+    root = _write_csv(tmp_path, "SPLITTR", [
+        "77,time related,C o (tr),-,,1250,-,,pF VDS = 0...400 V,,,",
+    ])
+    assert parse_output_charge_reference("SPLITTR", root).cotr_pf == 1250.0
+
+
+def test_coer_on_row_index_with_unsplit_symbol_unchanged(tmp_path):
+    root = _write_csv(tmp_path, "PLAIN", [
+        '143,"Effective output capacitance, energy related 9)",Co(er),-,178,-,pF,"VGS = 0 V, VDS = 0...500 V"',
+    ])
+    assert parse_output_charge_reference("PLAIN", root).coer_pf == 178.0
+
+
+def test_footnote_after_split_symbol_is_not_the_value(tmp_path):
+    # STP42N65M5 row 97 (codex review 2026-11-24): HEAD read 96 (row index),
+    # the first fix read 2 (the footnote); the PDF states 100 pF.
+    root = _write_csv(tmp_path, "STFN", [
+        "96,C o(er) (2),Equivalent capacitance energy related,,-,100,-,pF,,,",
+    ])
+    assert parse_output_charge_reference("STFN", root).coer_pf == 100.0
+
+
+def test_exact_symbol_beats_earlier_spaced_mention(tmp_path):
+    # A spaced mention in a description cell must not move the value search.
+    root = _write_csv(tmp_path, "EXACT", [
+        '12,"see C o(er) note 9",Co(er),-,490,-,pF,"VGS = 0 V, VDS = 0...500 V"',
+    ])
+    assert parse_output_charge_reference("EXACT", root).coer_pf == 490.0
+
+
+def test_parenthesised_multi_digit_value_is_not_a_footnote(tmp_path):
+    # Only single-digit "(n)" markers are footnotes; "(45)" stays a value.
+    root = _write_csv(tmp_path, "PAREN", [
+        "5,Co(er),(45),60,pF,,",
+    ])
+    assert parse_output_charge_reference("PAREN", root).coer_pf == 45.0
+
+
+# Test-condition numbers are not the value (codex review pass 2, 2026-11-24).
+# Stripping condition text from the joined row was tried and backed out: it
+# returned the "1" of "f = 1 MHz" for 95 NXP/Toshiba parts. The value search
+# now skips a number only when it is a condition's own value.
+
+
+def test_condition_voltage_is_not_qoss(tmp_path):
+    # AOB66811L row 138: HEAD read VDS=40V as Qoss; PDF 112 nC.
+    root = _write_csv(tmp_path, "AOSQ", [
+        '138,Qoss,Output Charge,"VGS=0V,VDS=40V",,112,,nC,,,',
+    ])
+    assert parse_output_charge_reference("AOSQ", root).qoss_pc == 112000.0
+
+
+def test_inline_conditions_are_not_qoss(tmp_path):
+    # PSMN011-30YLC row 121: HEAD read VDS = 15 V; stripping read f = 1; PDF 3.8 nC.
+    root = _write_csv(tmp_path, "NXPQ", [
+        "121,Qoss,output charge VGS = 0 V; VDS = 15 V; f = 1 MHz; - 3.8 - nC,,,",
+    ])
+    assert parse_output_charge_reference("NXPQ", root).qoss_pc == 3800.0
+
+
+def test_condition_range_and_garbled_decimal_are_not_cotr(tmp_path):
+    # STB32N65M5 row 409 (PDF 210 pF) and an IXYS garbled render (PDF 2700 pF).
+    root = _write_csv(tmp_path, "STTR", [
+        '409,Co(tr)(1),Equivalent capacitance time related,"VGS = 0 V,VDS = 0 to 520 V",-,210,-,pF,',
+    ])
+    assert parse_output_charge_reference("STTR", root).cotr_pf == 210.0
+    root = _write_csv(tmp_path, "IXTR", [
+        "656,C o(tr) Ti mer e l a t edVDS =0 . 8*VDSS,,,,2700,pF,,,",
+    ])
+    assert parse_output_charge_reference("IXTR", root).cotr_pf == 2700.0
+
+
+def test_placeholder_dash_and_value_labels_are_not_conditions(tmp_path):
+    # Codex pass-2 constructed rows: "-" is the empty min column, not a range;
+    # TYP=/VALUE= label the value itself.
+    for row, want in (
+        ("1,Qoss,Output charge,VDS=40,-,112,150,nC", 112000.0),
+        ("1,Qoss,Output charge,TYP=45,MAX=60,nC", 45000.0),
+        ("1,Qoss,Output charge,VALUE=45,60,nC", 45000.0),
+    ):
+        root = _write_csv(tmp_path, "LBL", [row])
+        assert parse_output_charge_reference("LBL", root).qoss_pc == want, row
+
+
+def test_at_frequency_condition_is_not_qoss(tmp_path):
+    # NCES075P013D7 row 60: HEAD read the 1 of "@1MHz" as Qoss; PDF 340 nC.
+    root = _write_csv(tmp_path, "NCEQ", [
+        "60,Output charge,Qoss,Calculated by Coss(f)VDS@1MHz,,340,,nC,,",
+    ])
+    assert parse_output_charge_reference("NCEQ", root).qoss_pc == 340000.0
+
+
+def test_footnotes_figures_bounds_and_typ_column(tmp_path):
+    # Codex review pass 3 (2026-11-24), corpus rows checked against the PDFs.
+    for part, row, field, want in (
+        # NXP GAN3R2-100CBEAZ: "[2]" after the conditions is a footnote (PDF 50 nC)
+        ("G1", "29,Qoss,output charge,VGS = 0 V; VDS = 50 V; Tj = 25 °C,[2],-,50,-,nC", "qoss_pc", 50000.0),
+        # NXP GANE3R9-150QBAZ: "Fig. 15" is a figure reference (PDF 130 nC)
+        ("G2", "29,Qoss,output charge,VGS = 0 V; VDS = 75 V; Fig. 15,[1],-,130,-,nC", "qoss_pc", 130000.0),
+        # NXP GAN3R2-100CBEAZ Co(er): "VDS <= 50 V" is a bound (PDF 700 pF)
+        ("G3", "132,Co(er) effective output,0 V <= VDS <= 50 V; VGS = 0 V,,[1],-,700,-,pF", "coer_pf", 700.0),
+        # Infineon BSC016N06NS: min/typ/max, typ served (PDF typ 81 nC; HEAD read min 60)
+        ("B1", "119,Qoss,60,81,102,nC,\"VDD=30 V,VGS=0 V\"", "qoss_pc", 81000.0),
+        # Infineon SPP20N60CFD garbled font: HGS/HDS are VGS/VDS (PDF 83 pF; HEAD read 480)
+        ("S1", '106,"Effective output capacitance,2) energy related",Co(er),"HGS=0V, HDS=0V to 480V",-,83,-,pF', "coer_pf", 83.0),
+    ):
+        root = _write_csv(tmp_path, part, [row])
+        assert getattr(parse_output_charge_reference(part, root), field) == want, row
+
+
+def test_value_words_are_not_condition_names(tmp_path):
+    # Codex pass 3 constructed rows: Typical/Total/Ratio label the value.
+    for row in (
+        "1,Qoss,Typical=45,MAX=60,nC",
+        "1,Qoss,Total=45,60,nC",
+        "1,Qoss,Ratio=45,60,nC",
+        "1,Qoss,Total=45,nC",
+    ):
+        root = _write_csv(tmp_path, "WORD", [row])
+        assert parse_output_charge_reference("WORD", root).qoss_pc == 45000.0, row

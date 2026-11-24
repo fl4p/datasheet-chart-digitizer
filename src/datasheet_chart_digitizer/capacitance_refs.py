@@ -361,23 +361,46 @@ def _datasheet_file(part: str, datasheet_root: Path, ext: str) -> Path | None:
 
 def _first_number_after_symbol_before_unit(cells: list[str], symbol: str, unit: str) -> float | None:
     text = " ".join(cells)
-    symbol_pos = _symbol_position(text, symbol)
-    if symbol_pos >= 0:
-        text = text[symbol_pos + len(symbol) :]
+    span = _symbol_span(text, symbol)
+    if span is not None:
+        text = text[span[1] :]
+        # A footnote marker right after the symbol is not the value: ST renders
+        # "C o(er) (2),...,100,...,pF" (STP42N65M5: read as 2 pF, PDF says 100).
+        text = _LEADING_FOOTNOTE_RE.sub(" ", text, count=1)
     text = re.sub(r"@\s*[0-9]+(?:\.[0-9]+)?\s*V", " ", text)
     unit_pos = text.find(unit)
     if unit_pos >= 0:
         text = text[:unit_pos]
-    return _first_positive_number(text)
+    return _first_positive_value_number(text)
+
+
+def _symbol_span(text: str, symbol: str) -> tuple[int, int] | None:
+    """Span of `symbol` in `text`, tolerating whitespace between its characters.
+
+    PDF table extraction splits symbols ("C o(er)", "C o (tr)"). The span is in
+    `text` itself, so the caller can slice past the symbol. The old fallback
+    searched the space-stripped text and returned an offset into THAT string;
+    for Co(er) it returned -1, so the value search started at the row-index
+    column (IMBG75R007M2H: Co(er) read as 134, the CSV row number, not 490).
+    An exact occurrence wins over an earlier spaced one, as before, so a spaced
+    mention in a description cell cannot move the value search.
+    """
+    exact = text.find(symbol)
+    if exact >= 0:
+        return exact, exact + len(symbol)
+    pattern = r"\s*".join(re.escape(ch) for ch in symbol if not ch.isspace())
+    match = re.search(pattern, text)
+    return (match.start(), match.end()) if match else None
+
+
+# "(2)" or "[2]" directly after the symbol: single-digit footnote markers only
+# (ST uses (1)/(2)), so a parenthesised multi-digit value is never skipped.
+_LEADING_FOOTNOTE_RE = re.compile(r"^[\s,]*(?:\(\s*\d\s*\)|\[\s*\d\s*\])")
 
 
 def _symbol_position(text: str, symbol: str) -> int:
-    pos = text.find(symbol)
-    if pos >= 0:
-        return pos
-    if symbol == "Co(tr)":
-        return text.replace(" ", "").find(symbol)
-    return -1
+    span = _symbol_span(text, symbol)
+    return span[0] if span is not None else -1
 
 
 def _first_number_before_unit(cells: list[str], unit: str) -> float | None:
@@ -386,6 +409,57 @@ def _first_number_before_unit(cells: list[str], unit: str) -> float | None:
     if unit_pos >= 0:
         text = text[:unit_pos]
     return _first_positive_number(text)
+
+
+# A number that is a test condition's own value, judged from the text before it.
+# Case-sensitive on purpose (codex pass 3): the name must look like a symbol --
+# V/I/R/T + uppercase/digit subscript or <=3 lowercase letters (VDS, Vgs, Tj,
+# I D), f, or a garbled-font HGS/HDS -- so words such as Typical, Total and Ratio
+# are not names; TYP/MIN/MAX/VALUE label the value itself. Only an uppercase
+# letter blocks the name, because garbled renders glue words ("edVDS =0 . 8").
+_CONDITION_NAME = (
+    r"(?<![A-Z])(?!(?:TYP|MIN|MAX|VALUE)\b)"
+    r"(?:[VIRT]\s*_?\s*(?:[A-Z0-9(),]{1,5}|[a-z]{1,3}[A-Z0-9]{0,3})|H[A-Z]{2,3}|(?<![A-Za-z])f)"
+)
+_CONDITION_VALUE_PREFIX_RE = re.compile(
+    rf"(?:{_CONDITION_NAME}\s*(?:=|<=|>=|≤|≥|<|>)\s*"
+    # optional: the integer part of a garbled decimal ("=0 . 8"), or a range
+    # start ending in to/.../... -- "-" is NOT a connector: it is the empty
+    # min/max column ("VDS=40,-,112" must still yield 112).
+    r"(?:[-+]?\d+\s*\.\s*|[-+]?\d+(?:\s*\.\s*\d+)?\s*[a-zA-Zµ°]{0,3}\s*(?:to|\.\.\.|…)\s*)?"
+    # "@ 1MHz" (NCE "Calculated by Coss(f)VDS@1MHz,,340,,nC": HEAD read 1);
+    # figure references ("Fig. 15", NXP GANE3R9-150QBAZ: read 15, PDF 130).
+    r"|@\s*|(?<![A-Za-z])Fig(?:ure)?\.?\s*)$"
+)
+_FOOTNOTE_NUMBER_RE = re.compile(r"[\[(]\s*\d\s*[\])]")
+_VALUE_NUMBER_RE = re.compile(r"(?<![A-Za-z])[-+]?[0-9]+(?:\.[0-9]+)?")
+
+
+def _first_positive_value_number(text: str) -> float | None:
+    """The row's value: skip condition values, footnotes and figure numbers.
+
+    The joined-cell row puts conditions before the value: Alpha & Omega
+    "VGS=0V,VDS=40V,,112,,nC" (HEAD read 40), NXP "VDS = 15 V; f = 1 MHz; - 3.8"
+    (HEAD read 15), ST "VDS = 0 to 520 V,-,210" (read 520), NXP GaN
+    "Tj = 25 °C,,[2],-,50" (a "[2]" footnote anywhere, not only after the symbol).
+    When three ascending numbers remain they are min/typ/max and typ is served
+    (Infineon BSC016N06NS "Qoss,60,81,102,nC": HEAD read the min, 60).
+    """
+    values: list[float] = []
+    for match in _VALUE_NUMBER_RE.finditer(text):
+        if _CONDITION_VALUE_PREFIX_RE.search(text[max(0, match.start() - 40) : match.start()]):
+            continue
+        if any(
+            m.start() <= match.start() and match.end() <= m.end()
+            for m in _FOOTNOTE_NUMBER_RE.finditer(text, max(0, match.start() - 3), match.end() + 3)
+        ):
+            continue
+        value = float(match.group())
+        if value > 0:
+            values.append(value)
+    if len(values) >= 3 and values[0] < values[1] < values[2]:
+        return values[1]
+    return values[0] if values else None
 
 
 def _first_positive_number(text: str) -> float | None:
