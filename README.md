@@ -63,6 +63,7 @@ dsdig find /path/to/datasheets/*.pdf --out work/charts
 dsdig digitize-capacitance work/charts/charts.json --out work/charts
 dsdig export-coss-spice work/charts/points/crops/PART/pNN_diagram_MM.points.csv --out work/spice --name PART
 dsdig export-coss-spice work/charts/capacitance_digitization.json --out work/spice-batch
+dsdig digitize-output-charge work/charts/charts.json --out work/charts
 dsdig export-coss-dslib work/charts/capacitance_digitization.json --out work/dslib-coss
 dsdig digitize-vpl /path/to/datasheet.pdf --out work/vpl
 dsdig digitize-reverse-recovery /path/to/AOT414.pdf --out work/rr
@@ -365,7 +366,14 @@ The package emits chart-native artifacts—calibrated point CSVs and validation
 manifests—plus explicit, file-based export formats. `export-coss-spice` writes
 portable Coss/Qoss model artifacts, while `export-coss-dslib` converts only
 validation-gated capacitance manifests into dslib-style `(VDS, Coss, Crss)`
-knots and optional `(VDS, Ciss)` pairs. The latter records pass/rejection
+knots and optional `(VDS, Ciss)` pairs. When `digitize-output-charge` has run in
+the same directory, it also exports `coss_eff_curve`: large-signal `(VDS,
+dQoss/dV)` knots from a printed Qoss(VDS) diagram, gated against the table Qoss.
+`coss_curve` remains the small-signal chart. Use it for ring tanks, and use
+`coss_eff_curve` for Qoss/Eoss. They can disagree on the same sheet: on OptiMOS 8,
+the 1 MHz Coss integrates to about 0.39x the Qoss that the diagram and the table
+agree on (issue #17). `qoss_check.status == "source_contradiction"` records that
+case. The latter records pass/rejection
 reasons in per-chart JSON files and `dslib_coss_manifest.json`; it does not
 modify a downstream parts database. Database persistence, curation, and other
 consumer-specific integration remain the consumer repository's responsibility.

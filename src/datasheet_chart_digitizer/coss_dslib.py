@@ -88,6 +88,15 @@ class DslibCossResult:
     ciss_status: str = "rejected"    # "pass" | "absent" | "rejected"
     ciss_reasons: list = field(default_factory=list)
     ciss_curve: list = field(default_factory=list)  # [(Vds_V, Ciss_pF), ...]
+    # coss_curve is the small-signal chart (typically f = 1 MHz).  Use it for ring
+    # tanks; use coss_eff_curve (large-signal dQoss/dV from a Qoss(VDS) diagram) for
+    # Qoss/Eoss losses when it passes.  qoss_check says how Coss's integral was gated.
+    coss_basis: str = "small_signal_chart"
+    qoss_check: dict = field(default_factory=dict)
+    coss_eff_status: str = "absent"  # "pass" | "absent" | "unverified" | "rejected"
+    coss_eff_reasons: list = field(default_factory=list)
+    coss_eff_curve: list = field(default_factory=list)  # [(Vds_V, Coss_eff_pF), ...]
+    coss_eff_source: dict = field(default_factory=dict)
 
 
 def _interp_at(vds: np.ndarray, cap: np.ndarray, v: float, v_scale: float) -> float:
@@ -123,8 +132,79 @@ def _trace_gate_reasons(row: dict) -> dict[str, list[str]]:
     return out
 
 
+def _same_path(a: object, b: object) -> bool:
+    if not a or not b:
+        return False
+    try:
+        return Path(str(a)).resolve() == Path(str(b)).resolve()
+    except OSError:
+        return str(a) == str(b)
+
+
+def _same_source(panel: dict, row: dict) -> bool:
+    """Same part, and the same PDF: compared directly when both carry it, else via the
+    crop directory `dsdig find` wrote both panels' crops into (one per source PDF)."""
+    if not panel.get("part") or panel.get("part") != row.get("part"):
+        return False
+    if panel.get("pdf") and row.get("pdf"):
+        return _same_path(panel["pdf"], row["pdf"])
+    pc, rc = panel.get("crop"), row.get("crop")
+    return bool(pc and rc) and _same_path(Path(str(pc)).parent, Path(str(rc)).parent)
+
+
+def _matching_output_charge(row: dict, panels: list[dict]) -> dict | None:
+    """The Qoss(VDS) diagram digitized from the same PDF as this C(V) row, if any.
+
+    More than one matching panel is ambiguous and matches nothing."""
+    found = [p for p in panels if isinstance(p, dict) and _same_source(p, row)]
+    return found[0] if len(found) == 1 else None
+
+
+def _apply_coss_eff(res: DslibCossResult, diagram: dict | None) -> None:
+    if diagram is None:
+        return
+    res.coss_eff_source = {
+        "diagram": diagram.get("diagram"), "page": diagram.get("page"),
+        "overlay": diagram.get("overlay"), "anchor": diagram.get("anchor"),
+        "integral_max_error": diagram.get("coss_eff_integral_max_error"),
+    }
+    status = str(diagram.get("status"))
+    if status == "pass" and diagram.get("coss_eff_curve"):
+        res.coss_eff_status = "pass"
+        res.coss_eff_curve = [tuple(k) for k in diagram["coss_eff_curve"]]
+    else:
+        res.coss_eff_status = "unverified" if status == "unverified" else "rejected"
+        res.coss_eff_reasons = list(diagram.get("reasons") or [f"output_charge_status:{status}"])
+
+
+def _source_contradiction(row: dict, diagram: dict | None) -> dict | None:
+    """qoss_check payload when a passing Qoss diagram, anchored to the SAME table Qoss
+    this row was checked against, explains a graph/table inconsistency; else None."""
+    if diagram is None or diagram.get("status") != "pass":
+        return None
+    anchor = diagram.get("anchor") or {}
+    ref = row.get("output_charge_reference") or {}
+    if (not anchor or ref.get("qoss_pc") is None or ref.get("vint_v") is None
+            or anchor.get("table_pc") != ref.get("qoss_pc")
+            or anchor.get("vds_v") != ref.get("vint_v")):
+        return None
+    chart_pc = (row.get("qoss_metrics") or row.get("qoss_diagnostic_metrics") or {}).get("Qoss_pc")
+    if chart_pc is None:
+        return None
+    return {
+        "status": "source_contradiction",
+        "basis": "qoss_diagram_matches_table",
+        "vds_v": ref["vint_v"],
+        "table_qoss_pc": ref["qoss_pc"],
+        "diagram_qoss_pc": anchor.get("diagram_pc"),
+        "coss_chart_integral_pc": round(float(chart_pc), 2),
+        "coss_chart_integral_over_table": round(float(chart_pc) / float(ref["qoss_pc"]), 4),
+        "note": "integrate coss_eff_curve, not coss_curve, for Qoss/Eoss",
+    }
+
+
 def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
-               max_knots: int = 48) -> DslibCossResult:
+               max_knots: int = 48, output_charge: list[dict] | None = None) -> DslibCossResult:
     """Validate one manifest row and build independently gated trace curves."""
     part = str(row.get("part") or "?")
     diagram = str(row.get("diagram") or "?")
@@ -144,10 +224,23 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     res.crss_reasons.extend(trace_reasons["Crss"])
     res.ciss_reasons.extend(trace_reasons["Ciss"])
 
-    if row.get("qoss_validation_status") != "pass":
+    diagram = _matching_output_charge(row, output_charge or [])
+    _apply_coss_eff(res, diagram)
+    qoss_status = row.get("qoss_validation_status")
+    explained = _source_contradiction(row, diagram) if qoss_status == "graph_table_inconsistent" else None
+    if qoss_status == "pass":
+        res.qoss_check = {"status": "pass", "basis": "chart_integral_vs_table"}
+    elif explained is not None:
+        # The sheet's own Qoss diagram matches its Qoss table, and the small-signal Coss
+        # chart integrates to something else: a contradiction in the source, not a
+        # digitization fault.  Coss stays the small-signal curve (still anchor- and
+        # shape-gated below); the charge it integrates to must not be used as Qoss.
+        res.qoss_check = explained
+    else:
         res.coss_reasons.append(
-            f"qoss_validation:{row.get('qoss_validation_status')}"
+            f"qoss_validation:{qoss_status}"
             f":{row.get('qoss_validation_error')}")
+        res.qoss_check = {"status": str(qoss_status)}
 
     anchors = row.get("anchors") or {}
     for name, reasons in (("Coss", res.coss_reasons), ("Crss", res.crss_reasons)):
@@ -365,18 +458,33 @@ def _finish_aggregate(res: DslibCossResult) -> None:
     res.reasons = list(dict.fromkeys(res.coss_reasons + res.crss_reasons))
 
 
+def load_output_charge(path: Path | None) -> list[dict]:
+    """Panels from `dsdig digitize-output-charge`; a missing file means no diagrams."""
+    if path is None or not path.exists():
+        return []
+    data = json.loads(path.read_text())
+    panels = data.get("panels") if isinstance(data, dict) else None
+    if not isinstance(panels, list):
+        raise ValueError(f"{path} is not an output-charge digitization manifest")
+    return panels
+
+
 def export_manifest(manifest_path: Path, out_dir: Path, *, max_rel_error: float = 0.02,
-                    max_knots: int = 48) -> list[DslibCossResult]:
+                    max_knots: int = 48,
+                    output_charge_path: Path | None = None) -> list[DslibCossResult]:
     rows = json.loads(manifest_path.read_text())
     if not isinstance(rows, list):
         raise ValueError(f"{manifest_path} is not a capacitance digitization manifest")
+    if output_charge_path is None:
+        output_charge_path = manifest_path.parent / "output_charge_digitization.json"
+    output_charge = load_output_charge(output_charge_path)
     out_dir.mkdir(parents=True, exist_ok=True)
     results = []
     for row in rows:
         if not isinstance(row, dict):
             continue
         res = export_row(row, manifest_path.parent, max_rel_error=max_rel_error,
-                         max_knots=max_knots)
+                         max_knots=max_knots, output_charge=output_charge)
         results.append(res)
         safe = "".join(ch if ch.isalnum() else "_" for ch in f"{res.part}_d{res.diagram}")
         (out_dir / f"{safe}.dslib_coss.json").write_text(
@@ -436,12 +544,15 @@ def main() -> None:
     ap.add_argument("--max-rel-error", type=float, default=0.02,
                     help="adaptive Coss knot target relative error")
     ap.add_argument("--max-knots", type=int, default=48, help="maximum Coss knots")
+    ap.add_argument("--output-charge", type=Path, default=None,
+                    help="output_charge_digitization.json from `dsdig digitize-output-charge` "
+                         "(default: next to the manifest, if present)")
     args = ap.parse_args()
     manifest = args.manifest
     if manifest.is_dir():
         manifest = manifest / "capacitance_digitization.json"
     results = export_manifest(manifest, args.out, max_rel_error=args.max_rel_error,
-                              max_knots=args.max_knots)
+                              max_knots=args.max_knots, output_charge_path=args.output_charge)
     ok = 0
     for r in results:
         passed = [name for name in ("Coss", "Crss", "Ciss")
@@ -455,6 +566,12 @@ def main() -> None:
                 if getattr(r, f"{name.lower()}_status") == "rejected"
             ]
             suffix = f"; rejected {' | '.join(rejected)}" if rejected else ""
+            if r.qoss_check.get("status") == "source_contradiction":
+                suffix += (f"; Qoss: Coss chart integrates to "
+                           f"{r.qoss_check['coss_chart_integral_over_table']:.3f}x the table, "
+                           "Qoss diagram matches it (source contradiction)")
+            if r.coss_eff_status == "pass":
+                passed.append("Coss_eff")
             print(f"{r.part} d{r.diagram}: PASS {'/'.join(passed)} "
                   f"(anchors: {ac}){suffix}")
         else:

@@ -18,6 +18,7 @@ _DISPATCH: dict[str, tuple[str, bool]] = {
     "digitize-vpl": ("gate_charge_vpl", True),
     "digitize-reverse-recovery": ("reverse_recovery", False),
     "digitize-breakdown-voltage": ("breakdown_voltage", False),
+    "digitize-output-charge": ("output_charge", False),
     "digitize-threshold-voltage": ("threshold_voltage", False),
     "digitize-reverse-leakage": ("diode_reverse_leakage", False),
     "digitize-rds-vgs": ("rdson_gate_voltage", True),
@@ -36,6 +37,7 @@ _COMMANDS = {
     "digitize-vpl": "digitize MOSFET gate-charge curves and estimate Vpl",
     "digitize-reverse-recovery": "digitize diode Qrr/Irm/trr/S charts (25/125C, AO style)",
     "digitize-breakdown-voltage": "digitize V(BR)DSS vs Tj charts (Infineon Diagram 15 style)",
+    "digitize-output-charge": "digitize Qoss vs VDS diagrams; derive large-signal Coss_eff = dQoss/dV",
     "digitize-threshold-voltage": "digitize Vth vs temperature charts (validated on Toshiba raster; overlays need review)",
     "digitize-reverse-leakage": "digitize diode Ir(Vr) leakage families at several Tj",
     "digitize-rds-vgs": "digitize MOSFET RDS(on) vs VGS, checked against the RDS(on) table",
@@ -86,7 +88,8 @@ def _resolve_out_dir(command: str, rest: list[str]) -> Path | None:
         return Path(explicit)
     if command == "find":
         return Path("out/datasheet_charts")
-    if command in {"digitize-capacitance", "digitize-breakdown-voltage", "digitize-rds-vgs"}:
+    if command in {"digitize-capacitance", "digitize-breakdown-voltage", "digitize-output-charge",
+                   "digitize-rds-vgs"}:
         positionals = [arg for arg in rest if not arg.startswith("-")]
         if positionals:
             return Path(positionals[0]).parent
