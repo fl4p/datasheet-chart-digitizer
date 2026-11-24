@@ -1116,6 +1116,29 @@ class BodyDiodeAxisGutterOwnershipTests(unittest.TestCase):
         self.assertLess(expanded[0], 318)
         self.assertGreater(expanded[3], 425)
 
+    def test_reverse_drain_title_expands_without_neighbour_gutter_tick(self) -> None:
+        # onsemi FDA032N08 Figure 4: rotated "IS, Reverse Drain Current (A)"
+        # at x 319.9; Figure 3's "400" tick sits further left in the gutter.
+        title = [
+            ("(A)", 300.0, 312.0), ("Current", 314.0, 342.0),
+            ("Drain", 344.0, 364.0), ("Reverse", 366.0, 396.0),
+            ("S,", 398.0, 404.0), ("I", 404.0, 408.0),
+        ]
+        page = find_charts.PageText(
+            1,
+            612,
+            792,
+            [find_charts.Word(text, 319.9, y0, 330.9, y1) for text, y0, y1 in title]
+            + [find_charts.Word("400", 293.2, 300.0, 306.2, 307.0)],
+        )
+        bbox = (336.173, 292.736, 555.328, 476.985)
+
+        expanded = find_charts._expand_caption_bbox_to_axis_labels(
+            page, bbox, "body_diode"
+        )
+
+        self.assertAlmostEqual(expanded[0], 319.9 - 3.0)
+
 
 class SyntheticGateChargeTableGuardTests(unittest.TestCase):
     def test_synthetic_qg_panel_requires_owned_plot_evidence(self) -> None:

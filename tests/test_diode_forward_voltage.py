@@ -549,14 +549,14 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
                 "onsemi/FDA032N08.pdf",
                 "Body Diode Forward Voltage",
                 # Crop-relative pixels follow the finder's panel box (crop
-                # origin 334.0, 290.4 pt).  In page points the plot is
+                # origin 314.8, 290.4 pt).  In page points the plot is
                 # 354.8/300.8/546.8/435.2 vs the drawn frame and 400 A/1 A
                 # rules 355.01/300.70/547.14/435.29 (get_drawings).
-                PlotBox(52, 26, 532, 362),
+                PlotBox(100, 26, 580, 362),
                 "linear",
                 "log10",
                 (1, 10, 100, 400),
-                (52, 212, 372, 532),
+                (100, 260, 420, 580),
                 (26, 103, 233, 362),
             ),
             (
@@ -807,32 +807,32 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
             ),
             (
                 "onsemi/FDP8D5N10C.pdf",
-                PlotBox(25, 26, 479, 371),
-                (25, 101, 176, 252, 328, 403, 479),
+                PlotBox(112, 26, 566, 371),
+                (112, 188, 263, 339, 415, 490, 566),
                 (26, 46, 111, 176, 241, 306, 371),
             ),
             (
                 "onsemi/FDPF51N25.pdf",
-                PlotBox(26, 25, 508, 362),
-                (26, 86, 146, 207, 267, 327, 387, 448, 508),
+                PlotBox(109, 25, 591, 362),
+                (109, 169, 229, 290, 350, 410, 470, 531, 591),
                 (69, 216, 362),
             ),
             (
                 "onsemi/FDPF8D5N10C.pdf",
-                PlotBox(25, 26, 479, 371),
-                (25, 101, 176, 252, 328, 403, 479),
+                PlotBox(112, 26, 566, 371),
+                (112, 188, 263, 339, 415, 490, 566),
                 (26, 46, 111, 176, 241, 306, 371),
             ),
             (
                 "onsemi/FDS4435BZ.pdf",
-                PlotBox(62, 19, 476, 322),
-                (62, 131, 200, 269, 338, 407, 476),
+                PlotBox(92, 19, 506, 322),
+                (92, 161, 230, 299, 368, 437, 506),
                 (19, 69, 120, 170, 221, 272, 322),
             ),
             (
                 "onsemi/FDS8447.pdf",
-                PlotBox(54, 19, 479, 330),
-                (54, 125, 196, 266, 337, 408, 479),
+                PlotBox(84, 19, 509, 330),
+                (84, 155, 226, 296, 367, 438, 509),
                 (19, 81, 143, 205, 268, 330),
             ),
             (

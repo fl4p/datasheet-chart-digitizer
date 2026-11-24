@@ -1327,7 +1327,7 @@ class TransferBodyCaptionIntegrationTests(unittest.TestCase):
         # The body-diode panel starts below the preceding Figure 2 caption
         # (y1 278.9); retaining that caption would make the crop own text from
         # another plot.
-        self.assertEqual(body[0].bbox_pt, (336.173, 292.736, 555.328, 476.985))
+        self.assertEqual(body[0].bbox_pt, (316.876, 292.736, 555.328, 476.985))
         self.assertEqual(gate[0].bbox_pt, (345.472, 507.732, 554.128, 662.068))
 
 

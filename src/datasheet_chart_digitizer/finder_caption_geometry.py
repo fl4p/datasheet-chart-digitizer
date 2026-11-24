@@ -1358,9 +1358,12 @@ def expand_caption_bbox_to_axis_labels(
         has_current_axis = (
             {"sourcetodrain", "current", "a"} <= left_tokens
             or {"i", "sd", "a"} <= left_tokens
+            or {"reverse", "drain", "current", "a"} <= left_tokens
         )
         if has_current_axis:
-            new_x0 = min(new_x0, min(word.x0 for word in left_words) - 3.0)
+            # title words only: a neighbouring column's tick in the gutter must not widen the crop
+            title_x0 = min(word.x0 for word in left_words if not numeric(word))
+            new_x0 = min(new_x0, title_x0 - 3.0)
         bottom_words = [
             word
             for word in page.words

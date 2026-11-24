@@ -29,7 +29,7 @@ from .capacitance_vector import (
     _resample_vector_trace_pixels,
     _vector_curve_edges,
 )
-from .crop_transform import CropTransform
+from .crop_transform import CropTransform, blank_rotated_words
 from .curve_coverage import served_curve_coverage
 from .diode_legend_color import colored_temperature_bindings
 from .diode_temperature_assignment import (
@@ -370,7 +370,9 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     with pymupdf.open(panel.pdf) as doc:
         page = doc[panel.page - 1]
         labels = _page_labels(page, transform)
-    hint, hint_source, periodic_x, periodic_y = _plot_hint(image)
+        # a bold rotated axis title inside the crop must not read as the left frame rule
+        hint_image = blank_rotated_words(image, page, transform)
+    hint, hint_source, periodic_x, periodic_y = _plot_hint(hint_image)
     raw_x = _select_axis(labels, hint, "x")
     try:
         raw_y = _select_axis(labels, hint, "y")

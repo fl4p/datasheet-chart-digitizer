@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 
 
@@ -62,3 +64,21 @@ class CropTransform:
             self.x0_pt + x_px / self.scale_x,
             self.y0_pt + y_px / self.scale_y,
         )
+
+
+def blank_rotated_words(gray, page, transform: CropTransform):
+    """Copy of *gray* with the page's rotated (tall, >=2-letter) PDF words whitened; *gray* if none fall inside."""
+    out = None
+    for word in page.get_text("words"):
+        x0, y0 = transform.to_px(word[0], word[1])
+        x1, y1 = transform.to_px(word[2], word[3])
+        if y1 - y0 <= 1.5 * (x1 - x0) or not re.search(r"[A-Za-z]{2}", word[4]):
+            continue
+        c0, c1 = max(0, int(x0) - 1), min(gray.shape[1], math.ceil(x1) + 1)
+        r0, r1 = max(0, int(y0) - 1), min(gray.shape[0], math.ceil(y1) + 1)
+        if c0 >= c1 or r0 >= r1:
+            continue
+        if out is None:
+            out = gray.copy()
+        out[r0:r1, c0:c1] = 255
+    return gray if out is None else out
