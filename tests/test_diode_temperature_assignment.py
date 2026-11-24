@@ -11,7 +11,8 @@ from types import SimpleNamespace
 import pymupdf
 
 from datasheet_chart_digitizer.capacitance_types import PlotBox
-from datasheet_chart_digitizer.diode_forward_voltage import _excluded_wide_curve, digitize_pdf
+from datasheet_chart_digitizer.diode_forward_voltage import digitize_pdf
+from datasheet_chart_digitizer.diode_vector_curves import _excluded_wide_curve
 from datasheet_chart_digitizer.diode_temperature_assignment import (
     LABEL_BOUND,
     ORDER_BOUND,

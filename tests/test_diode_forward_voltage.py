@@ -16,16 +16,18 @@ from datasheet_chart_digitizer.diode_forward_voltage import (
     _draw_overlay,
     _expanded_grid_search_box,
     _full_span_grid_lines,
-    _join_vector_path_records,
-    _join_vector_paths,
     _normalize_numeric_text,
     _physical_plot_hint,
     _prefer_strong_plot_edges,
     _snap_axis_to_grid,
-    _source_bound_top_exit_curve,
     _temperatures,
     calibrate_panel,
     digitize_pdf,
+)
+from datasheet_chart_digitizer.diode_vector_curves import (
+    _join_vector_path_records,
+    _join_vector_paths,
+    _source_bound_top_exit_curve,
 )
 from datasheet_chart_digitizer.diode_legend_color import temperatures_from_source_words
 from datasheet_chart_digitizer.find_charts import ChartPanel, process_pdf

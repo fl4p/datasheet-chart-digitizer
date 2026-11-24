@@ -10,7 +10,7 @@ import unittest
 import pymupdf
 
 from datasheet_chart_digitizer import find_charts as finder
-from datasheet_chart_digitizer.diode_forward_voltage import _merge_source_contiguous_strokes
+from datasheet_chart_digitizer.diode_vector_curves import _merge_source_contiguous_strokes
 from datasheet_chart_digitizer.gate_axis_ocr import (
     Word,
     _fill_ticks_from_other_reads,
