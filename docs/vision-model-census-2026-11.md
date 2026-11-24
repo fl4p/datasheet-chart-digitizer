@@ -314,7 +314,7 @@ The vector tracing stops (123) are a separate problem; path identity, not a pixe
 
 ## 7. What this census does not cover
 
-- **Other chart families.** MLCC, powder-core and paper charts are not in the sampled library. Known from earlier work only: the Taiyo Yuden MLCC charts are vector, the KDM core-loss sheet is a scan.
+- **Other chart families.** MLCC, powder-core and paper charts are not in the sampled library; appendix A covers them. The KDM core-loss sheet is not a scan (appendix A).
 - **Classes not run**: RDS(on) vs VGS and Vth in the refusal run.
 - **Demand weighting.** Shares are per PDF in the library, not per part actually used in a design.
 - **Uncertainty.** Vendor shares rest on 100 PDFs each, refusal rows on 10 PDFs per vendor, the audit on 30 PDFs. No confidence intervals were computed.
@@ -343,3 +343,30 @@ $PY tools/census/finder_audit_report.py out/census/finder-audit
 ```
 
 The medium run took about 45 minutes with 12 workers on vup. Set `OMP_THREAD_LIMIT=1`, or tesseract oversubscribes the host.
+
+## Appendix A. Independent cross-check, 2026-11-24
+
+A second census used a different medium rule: a pixel and PDF-object probe per page instead of the finder's panels. It sampled 348 MOSFET PDFs (12 per vendor, seed 1124) and 454 PDFs from other corpora. It reused this census's refusal rows for the stages and did not recompute them.
+
+| Measure | Cross-check | This census |
+|---|---:|---:|
+| Raster share of charts, MOSFET library | 27.4 % (21.8 % of captioned charts; 20.0 % without HXY) | 21.2 % (16.5 % without HXY) |
+| Charts without native numeric tick text | 29.7 % | 24.2 % |
+| PDFs with at least one raster chart | 41.1 % | 33.2 % |
+| Whole-page scans | 0.05 % of pages | none seen |
+
+The probe also counts charts the finder misses on raster pages, which is in line with section 2.1's note that the true raster share is above 21 %. Vendor shares agree within a few points except Huayi (+12) and TI (+9; TI embeds its Zth chart as an image).
+
+Other corpora:
+
+| Corpus | Result |
+|---|---|
+| Taiyo Yuden MLCC pilot (51 PDFs) | all vector |
+| solar-charger-eval MOSFET sheets (88 PDFs) | 22 % raster |
+| Electrolytic catalogues, Würth part PDFs | almost no characteristic charts |
+| EMC test reports | the only scanned material found; not a dsdig target |
+| KDM KS184-125A core-loss sheet | vector paths with outlined glyphs and no text layer, not a scan: 14,627 drawing items, and only two images (logo, footer banner) |
+
+Verdicts: same as above (detector: go; segmentation and OCR training: no-go; wire the existing OCR path first).
+
+Limits: probe recall about 84 % and precision about 96 % on 20 hand-checked pages, with the watermark rule tuned on those same pages; 12 PDFs per vendor, no confidence intervals; chart classes from native captions (13 of 52 unlabelled, 5 wrong). The probe scripts were scratch and are not in the repo.
