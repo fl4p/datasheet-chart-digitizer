@@ -59,7 +59,7 @@ from .capacitance_axis import (
     reject_bad_position_calibration,
     trace_data_points,
 )
-from .capacitance_assignment import select_trace_assignment
+from .capacitance_assignment import capacitance_table_check, select_trace_assignment
 from .capacitance_grid_anchor import grid_check_problems
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
 from .capacitance_plot_box import find_capacitance_plot_box_with_method
@@ -67,11 +67,9 @@ from .capacitance_refs import (
     _anchor_csv_path,
     _extract_reference_vint,
     _first_number_after_symbol_before_unit,
-    _first_number_before_unit,
-    _first_positive_number,
     _symbol_position,
+    capacitance_anchor_report,
     output_charge_reference_to_json,
-    parse_capacitance_anchors,
     parse_output_charge_reference,
     supplied_anchor_table_installed,
 )
@@ -234,7 +232,7 @@ def process_chart(
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     plot, plot_box_method = find_capacitance_plot_box_with_method(gray)
-    anchors = parse_capacitance_anchors(str(chart["part"]), datasheet_root)
+    anchors, rejected_anchors = capacitance_anchor_report(str(chart["part"]), datasheet_root)
     output_ref = parse_output_charge_reference(str(chart["part"]), datasheet_root)
     axis_text_order: AxisCalibration | None = None
     axis_text_order_error: str | None = None
@@ -388,14 +386,6 @@ def process_chart(
         if extraction_method == "raster"
         else {"applicable": False, "reason": "vector_extraction"}
     )
-    overlay = draw_trace_overlay(
-        image,
-        plot,
-        traces,
-        axis_calibration if axis_trusted else None,
-        shared_spans,
-        anchors,
-    )
     diagnostics = trace_semantic_diagnostics(traces, plot)
     # Positive C-vs-VDS title evidence is required before a rising trace may
     # be read as a superjunction fall-then-rise rather than a mis-seated panel.
@@ -465,6 +455,31 @@ def process_chart(
                 status_reasons.append(reason)
             if status == "ok":
                 status = "unverified"
+    table_check = capacitance_table_check(
+        traces,
+        plot,
+        axis_calibration if axis_trusted else None,
+        anchors,
+        rejected_anchors,
+        set(unresolved_anchor_traces(
+            getattr(axis_calibration, "y_log", None),
+            getattr(axis_calibration, "y_scale", None),
+            {name: anchor.value_pf for name, anchor in anchors.items()},
+        )),
+    )
+    if table_check["verdict"] == "inconsistent":
+        # Recorded, not gating: chart and table may differ for real (AGM15N10D-G
+        # Ciss 315 pF at 100 kHz in the chart vs 520 pF at 1 MHz in the table).
+        status_reasons.append("table_check_inconsistent")
+    overlay = draw_trace_overlay(
+        image,
+        plot,
+        traces,
+        axis_calibration if axis_trusted else None,
+        shared_spans,
+        anchors,
+        {row["name"]: row["verdict"] for row in table_check["anchors"]},
+    )
     if vector_selection_method == "source_drawing_rescue":
         if status == "ok":
             status = "overlay-review-required"
@@ -672,6 +687,7 @@ def process_chart(
             else {}
         ),
         "anchor_diagnostics": anchor_diagnostics,
+        "table_check": table_check,
         "identity_diagnostics": identity_diagnostics,
         "output_charge_reference": output_charge_reference,
         "qoss_metrics": qoss_metrics,

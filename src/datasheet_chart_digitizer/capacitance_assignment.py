@@ -254,3 +254,70 @@ def _unavailable_diagnostics(reason: str, anchors: dict[str, CapAnchor]) -> dict
         },
         "candidates": [],
     }
+
+
+# Chart-vs-table agreement for a served C(V) curve at its spec-table point:
+# |log10(served/table)| <= log10(1.25), i.e. served/table within 0.8-1.25. It is the
+# 25 % the Qoss and Co(er) graph-table checks already use, made symmetric because the
+# C axis is logarithmic. MAX_ASSIGNMENT_RESIDUAL_DEC (0.25 dec, x1.78) only guards
+# curve identity and is far too loose to call two values consistent.
+TABLE_CHECK_MAX_LOG10_RATIO = math.log10(1.25)
+
+
+def capacitance_table_check(
+    traces: list[Trace],
+    plot: PlotBox,
+    calibration: AxisCalibration | None,
+    anchors: dict[str, CapAnchor],
+    rejected: dict[str, str],
+    unresolved: set[str] = frozenset(),
+) -> dict[str, object]:
+    """Compare each served curve with its spec-table anchor.
+
+    Per anchor: consistent / inconsistent / not_evaluable (with a reason). Overall:
+    any inconsistent -> inconsistent, else any consistent -> consistent, else
+    not_evaluable. A missing, rejected or unsampled anchor never counts as agreement.
+    """
+    by_name = {trace.name: trace for trace in traces}
+    rows: list[dict[str, object]] = []
+    for name in TRACE_NAMES:
+        anchor = anchors.get(name)
+        row: dict[str, object] = {
+            "name": name,
+            "table_pf": anchor.value_pf if anchor else None,
+            "vds_v": anchor.vds_v if anchor else None,
+            "served_pf": None,
+            "log10_ratio": None,
+            "verdict": "not_evaluable",
+            "reason": None,
+        }
+        rows.append(row)
+        if anchor is None:
+            row["reason"] = rejected.get(name, "no_table_anchor")
+        elif calibration is None:
+            row["reason"] = "axis_untrusted"
+        elif name not in by_name:
+            row["reason"] = "no_served_curve"
+        elif name in unresolved:
+            row["reason"] = "anchor_below_axis_resolution"
+        else:
+            residual = _anchor_residual(by_name[name], anchor, plot, calibration)
+            if residual["log10_ratio"] is None:
+                row["reason"] = residual["reason"]
+            else:
+                ratio = float(residual["log10_ratio"])
+                row["served_pf"] = residual["sampled_pf"]
+                row["log10_ratio"] = ratio
+                row["verdict"] = (
+                    "consistent" if abs(ratio) <= TABLE_CHECK_MAX_LOG10_RATIO
+                    else "inconsistent"
+                )
+    verdicts = {row["verdict"] for row in rows}
+    verdict = next(
+        (v for v in ("inconsistent", "consistent") if v in verdicts), "not_evaluable"
+    )
+    return {
+        "verdict": verdict,
+        "max_abs_log10_ratio": TABLE_CHECK_MAX_LOG10_RATIO,
+        "anchors": rows,
+    }

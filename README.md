@@ -310,6 +310,24 @@ Key capacitance-pipeline outputs:
 - `points/...points.csv`: pixel and calibrated data-space trace points.
 - `capacitance_digitization.json`: diagnostics and validation manifest.
 
+Spec-table anchors (C(V)) are read by cell position: the min/typ/max cells directly left
+of the pF unit cell, typ only. A row in another unit, a min/typ/max row with an empty
+typ, or an unrecognised row gives no anchor. An anchor whose value appears only in the
+row's test condition (e.g. `VDS=50V`) is rejected.
+
+Table check (C(V)): each capacitance result, and its record in the annotate manifest,
+carries `table_check`. For Ciss, Coss and Crss it lists the table value (`table_pf`) at
+its `vds_v`, the served curve's value there (`served_pf`), `log10_ratio` and a verdict:
+`consistent` when |log10(served/table)| <= log10(1.25) (0.8-1.25x, the 25 % of the Qoss
+and Co(er) checks, symmetric on the log axis), else `inconsistent`; `not_evaluable` with
+a reason when there is no anchor, the anchor was rejected, the axis is untrusted, the
+anchor is below a linear axis's resolution, or it falls outside or in a gap of the curve.
+Overall: `inconsistent` if any anchor is, else `consistent` if any is, else
+`not_evaluable`. `inconsistent` adds the status reason `table_check_inconsistent` but does
+not change the status, so a C(V) chart can be `ok` with that reason: chart and table may
+legitimately differ (e.g. measured at 100 kHz vs 1 MHz), so check the overlay, which
+labels each anchor `[agrees]`, `[MISMATCH]` or `[unchecked]`.
+
 ## Coss SPICE Export
 
 For compact storage, keep Coss as adaptive log-space knots rather than a global

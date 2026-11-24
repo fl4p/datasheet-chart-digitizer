@@ -19,6 +19,7 @@ def draw_trace_overlay(
     calibration: AxisCalibration | None = None,
     shared_spans: list[dict[str, object]] | None = None,
     anchors: Mapping[str, object] | None = None,
+    anchor_verdicts: Mapping[str, str] | None = None,
 ) -> np.ndarray:
     overlay = image.copy()
     draw_plot_frame(overlay, plot, color=(0, 180, 255))
@@ -52,7 +53,7 @@ def draw_trace_overlay(
         )
 
     _draw_shared_ciss_coss_spans(overlay, traces, shared_spans or [])
-    _draw_anchors(overlay, plot, calibration, anchors or {}, traces)
+    _draw_anchors(overlay, plot, calibration, anchors or {}, traces, anchor_verdicts or {})
 
     if calibration is not None:
         source_x_ticks = (
@@ -103,6 +104,7 @@ def _draw_anchors(
     calibration: AxisCalibration | None,
     anchors: Mapping[str, object],
     traces: list[Trace],
+    verdicts: Mapping[str, str],
 ) -> None:
     """Mark every spec-table anchor on the chart it was compared against.
 
@@ -136,6 +138,8 @@ def _draw_anchors(
             "?" if value_pf is None else "%g" % float(value_pf),
             "?" if vds_v is None else "%g" % float(vds_v),
         )
+        if name in verdicts:
+            label += " " + _VERDICT_TAGS.get(verdicts[name], verdicts[name])
         if calibration is None:
             unplaced.append("%s (axis untrusted)" % label)
             continue
@@ -153,6 +157,9 @@ def _draw_anchors(
         _draw_anchor_marker(overlay, x, y, color, label, plot)
     if unplaced:
         _draw_unplaced_anchor_note(overlay, plot, unplaced)
+
+
+_VERDICT_TAGS = {"consistent": "[agrees]", "inconsistent": "[MISMATCH]", "not_evaluable": "[unchecked]"}
 
 
 # The marker is a hollow diamond with a crosshair: no extraction glyph on these

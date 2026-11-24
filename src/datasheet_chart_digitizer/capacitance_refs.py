@@ -48,8 +48,7 @@ _PDF_QOSS_VINT_RES = (
 # Why: the scrapers here are case-sensitive on the printed symbol ("Coss" vs EPC's
 # "COSS"), so every EPC part yielded {} while the caller held Coss=557 pF @ 50 V for the
 # same device -- reported downstream as `missing_coss_anchor`, i.e. "the datasheet has no
-# Coss", which was never true. The value picker also reads a condition cell as a value
-# (Ciss=25 pF out of "VDS = 25 V" on hxy/toshiba renders).
+# Coss", which was never true.
 _SUPPLIED_ANCHORS: dict[str, dict] | None = None
 
 
@@ -75,45 +74,74 @@ def load_anchor_table(path: Path) -> dict[str, dict]:
 
 
 def parse_capacitance_anchors(part: str, datasheet_root: Path) -> dict[str, CapAnchor]:
+    return capacitance_anchor_report(part, datasheet_root)[0]
+
+
+def capacitance_anchor_report(
+    part: str, datasheet_root: Path
+) -> tuple[dict[str, CapAnchor], dict[str, str]]:
+    """Usable anchors, and the rejected ones as name -> reason.
+
+    A rejected anchor's value is a number of its row's test condition that no value
+    cell carries (AGM15N10D-G: Ciss 50 pF out of "VDS=50V"; the table says 520). It
+    is not a table value, so it is neither scored nor drawn."""
+    csv_path = _anchor_csv_path(part, datasheet_root)
+    rows: list[list[str]] = []
+    if csv_path is not None:
+        with csv_path.open(newline="", errors="replace") as f:
+            rows = list(csv.reader(f))
+    rejected: dict[str, str] = {}
+
     if _SUPPLIED_ANCHORS is not None:
         entry = _SUPPLIED_ANCHORS.get(part) or {}
         out: dict[str, CapAnchor] = {}
         for name, a in (entry.get("anchors") or {}).items():
             if name in _CAP_NAMES and a.get("value_pf") is not None \
                     and a.get("vds_v") is not None:
-                out[name] = CapAnchor(name=name, value_pf=float(a["value_pf"]),
-                                      vds_v=float(a["vds_v"]))
-        return out
+                value = float(a["value_pf"])
+                tails = [row[row.index(name) + 1:] for row in rows if name in row]
+                if tails and _condition_echo(value, [c for t in tails for c in t]):
+                    rejected[name] = CONDITION_ECHO_REASON
+                    continue
+                out[name] = CapAnchor(name=name, value_pf=value, vds_v=float(a["vds_v"]))
+        return out, rejected
 
-    csv_path = _anchor_csv_path(part, datasheet_root)
     if csv_path is None:
-        return {}
+        return {}, rejected
 
-    with csv_path.open(newline="", errors="replace") as f:
-        rows = list(csv.reader(f))
-
-    # Pass 1 — complete in-row anchors (value + pF + VDS on the same row), the
-    # classic Infineon N5/NF2S table render. Unchanged semantics: later rows
-    # overwrite earlier ones.
-    anchors: dict[str, CapAnchor] = {}
+    # Pass 1 — complete in-row anchors (value + VDS on the same row). Later rows
+    # overwrite earlier ones, except that a row without a unit cell (a chart label,
+    # a wrapped line) never overrides one stating pF, and never anchors a symbol
+    # whose table row is in another unit (Infineon modules: "Crss,...,0.007,,nF").
+    found: dict[str, tuple[CapAnchor, str | None]] = {}
+    units: dict[str, set[str | None]] = {}
     for row in rows:
         row_text = " ".join(cell.strip() for cell in row if cell.strip())
+        vds_match = _VDS_RE.search(row_text)
         for name in _CAP_NAMES:
             if name not in row:
                 continue
-            try:
-                symbol_idx = row.index(name)
-            except ValueError:
+            tail = row[row.index(name) + 1 :]
+            row_unit = _row_unit(tail)[1]
+            units.setdefault(name, set()).add(row_unit)
+            if not vds_match or (row_unit is None and found.get(name, (None, None))[1]):
                 continue
-            tail = row[symbol_idx + 1 :]
-            value_pf = _first_number_before_unit(tail, "pF")
-            vds_match = _VDS_RE.search(row_text)
-            if value_pf is not None and vds_match:
-                anchors[name] = CapAnchor(
-                    name=name,
-                    value_pf=value_pf,
-                    vds_v=float(vds_match.group(1)),
-                )
+            value_pf = _table_value_pick(tail, "pF")
+            if value_pf is None:
+                continue
+            if _condition_echo(value_pf, tail):
+                rejected[name] = CONDITION_ECHO_REASON
+                continue
+            found[name] = (CapAnchor(
+                name=name,
+                value_pf=value_pf,
+                vds_v=float(vds_match.group(1)),
+            ), row_unit)
+            rejected.pop(name, None)
+    anchors = {
+        name: anchor for name, (anchor, row_unit) in found.items()
+        if row_unit is not None or not units[name] - {None, "pF"}
+    }
 
     # Pass 2 — block repair for the newer Infineon renders (OptiMOS M5SC/M6/M7/M8,
     # NF2S-AKMA1, IRF100PW): the printed table states the pF unit and the
@@ -160,10 +188,15 @@ def parse_capacitance_anchors(part: str, datasheet_root: Path) -> dict[str, CapA
                 tail = row[symbol_idx + 1 :]
                 if any(_NON_PF_UNIT_RE.search(cell) for cell in tail):
                     continue  # the row's own unit contradicts the inherited pF
-                value_pf = _typ_value_pick(tail)
-                if value_pf is not None:
-                    anchors[name] = CapAnchor(name=name, value_pf=value_pf, vds_v=vds_v)
-    return anchors
+                value_pf = _table_value_pick(tail, "pF")
+                if value_pf is None:
+                    continue
+                if _condition_echo(value_pf, tail):
+                    rejected[name] = CONDITION_ECHO_REASON
+                    continue
+                anchors[name] = CapAnchor(name=name, value_pf=value_pf, vds_v=vds_v)
+                rejected.pop(name, None)
+    return anchors, rejected
 
 
 def _capacitance_blocks(rows: list[list[str]]):
@@ -185,26 +218,96 @@ def _capacitance_blocks(rows: list[list[str]]):
         yield block
 
 
-def _typ_value_pick(tail: list[str]) -> float | None:
-    """The typ value from a repair-pass row's value cells.
+CONDITION_ECHO_REASON = "value_is_a_test_condition_number"
+_DASH_TOKEN_RE = re.compile(r"[-‐‑–—−]{1,3}|N/?A")
 
-    Renders: '-, typ, max' and glued 'typ max' put typ first; the ao/nxp
-    'min, typ, max' render (three ascending numbers) puts it in the middle —
-    first-number there silently served the min. More than three numbers is an
-    unrecognized render: refuse rather than guess.
-    """
-    text = " ".join(tail)
-    unit_pos = text.find("pF")
-    if unit_pos >= 0:
-        text = text[:unit_pos]
-    numbers = [float(raw) for raw in
-               re.findall(r"(?<![A-Za-z0-9.])[0-9]+(?:\.[0-9]+)?", text)]
-    numbers = [n for n in numbers if n > 0]
-    if not numbers or len(numbers) > 3:
+
+def _value_slots(cell: str) -> list[float | None] | None:
+    """A value cell's min/typ/max slots (None for a dash), [] for a blank cell,
+    None for any other cell (text, condition, symbol). A trailing unit is dropped
+    ('1812 pF'); a space thousands separator is joined (Vishay '10 230')."""
+    tokens = _FOOTNOTE_NUMBER_RE.sub(" ", _UNIT_CELL_RE.sub("", cell)).split()
+    slots: list[float | None] = []
+    prev = ""
+    for token in tokens:
+        if _DASH_TOKEN_RE.fullmatch(token):
+            slots.append(None)
+        elif re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", token):
+            if re.fullmatch(r"[0-9]{1,3}", prev) and re.fullmatch(r"[0-9]{3}", token) \
+                    and (token[0] == "0" or int(token) > 4 * int(prev)):
+                slots[-1] = float(prev + token)
+                token = ""
+            else:
+                slots.append(float(token))
+        else:
+            return None
+        prev = token
+    return slots
+
+
+def _typ_of_slots(slots: list[float | None]) -> float | None:
+    """Three slots are min/typ/max and serve typ only: an empty typ or a
+    non-ascending triple refuses (a lone max is a limit, not the typical value).
+    One or two slots serve the first value ('typ max', or a dashed min)."""
+    if not slots or len(slots) > 3:
         return None
-    if len(numbers) == 3:
-        return numbers[1] if numbers[0] < numbers[1] < numbers[2] else None
-    return numbers[0]
+    if len(slots) == 3:
+        lo, typ, hi = slots
+        if typ is None or (lo is not None and lo >= typ) or (hi is not None and hi <= typ):
+            return None
+        return typ if typ > 0 else None
+    values = [s for s in slots if s is not None]
+    return values[0] if values and values[0] > 0 else None
+
+
+_UNIT_CELL_RE = re.compile(r"(?<![A-Za-z])([pnuµ]F|[mk]?Ω|[pnuµ]C|ns)\s*$")
+
+
+def _row_unit(cells: list[str]) -> tuple[int | None, str | None]:
+    """Index and token of the first cell that ends in a unit, else (None, None)."""
+    for idx, cell in enumerate(cells):
+        match = _UNIT_CELL_RE.search(cell)
+        if match:
+            return idx, match.group(1)
+    return None, None
+
+
+def _table_value_pick(cells: list[str], unit: str) -> float | None:
+    """The typ value from a spec-table row's cells after its symbol cell.
+
+    With a unit cell, the value cells are the run of number/dash cells directly
+    left of it; a text or condition cell ('VDS=50V,VGS=0V, F=1MHZ') ends the run
+    and is never read. A row in another unit (nF, Ω) refuses. Without a unit cell,
+    the first such run. Unrecognized renders refuse.
+    """
+    unit_idx, row_unit = _row_unit(cells)
+    if row_unit is not None and row_unit != unit:
+        return None
+    region = cells if unit_idx is None else cells[: unit_idx + 1]
+    run: list[float | None] = []
+    for cell in region:
+        slots = _value_slots(cell)
+        if slots is None:
+            if run and unit_idx is None:
+                break
+            run = []
+        else:
+            run.extend(slots)
+    return _typ_of_slots(run)
+
+
+def _condition_echo(value: float, cells: list[str]) -> bool:
+    """True when `value` is a number of a non-value cell (a test condition) and of
+    no value cell: it was read from the condition, not from the table."""
+    condition: set[float] = set()
+    values: set[float] = set()
+    for cell in cells:
+        slots = _value_slots(cell)
+        if slots is None:
+            condition.update(float(m) for m in _VALUE_NUMBER_RE.findall(cell))
+        else:
+            values.update(s for s in slots if s is not None)
+    return value in condition and value not in values
 
 
 def _pdf_capacitance_condition_vds(part: str, datasheet_root: Path) -> float | None:
@@ -403,23 +506,17 @@ def _symbol_position(text: str, symbol: str) -> int:
     return span[0] if span is not None else -1
 
 
-def _first_number_before_unit(cells: list[str], unit: str) -> float | None:
-    text = " ".join(cells)
-    unit_pos = text.find(unit)
-    if unit_pos >= 0:
-        text = text[:unit_pos]
-    return _first_positive_number(text)
-
-
 # A number that is a test condition's own value, judged from the text before it.
 # Case-sensitive on purpose (codex pass 3): the name must look like a symbol --
 # V/I/R/T + uppercase/digit subscript or <=3 lowercase letters (VDS, Vgs, Tj,
 # I D), f, or a garbled-font HGS/HDS -- so words such as Typical, Total and Ratio
 # are not names; TYP/MIN/MAX/VALUE label the value itself. Only an uppercase
 # letter blocks the name, because garbled renders glue words ("edVDS =0 . 8").
+# Frequency in any case: AGM "F=1MHZ", huayi "Frequency=1.0MHz".
 _CONDITION_NAME = (
     r"(?<![A-Z])(?!(?:TYP|MIN|MAX|VALUE)\b)"
-    r"(?:[VIRT]\s*_?\s*(?:[A-Z0-9(),]{1,5}|[a-z]{1,3}[A-Z0-9]{0,3})|H[A-Z]{2,3}|(?<![A-Za-z])f)"
+    r"(?:[VIRT]\s*_?\s*(?:[A-Z0-9(),]{1,5}|[a-z]{1,3}[A-Z0-9]{0,3})|H[A-Z]{2,3}"
+    r"|(?<![A-Za-z])(?:[fF]|[fF]req(?:uency)?))"
 )
 _CONDITION_VALUE_PREFIX_RE = re.compile(
     rf"(?:{_CONDITION_NAME}\s*(?:=|<=|>=|≤|≥|<|>)\s*"
@@ -460,15 +557,6 @@ def _first_positive_value_number(text: str) -> float | None:
     if len(values) >= 3 and values[0] < values[1] < values[2]:
         return values[1]
     return values[0] if values else None
-
-
-def _first_positive_number(text: str) -> float | None:
-    numbers = re.findall(r"(?<![A-Za-z])[-+]?[0-9]+(?:\.[0-9]+)?", text)
-    for raw in numbers:
-        value = float(raw)
-        if value > 0:
-            return value
-    return None
 
 
 def output_charge_reference_to_json(ref: OutputChargeReference) -> dict[str, float | None]:

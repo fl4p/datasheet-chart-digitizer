@@ -458,7 +458,7 @@ class AxisCalibrationTests(unittest.TestCase):
             crop_path.parent.mkdir(parents=True)
             cv2.imwrite(str(crop_path), image)
             with mock.patch.object(mc, "find_capacitance_plot_box_with_method", return_value=(mc.PlotBox(10, 10, 50, 50), "grid_or_closed_frame")), \
-                mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
+                mock.patch.object(mc, "capacitance_anchor_report", return_value=({}, {})), \
                 mock.patch.object(mc, "parse_output_charge_reference", return_value=mc.OutputChargeReference(None, None, None, None)), \
                 mock.patch.object(mc, "infer_text_order_axis_calibration", return_value=calibration), \
                 mock.patch.object(mc, "infer_position_axis_calibration", return_value=calibration), \
@@ -504,7 +504,7 @@ class AxisCalibrationTests(unittest.TestCase):
             crop_path.parent.mkdir(parents=True)
             cv2.imwrite(str(crop_path), image)
             with mock.patch.object(mc, "find_capacitance_plot_box_with_method", return_value=(mc.PlotBox(10, 10, 50, 50), "grid_or_closed_frame")), \
-                mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
+                mock.patch.object(mc, "capacitance_anchor_report", return_value=({}, {})), \
                 mock.patch.object(
                     mc,
                     "parse_output_charge_reference",
@@ -604,7 +604,7 @@ class AxisCalibrationTests(unittest.TestCase):
             crop_path.parent.mkdir(parents=True)
             cv2.imwrite(str(crop_path), image)
             with mock.patch.object(mc, "find_capacitance_plot_box_with_method", return_value=(mc.PlotBox(10, 10, 50, 50), "grid_or_closed_frame")), \
-                mock.patch.object(mc, "parse_capacitance_anchors", return_value={}), \
+                mock.patch.object(mc, "capacitance_anchor_report", return_value=({}, {})), \
                 mock.patch.object(
                     mc,
                     "parse_output_charge_reference",

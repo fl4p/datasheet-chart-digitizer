@@ -427,3 +427,124 @@ def test_value_words_are_not_condition_names(tmp_path):
     ):
         root = _write_csv(tmp_path, "WORD", [row])
         assert parse_output_charge_reference("WORD", root).qoss_pc == 45000.0, row
+
+
+# --- Spec-table value cell, not the test condition (AGM15N10D-G read Ciss=50 pF
+# out of "VDS=50V"; 4960 of 7795 anchored library parts had an anchor equal to
+# its VDS). The value is read by cell position: the number/dash run left of the
+# unit cell, typ preferred.
+
+import os
+
+import pytest
+
+from datasheet_chart_digitizer import capacitance_refs as cr
+
+LIB = Path(os.environ.get("DSDIG_DATASHEET_ROOT", ".")) / "datasheets"
+
+
+@pytest.mark.parametrize("vendor,part,expected", [
+    # agmsemi row 77: 'Ciss,Input Capacitance,"VDS=50V,VGS=0V, F=1MHZ",--,520,--,pF'
+    ("agmsemi", "AGM15N10D-G", {"Ciss": (520.0, 50.0), "Coss": (40.0, 50.0), "Crss": (2.4, 50.0)}),
+    # row 77: 'Ciss,Input Capacitance,"VDS=40V,VGS=0V ,F=1MHZ",--,802,--,pF'
+    ("agmsemi", "AGM15N10D", {"Ciss": (802.0, 40.0), "Coss": (37.0, 40.0), "Crss": (12.0, 40.0)}),
+    # row 74: 'Ciss,Input Capacitance,"VDS=40V,VGS=0V, F=1MHZ",--,524,--,pF'
+    ("agmsemi", "AGM15N10AP", {"Ciss": (524.0, 40.0), "Coss": (55.0, 40.0), "Crss": (32.0, 40.0)}),
+    # row 80: 'Ciss,Input Capacitance,"VDS=15V,VGS=0V,f=1MHz",---,940,---,pF'
+    # (was Ciss=15); PDF table: Ciss 940, Coss 131, Crss 109 pF at VDS=15 V.
+    ("hxy", "AM7334N-HXY", {"Ciss": (940.0, 15.0), "Coss": (131.0, 15.0), "Crss": (109.0, 15.0)}),
+    # row 49: 'Input capacitance,Ciss,"VDS = 10 V,VGS = 0 V,f = 1 MHz",-,1290,-,pF'
+    # (was Ciss=10); PDF table: Ciss 1290, Crss 90, Coss 740 pF at VDS=10 V.
+    ("toshiba", "XPN7R104NC", {"Ciss": (1290.0, 10.0), "Coss": (740.0, 10.0), "Crss": (90.0, 10.0)}),
+])
+def test_library_anchor_is_the_table_value_not_the_condition(vendor, part, expected):
+    root = LIB / vendor
+    if not (root / f"{part}.pdf.nop.csv").exists():
+        pytest.skip("pwr-mosfet-lib datasheets not available")
+    anchors = parse_capacitance_anchors(part, root)
+    assert {n: (a.value_pf, a.vds_v) for n, a in anchors.items()} == expected
+
+
+def _anchors(tmp_path, rows):
+    root = _write_csv(tmp_path, "SYN", rows)
+    return {n: (a.value_pf, a.vds_v) for n, a in parse_capacitance_anchors("SYN", root).items()}
+
+
+def test_condition_cell_before_value_is_not_read(tmp_path):
+    a = _anchors(tmp_path, [
+        '1,Ciss,Input Capacitance,"VDS=25V,VGS=0V,f=1MHz",-,1200,-,pF',
+    ])
+    assert a == {"Ciss": (1200.0, 25.0)}
+
+
+def test_uppercase_frequency_condition_is_not_read(tmp_path):
+    a = _anchors(tmp_path, [
+        '1,Ciss,Input Capacitance,VDS=50V,VGS=0V,F=1MHZ,--,520,--,pF',
+    ])
+    assert a == {"Ciss": (520.0, 50.0)}
+
+
+def test_value_equal_to_vds_in_a_value_cell_is_kept(tmp_path):
+    a = _anchors(tmp_path, [
+        '1,Crss,Reverse Transfer Capacitance,"VDS=25V,VGS=0V,f=1MHz",-,25,-,pF',
+    ])
+    assert a == {"Crss": (25.0, 25.0)}
+
+
+def test_min_typ_max_with_only_max_filled_refuses(tmp_path):
+    # A lone max is a limit, not the typical value the curves show.
+    a = _anchors(tmp_path, [
+        '1,Ciss,Input Capacitance,"VDS=25V,VGS=0V,f=1MHz",-,-,1500,pF',
+    ])
+    assert a == {}
+
+
+def test_missing_value_gives_no_anchor(tmp_path):
+    a = _anchors(tmp_path, [
+        '1,Ciss,Input Capacitance,"VDS=25V,VGS=0V,f=1MHz",-,-,-,pF',
+        '2,Coss,Output Capacitance,"VDS=25V,VGS=0V,f=1MHz",,,,pF',
+    ])
+    assert a == {}
+
+
+def test_row_in_another_unit_refuses(tmp_path):
+    # Infineon module render: the value is in nF; a unitless repeat of the row
+    # further down must not anchor 0.007 as pF either.
+    a = _anchors(tmp_path, [
+        '76,Reverse transfer,Crss,f = 100 kHz,VDS = 800 V,Tvj = 25 °C,,,0.007,,nF',
+        '714,Crss,f = 100 kHz,VDS = 800 V, VGS = 0 V,Tvj = 25 °C,,0.007',
+    ])
+    assert a == {}
+
+
+def test_unitless_chart_label_row_does_not_override_table_row(tmp_path):
+    a = _anchors(tmp_path, [
+        '58,,Ciss,Input Capacitance,---,9500,---,pF,VGS = 0V VDS = 50V f = 1.0MHz',
+        '98,10000.0,Ciss,,,,VDS= 20V,,,',
+    ])
+    assert a == {"Ciss": (9500.0, 50.0)}
+
+
+def test_supplied_anchor_equal_to_a_condition_number_is_rejected(tmp_path):
+    # A caller table with the same disease: 50 appears only in the condition.
+    root = _write_csv(tmp_path, "SUP", [
+        '77,Ciss,Input Capacitance,"VDS=50V,VGS=0V, F=1MHZ",--,520,--,pF',
+        '78,Coss,Output Capacitance,--,40,--,pF',
+    ])
+    cr.install_anchor_table({"SUP": {"anchors": {
+        "Ciss": {"value_pf": 50.0, "vds_v": 50.0},
+        "Coss": {"value_pf": 40.0, "vds_v": 50.0},
+    }}})
+    try:
+        anchors, rejected = cr.capacitance_anchor_report("SUP", root)
+    finally:
+        cr.install_anchor_table(None)
+    assert set(anchors) == {"Coss"}
+    assert rejected == {"Ciss": cr.CONDITION_ECHO_REASON}
+
+
+def test_condition_echo_guard():
+    cells = ["Input Capacitance", "VDS=50V,VGS=0V, F=1MHZ", "--", "520", "--", "pF"]
+    assert cr._condition_echo(50.0, cells)
+    assert not cr._condition_echo(520.0, cells)
+    assert not cr._condition_echo(25.0, ["VDS=25V", "-", "25", "-", "pF"])

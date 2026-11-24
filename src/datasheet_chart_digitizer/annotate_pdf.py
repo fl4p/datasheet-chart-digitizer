@@ -256,9 +256,12 @@ def _process_indexed_panel(
         diagnostics = result.get("warnings", [])
     else:
         raise ValueError(f"not an indexed-panel digitizer: {panel.kind}")
-    return _overlay_record(
+    record = _overlay_record(
         panel, panel.kind, str(result.get("status", "ok")), overlay, diagnostics
     )
+    if "table_check" in result:
+        record["table_check"] = result["table_check"]
+    return record
 
 
 def annotate_pdf(
