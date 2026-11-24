@@ -118,8 +118,8 @@ def _colour(c):
     return None if c is None else tuple(round(float(v), 3) for v in c[:3])
 
 
-def _chromatic(c) -> bool:
-    return c is not None and max(c) - min(c) > 0.25
+def _chromatic(c, min_spread=0.25) -> bool:
+    return c is not None and max(c) - min(c) > min_spread
 
 
 def _darkness(c) -> float:
@@ -1172,6 +1172,50 @@ def digitize_pdf(pdf, page_no=1):
     return dict(meta=meta, charts=charts, page_checks=page_checks), page, cals
 
 
+def overlay_canvas(page, frame, margins, dpi, head, ink=1.0):
+    """The page rendered at `dpi` around `frame` (margins left, top, right, bottom
+    in pt), as BGR below a white `head`-px band; `ink` < 1 fades the print.
+    Returns the image and a pt -> px mapper."""
+    import cv2
+
+    fitz = _fitz()
+    fx0, fy0, fx1, fy1 = frame
+    ml, mt, mr, mb = margins
+    clip = fitz.Rect(fx0 - ml, fy0 - mt, fx1 + mr, fy1 + mb)
+    zoom = dpi / 72.0
+    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
+    src = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
+    src = cv2.cvtColor(src, cv2.COLOR_RGB2BGR)
+    if ink != 1.0:
+        src = (255 - (255 - src.astype(np.int32)) * ink).astype(np.uint8)
+    img = np.full((src.shape[0] + head, src.shape[1], 3), 255, np.uint8)
+    img[head:] = src
+
+    def px(x, y):
+        return int(round((x - clip.x0) * zoom)), int(round((y - clip.y0) * zoom)) + head
+
+    return img, px
+
+
+def draw_axis_map(img, px, cals, frame, colour, tick_pt=5, crosses=True):
+    """A line across the frame at every bound tick label, placed by the FITTED
+    map (a mis-bound or mis-scaled tick shows off its printed rule)."""
+    import cv2
+
+    fx0, fy0, fx1, fy1 = frame
+    xcal, ycal = cals
+    for v, _, _ in xcal.labels:
+        x = float(xcal.to_pt(v))
+        cv2.line(img, px(x, fy0), px(x, fy1 + tick_pt), colour, 1, cv2.LINE_AA)
+        if crosses:
+            cv2.drawMarker(img, px(x, fy1), colour, cv2.MARKER_TILTED_CROSS, 12, 2, cv2.LINE_AA)
+    for v, _, _ in ycal.labels:
+        y = float(ycal.to_pt(v))
+        cv2.line(img, px(fx0 - tick_pt, y), px(fx1, y), colour, 1, cv2.LINE_AA)
+        if crosses:
+            cv2.drawMarker(img, px(fx0, y), colour, cv2.MARKER_TILTED_CROSS, 12, 2, cv2.LINE_AA)
+
+
 def render_overlay(page, chart, cals, out_png, dpi=300):
     """Chart crop with margin (title, both axes' tick labels and titles), the
     digitized axis -- a green crosshair at every bound tick label, placed by the
@@ -1180,31 +1224,11 @@ def render_overlay(page, chart, cals, out_png, dpi=300):
     through the calibration (so the overlay tests the unit factor and the map)."""
     import cv2
 
-    fitz = _fitz()
-    fx0, fy0, fx1, fy1 = chart["frame_pt"]
-    clip = fitz.Rect(fx0 - 52, fy0 - 40, fx1 + 24, fy1 + 36)
-    zoom = dpi / 72.0
-    pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), clip=clip, alpha=False)
-    src = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].copy()
-    src = cv2.cvtColor(src, cv2.COLOR_RGB2BGR)
-    head = 84
-    img = np.full((src.shape[0] + head, src.shape[1], 3), 255, np.uint8)
-    img[head:] = src
-
-    def px(x, y):
-        return int(round((x - clip.x0) * zoom)), int(round((y - clip.y0) * zoom)) + head
-
+    img, px = overlay_canvas(page, chart["frame_pt"], (52, 40, 24, 36), dpi, 84)
     xcal, ycal = cals
     font = cv2.FONT_HERSHEY_SIMPLEX
     green = (0, 160, 0)
-    for v, _, _ in xcal.labels:
-        x = float(xcal.to_pt(v))
-        cv2.line(img, px(x, fy0), px(x, fy1 + 5), green, 1, cv2.LINE_AA)
-        cv2.drawMarker(img, px(x, fy1), green, cv2.MARKER_TILTED_CROSS, 12, 2, cv2.LINE_AA)
-    for v, _, _ in ycal.labels:
-        y = float(ycal.to_pt(v))
-        cv2.line(img, px(fx0 - 5, y), px(fx1, y), green, 1, cv2.LINE_AA)
-        cv2.drawMarker(img, px(fx0, y), green, cv2.MARKER_TILTED_CROSS, 12, 2, cv2.LINE_AA)
+    draw_axis_map(img, px, cals, chart["frame_pt"], green, tick_pt=5, crosses=True)
     palette = [(0, 120, 255), (200, 0, 160), (0, 200, 220), (40, 40, 220)]
     keys = []
     for k, c in enumerate(chart.get("curves", [])):

@@ -70,6 +70,7 @@ dsdig digitize-breakdown-voltage work/charts/charts.json --out work/bv
 dsdig digitize-transfer work/charts/charts.json --out work/transfer
 dsdig digitize-rds-vgs work/charts/charts.json --out work/rds-vgs
 dsdig digitize-rds-vgs --pdf /path/to/datasheet.pdf --out work/rds-vgs
+dsdig digitize-paper-lines /path/to/paper.pdf --page 4 --out work/paper-lines
 dsdig annotate /path/to/datasheet.pdf --out /path/to/datasheet-with-curves.pdf
 datasheet-layout-cluster /path/to/datasheets --out work/layouts
 ```
@@ -83,6 +84,14 @@ extractor refuses remain explicit in the manifest and are not painted into the o
 Only explicit accepted statuses (`ok`, `pass`, and `verified`) are painted by default. Add
 `--include-review-required` when preparing a human-review sheet that should also show overlays
 marked `overlay-review-required`; fail-closed statuses still remain excluded.
+
+`digitize-paper-lines` reads vector line-with-marker plots from scientific papers
+(MATLAB "box off" style: left and bottom axis lines only, inward tick marks, light
+gridlines, an in-plot legend). Each tick label is bound to its tick mark, a series binds
+to the legend entry with the same colour and marker shape, and the served points are the
+polyline vertices (the plotted samples), one JSON per page plus a CSV and an overlay per
+panel. Validated on one paper only (Keil et al. 2016, MATLAB export; Fig. 2c approved
+2026-11-24), so every panel is at best `unverified`, never `ok`: check the overlay.
 
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
 package-owned experimental `GateChargeResult` records the selected panel, Vpl
