@@ -52,9 +52,6 @@ MONOTONE_DROP_FRACTION = 0.01
 DERIV_REL_TOL = 0.10
 DERIV_REL_TOL_EDGE = 0.25
 MAX_HALF_WINDOW = 0.10
-# Slope bias (vs a fit two degrees higher, beyond its own quantization bound) that
-# stops a window from widening: more means the window averages away structure.
-MODEL_BIAS_TOL = 0.03
 # Knot voltages as fractions of the traced span: dense at low V, where dQ/dV is
 # steepest and a linear chord between sparse knots would misstate the charge.
 KNOT_FRACTIONS = (
@@ -100,36 +97,47 @@ def _window_slope(vw: np.ndarray, qw: np.ndarray, kv: float, deg: int,
     window, its worst-case quantization error, and a model-bias estimate.
 
     The slope is a linear functional of the samples, s = w . q.  With every sample
-    off by at most q_err in charge and v_err in voltage (half a pixel each), the slope
-    can be off by at most (q_err + s*v_err) * sum|w|: the fit's real sensitivity,
-    1.5x the naive 1/W for a line, about 5.9/W at the end of a one-sided quadratic.
+    off by at most q_err in charge and v_err in voltage (half a pixel each), and the
+    trace locally of TRUE slope t, each sample's charge is off by at most
+    q_err + |t|*v_err, so |s - t| <= (q_err + |t|*v_err) * S with S = sum|w| (the
+    fit's real sensitivity: 1.5x the naive 1/W for a line, about 5.9/W at the end of
+    a one-sided quadratic).  t is unknown; with |t| <= |s| + e this solves to
+    e <= (q_err + |s|*v_err) * S / (1 - v_err*S), infinite when v_err*S >= 1.
 
-    Bias: the same window refitted two degrees higher.  If the two slopes differ by
-    more than that refit's own quantization bound, the low-order model does not hold
-    over this window (a peak, a knee) and the excess is returned as bias."""
+    Bias: the same window refitted two degrees higher; the FULL slope difference is
+    returned and charged to the uncertainty (never reduced by the refit's own noise
+    bound, so more allowed noise cannot make a fit look better).  It catches structure
+    the higher-order fit resolves; a feature narrower than the window that neither
+    polynomial resolves is averaged, not detected (see coss_eff_knots)."""
     x = vw - kv
     slope, w = _fit_slope(x, qw, deg)
-    bound = (q_err + max(slope, 0.0) * v_err) * float(np.sum(np.abs(w)))
+    sens = float(np.sum(np.abs(w)))
+    denom = 1.0 - v_err * sens
+    bound = (q_err + abs(slope) * v_err) * sens / denom if denom > 0 else math.inf
     bias = 0.0
     if len(x) >= deg + 5:
-        s_hi, w_hi = _fit_slope(x, qw, deg + 2)
-        bound_hi = (q_err + max(slope, 0.0) * v_err) * float(np.sum(np.abs(w_hi)))
-        bias = max(0.0, abs(s_hi - slope) - bound_hi)
+        s_hi, _ = _fit_slope(x, qw, deg + 2)
+        bias = abs(s_hi - slope)
     return slope, bound, bias
 
 
 def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] = (),
                    q_quantum_pc: float = 0.0, v_quantum_v: float = 0.0) -> list:
-    """(Vds_V, Coss_eff_pF, relative_uncertainty, edge_window) knots from a monotone Qoss(V) trace.
+    """(Vds_V, Coss_eff_pF, relative_uncertainty, edge_window, half_window_V) knots
+    from a monotone Qoss(V) trace.
 
-    Each slope is fitted to the traced samples in a window around the knot.  The
-    window starts at +/-1.5% of the span and widens (to at most +/-10%) while the
-    worst-case quantization error of the slope exceeds DERIV_REL_TOL, but only as
-    long as the local model still fits: once the slope's model-bias estimate (see
-    _window_slope) exceeds MODEL_BIAS_TOL of the slope, a wider window would average
-    away real structure, so widening stops.  The returned relative uncertainty is
-    (quantization bound + bias estimate) / slope; the caller withholds knots above
-    tolerance.
+    Each slope is a least-squares polynomial fit to the traced samples in a window
+    around the knot.  Windows are tried from +/-1.5% of the span upward (x1.5 each, to
+    at most +/-10%); the knot takes the NARROWEST window whose relative uncertainty,
+    (worst-case quantization bound + full high-order disagreement) / slope, is within
+    tolerance.  Every window's uncertainty only grows with the declared quantum, so a
+    knot refused at one quantum stays refused at any larger one.
+
+    What a knot means: the derivative of Qoss resolved at its window (half_window_V).
+    Structure narrower than the window is averaged, not served pointwise; a symmetric
+    local fit preserves the window's charge and its first voltage moment, which is
+    what a Qoss/Eoss integral consumes, and the absolute charge gate in
+    evaluate_trace checks the integral at every knot.
 
     In a symmetric window a line and a quadratic give the same slope.  Where the
     window is cut by V0 (Coss falls fastest there) a line reads the window's average
@@ -152,7 +160,7 @@ def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] =
     out = []
     for kv in knots_v:
         half = 0.015 * span
-        best: tuple[float, float, bool] | None = None
+        best: tuple[float, float, bool, float] | None = None
         while True:
             deg = 2 if kv - half < v0 else 1
             edge = kv - half < v0 or kv + half > v1
@@ -160,23 +168,19 @@ def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] =
             m = (v >= kv - half) & (v <= kv + half)
             if int(np.sum(m)) >= deg + 3:
                 slope, bound, bias = _window_slope(v[m], q_pc[m], kv, deg, q_err, v_err)
-                misfit = slope > 0 and bias > MODEL_BIAS_TOL * slope
-                if misfit and best is not None:
-                    break  # wider would average away structure: keep the last fit
-                # the bias estimate counts against the tolerance like quantization
                 rel = (bound + bias) / slope if slope > 0 else math.inf
-                best = (slope, rel, edge)
-                if misfit:
-                    break  # the narrowest window already misfits; do not widen
+                if best is None or rel < best[1]:
+                    best = (slope, rel, edge, half)
                 if rel <= tol:
+                    best = (slope, rel, edge, half)
                     break
             if half >= MAX_HALF_WINDOW * span:
                 break
             half = min(half * 1.5, MAX_HALF_WINDOW * span)
-        slope, rel, edge = best if best is not None else (math.nan, math.inf, True)
-        out.append((float(kv), slope, rel, edge))
+        slope, rel, edge, half_used = best if best is not None else (math.nan, math.inf, True, math.nan)
+        out.append((float(kv), slope, rel, edge, half_used))
     if v0 > 0:
-        out.insert(0, (0.0, out[0][1], out[0][2], True))
+        out.insert(0, (0.0, out[0][1], out[0][2], True, out[0][4]))
     return out
 
 
@@ -229,7 +233,7 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
     ref_v = _finite_positive((reference or {}).get("vint_v"))
     extra = (ref_v,) if ref_v is not None else ()
     knots3 = coss_eff_knots(v, q_mono, extra, q_quantum_pc, v_quantum_v)
-    knots = [(kv, c) for kv, c, _, _ in knots3]
+    knots = [(k[0], k[1]) for k in knots3]
     kv = np.array([k[0] for k in knots])
     q_target = np.where(kv < v[0], 0.0, np.interp(kv, v, q_mono))
     q_int = integrate_knots(knots, kv)
@@ -254,14 +258,14 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
             reasons.append(
                 f"coss_eff_anchor_mismatch:{rel_knots:+.1%} from 0 V (tol {ANCHOR_TOL:.0%})")
 
-    unresolved = [kv_ for kv_, c, rel, edge in knots3
+    unresolved = [kv_ for kv_, c, rel, edge, _ in knots3
                   if not (math.isfinite(c) and c > 0
                           and rel <= (DERIV_REL_TOL_EDGE if edge else DERIV_REL_TOL))]
     if unresolved:
         reasons.append(
             f"coss_eff_unresolved_by_diagram:{len(unresolved)} knots "
             f"{unresolved[0]:g}-{unresolved[-1]:g} V: worst-case quantization error above "
-            f"{DERIV_REL_TOL:.0%} ({DERIV_REL_TOL_EDGE:.0%} at the trace ends), or local misfit")
+            f"{DERIV_REL_TOL:.0%} ({DERIV_REL_TOL_EDGE:.0%} at the trace ends) in every window")
     if not eff_err <= EFF_INTEGRAL_TOL:
         reasons.append(
             f"coss_eff_integral_mismatch:{eff_err:.1%} of Qoss max (tol {EFF_INTEGRAL_TOL:.0%})")
@@ -271,16 +275,27 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
         "anchor": anchor,
         "coss_eff_curve": [(round(kv_, 4), float(f"{c:.4g}") if math.isfinite(c) else None)
                            for kv_, c in knots],
-        "coss_eff_rel_uncertainty": [round(min(r, 9.99), 4) for _, _, r, _ in knots3],
+        "coss_eff_rel_uncertainty": [round(min(k[2], 9.99), 4) for k in knots3],
+        "coss_eff_edge_window": [bool(k[3]) for k in knots3],
+        "coss_eff_half_window_v": [round(k[4], 4) if math.isfinite(k[4]) else None
+                                   for k in knots3],
         "coss_eff_integral_max_error": round(eff_err, 5),
         "quantum": {"q_pc": q_quantum_pc, "v_v": v_quantum_v},
         "method_gates": {"deriv_rel_tol": DERIV_REL_TOL,
-                         "deriv_rel_tol_edge": DERIV_REL_TOL_EDGE,
-                         "model_bias_tol": MODEL_BIAS_TOL},
+                         "deriv_rel_tol_edge": DERIV_REL_TOL_EDGE},
         "vds_range_v": [round(float(v[0]), 4), round(float(v[-1]), 4)],
         "qoss_max_pc": round(q_max, 2),
         "monotone_worst_drop": round(worst_drop, 5),
     }
+
+
+def read_points_csv(path: Path) -> tuple[np.ndarray, np.ndarray]:
+    """(VDS_V, Qoss_pC) exactly as written by process_chart; the verdict is computed
+    from these values so the exporter can recompute it bit for bit."""
+    with Path(path).open(newline="") as fh:
+        rows = list(csv.DictReader(fh))
+    return (np.array([float(r["VDS_V"]) for r in rows]),
+            np.array([float(r["Qoss_nC"]) * 1e3 for r in rows]))
 
 
 def file_sha256(path: Path | None) -> str | None:
@@ -314,18 +329,6 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
     # one pixel of the traced (integer-pixel) points, in charge and voltage units
     q_px = abs(traced.y_axis.value(1.0) - traced.y_axis.value(0.0))
     v_px = abs(traced.x_axis.value(1.0) - traced.x_axis.value(0.0))
-    if unit is None:
-        result = {"status": "rejected", "reasons": ["qoss_axis_unit_unresolved"]}
-    else:
-        result = evaluate_trace(v, q_axis * unit[1], reference,
-                                q_quantum_pc=q_px * unit[1], v_quantum_v=v_px)
-    if result["status"] == "pass" and (grid_unverified or traced.trace_method != "vector"):
-        result["status"] = "unverified"
-        if grid_unverified:
-            result["reasons"] = ["axis grid check unverified: " + "; ".join(grid_unverified)]
-        else:
-            result["reasons"] = ["raster-figure trace: review the overlay before use"]
-
     scale = unit[1] if unit else float("nan")
     csv_path = out_dir / "points" / rel_stem.parent / f"{rel_stem.name}.qoss_points.csv"
     csv_path.parent.mkdir(parents=True, exist_ok=True)
@@ -334,6 +337,19 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
         writer.writerow(["VDS_V", "Qoss_nC"])
         for vv, qq in zip(v, q_axis):
             writer.writerow([f"{vv:.4f}", f"{qq * scale / 1e3:.4f}"])
+    if unit is None:
+        result = {"status": "rejected", "reasons": ["qoss_axis_unit_unresolved"]}
+    else:
+        # evaluate the points as persisted, so the exporter's recomputation is identical
+        v_csv, q_csv = read_points_csv(csv_path)
+        result = evaluate_trace(v_csv, q_csv, reference,
+                                q_quantum_pc=q_px * unit[1], v_quantum_v=v_px)
+    if result["status"] == "pass" and (grid_unverified or traced.trace_method != "vector"):
+        result["status"] = "unverified"
+        if grid_unverified:
+            result["reasons"] = ["axis grid check unverified: " + "; ".join(grid_unverified)]
+        else:
+            result["reasons"] = ["raster-figure trace: review the overlay before use"]
     overlay = _draw_overlay(traced.image, traced.plot, traced.points_px,
                             traced.x_axis, traced.y_axis,
                             x_labels_below=traced.axis_text_source == "native")
@@ -356,7 +372,8 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
             "grid_check": served_axis_guard.payload(traced.grid_checks),
         },
         "n_points": len(data),
-        "csv": str(csv_path),
+        "csv": str(csv_path.resolve()),
+        "points_sha256": file_sha256(csv_path),
         "overlay": str(overlay_path),
     })
     return result

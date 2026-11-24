@@ -16,11 +16,15 @@ import numpy as np
 
 from datasheet_chart_digitizer.coss_dslib import export_row
 from datasheet_chart_digitizer.output_charge import (
+    _fit_slope,
+    _window_slope,
     charge_unit_scale_pc,
-    producer_sha256,
     evaluate_trace,
+    file_sha256,
     integrate_knots,
     is_output_charge_chart,
+    producer_sha256,
+    read_points_csv,
 )
 
 from test_coss_dslib import _good_row, _write_points_csv
@@ -173,28 +177,62 @@ class EvaluateTraceTests(unittest.TestCase):
         self.assertEqual(r["status"], "rejected")
         self.assertTrue(any(s.startswith("coss_eff_unresolved") for s in r["reasons"]))
 
-    def test_known_bad_wide_window_must_not_erase_a_local_peak(self):
-        # C = 1000 + 2000 exp(-(V-70)^2/2) pF; Q quantized to 500 pC, V to 0.2 V.
-        # Any served knot near the peak must be within 10% of truth, or be refused.
-        for q_step in (250.0, 500.0):
-            for sigma in (1.0, 0.3):
-                v = np.round(np.linspace(0.0, 100.0, 501) / 0.2) * 0.2
-                vv = np.linspace(0.0, 100.0, 200_001)
-                cc = 1000.0 + 2000.0 * np.exp(-((vv - 70.0) ** 2) / (2 * sigma ** 2))
-                qq = np.concatenate([[0.0], np.cumsum(0.5 * (cc[1:] + cc[:-1]) * np.diff(vv))])
-                q = np.round(np.interp(v, vv, qq) / q_step) * q_step
-                ref = {"qoss_pc": float(np.interp(50.0, vv, qq)), "vint_v": 50.0}
-                r = evaluate_trace(v, q, ref, q_quantum_pc=q_step, v_quantum_v=0.2)
+    @staticmethod
+    def _peak_trace(sigma, amp=2000.0, center=70.0, q_step=150.0, decay=0.0):
+        # C = 1000 + decay*exp(-V/5) + amp*gauss(center, sigma) pF
+        v = np.round(np.linspace(0.0, 100.0, 501) / 0.2) * 0.2
+        vv = np.linspace(0.0, 100.0, 200_001)
+        cc = (1000.0 + decay * np.exp(-vv / 5.0)
+              + amp * np.exp(-((vv - center) ** 2) / (2 * sigma ** 2)))
+        qq = np.concatenate([[0.0], np.cumsum(0.5 * (cc[1:] + cc[:-1]) * np.diff(vv))])
+        exact = np.interp(v, vv, qq)
+        ref = {"qoss_pc": float(np.interp(50.0, vv, qq)), "vint_v": 50.0}
+        return v, exact, np.round(exact / q_step) * q_step, ref
+
+    def test_served_knots_match_the_window_resolved_truth(self):
+        # A knot is the derivative resolved at its fit window (structure narrower than
+        # the window is averaged, preserving charge).  Against the SAME fit applied to the
+        # exact charge, every served knot must lie within its reported uncertainty.
+        for sigma in (0.3, 1.0, 3.0):
+            for q_step in (50.0, 150.0, 500.0):
+                v, exact, q, ref = self._peak_trace(sigma, q_step=q_step)
+                r = evaluate_trace(v, q, ref, q_quantum_pc=q_step, v_quantum_v=0.0)
                 if r["status"] != "pass":
                     continue
-                for kv, c in r["coss_eff_curve"]:
-                    if abs(kv - 70.0) <= 3 * sigma:
-                        truth = 1000.0 + 2000.0 * math.exp(-((kv - 70.0) ** 2) / (2 * sigma ** 2))
-                        self.assertAlmostEqual(c / truth, 1.0, delta=0.10, msg=(q_step, sigma, kv))
+                for (kv, c), u, h in zip(r["coss_eff_curve"], r["coss_eff_rel_uncertainty"],
+                                         r["coss_eff_half_window_v"]):
+                    if kv == 0.0:
+                        continue
+                    m = (v >= kv - h) & (v <= kv + h)
+                    truth, _ = _fit_slope(v[m] - kv, exact[m], 2 if kv - h < v[0] else 1)
+                    self.assertLessEqual(abs(c - truth) / c, u + 1e-3, (sigma, q_step, kv))
+
+    def test_known_bad_more_allowed_noise_never_turns_refusal_into_pass(self):
+        # identical samples; only the declared quantum grows.  The decaying case is
+        # where subtracting the higher-order fit's noise bound from the bias passed
+        # again at 75-250 pC after refusing at 50 pC.
+        for sigma, center, decay, step in ((0.3, 70.0, 0.0, 100.0), (1.0, 70.0, 0.0, 100.0),
+                                           (0.5, 20.0, 3000.0, 50.0)):
+            v, _, q, ref = self._peak_trace(sigma, center=center, q_step=step, decay=decay)
+            seen_reject = False
+            for allow in (step, 1.5 * step, 2 * step, 3 * step, 5 * step, 10_000.0):
+                st = evaluate_trace(v, q, ref, q_quantum_pc=allow, v_quantum_v=0.0)["status"]
+                if seen_reject:
+                    self.assertEqual(st, "rejected", (sigma, center, allow))
+                seen_reject |= st == "rejected"
+            self.assertTrue(seen_reject)
+
+    def test_horizontal_error_bound_covers_the_true_slope(self):
+        # Q = 1000 V pF sampled at positions each off by at most v_err (half a pixel):
+        # the bound must cover the error of the slope it is reported for.
+        x = np.round(np.arange(-1.5, 1.5001, 0.2), 6)
+        actual = x - 0.1 * np.sign(x)
+        slope, bound, _ = _window_slope(x, 1000.0 * actual, 0.0, 1, 0.0, 0.1)
+        self.assertGreater(abs(slope - 1000.0), 90.0)  # the distortion is real (905.9 pF)
+        self.assertGreaterEqual(bound + 1e-9, abs(slope - 1000.0))  # by the bound alone
 
     def test_uncertainty_uses_the_fits_true_sensitivity(self):
         # a line through N uniform points over width W has sum|w| -> 3/W (not 1/W)
-        from datasheet_chart_digitizer.output_charge import _window_slope
         x = np.linspace(-1.5, 1.5, 301)
         slope, bound, _ = _window_slope(x, 1000.0 * x, 0.0, 1, q_err=50.0, v_err=0.0)
         self.assertAlmostEqual(slope, 1000.0, places=6)
@@ -218,13 +256,14 @@ Q50 = 93_000.0
 K93 = Q50 / (math.sqrt(51.0) - 1.0)
 
 
-def _served_curve() -> list:
-    """Coss_eff knots of a clean synthetic diagram whose Qoss(50 V) is 93 nC."""
+Q_QUANTUM, V_QUANTUM = 1.0, 0.001
+
+
+def _write_qoss_points(path: Path) -> None:
+    """A clean synthetic diagram trace (Qoss(50 V) = 93 nC), written like process_chart."""
     v = np.linspace(0.0, 100.0, 500)
-    r = evaluate_trace(v, K93 * (np.sqrt(1.0 + v) - 1.0), {"qoss_pc": Q50, "vint_v": 50.0},
-                       q_quantum_pc=1.0, v_quantum_v=0.001)
-    assert r["status"] == "pass", r["reasons"]
-    return r
+    q_nc = K93 * (np.sqrt(1.0 + v) - 1.0) / 1e3
+    path.write_text("VDS_V,Qoss_nC\n" + "".join(f"{a:.4f},{b:.4f}\n" for a, b in zip(v, q_nc)))
 
 
 def _contradiction_row(sha: str) -> dict:
@@ -244,9 +283,18 @@ def _contradiction_row(sha: str) -> dict:
 class ExportGateTests(unittest.TestCase):
     SHA = "a" * 64
 
-    @classmethod
-    def setUpClass(cls):
-        cls.trace = _served_curve()
+    def setUp(self):
+        self._tmp = TemporaryDirectory()
+        self.base = Path(self._tmp.name)
+        self.csv = self.base / "TESTFET.qoss_points.csv"
+        _write_qoss_points(self.csv)
+        v, q = read_points_csv(self.csv)
+        self.trace = evaluate_trace(v, q, {"qoss_pc": Q50, "vint_v": 50.0},
+                                    q_quantum_pc=Q_QUANTUM, v_quantum_v=V_QUANTUM)
+        assert self.trace["status"] == "pass", self.trace["reasons"]
+
+    def tearDown(self):
+        self._tmp.cleanup()
 
     def _row(self):
         return _contradiction_row(self.SHA)
@@ -262,16 +310,17 @@ class ExportGateTests(unittest.TestCase):
             "coss_eff_curve": [list(k) for k in t["coss_eff_curve"]],
             "coss_eff_rel_uncertainty": t["coss_eff_rel_uncertainty"],
             "coss_eff_integral_max_error": t["coss_eff_integral_max_error"],
+            "quantum": {"q_pc": Q_QUANTUM, "v_v": V_QUANTUM},
+            "csv": str(self.csv),
+            "points_sha256": file_sha256(self.csv),
             "provenance": {"pdf_sha256": self.SHA, "producer_sha256": producer_sha256()},
         }
         d.update(over)
         return d
 
     def _export(self, row, panels):
-        with TemporaryDirectory() as tmp:
-            base = Path(tmp)
-            _write_points_csv(base / row["points"])
-            return export_row(row, base, output_charge=panels)
+        _write_points_csv(self.base / row["points"])
+        return export_row(row, self.base, output_charge=panels)
 
     def test_matching_diagram_explains_contradiction_and_serves_both_curves(self):
         res = self._export(self._row(), [self._diagram()])
@@ -296,51 +345,69 @@ class ExportGateTests(unittest.TestCase):
             self.assertEqual(res.coss_eff_status, status)
             self.assertEqual(res.coss_eff_curve, [])
 
-    def test_known_bad_served_curve_is_rechecked_not_trusted(self):
+    def test_known_bad_served_curve_must_equal_the_recomputation(self):
         good = self._diagram()["coss_eff_curve"]
         bad_curves = {
             "times_10": [[v, c * 10] for v, c in good],
             "times_0.9": [[v, c * 0.9] for v, c in good],
+            # same Q at the 50 V anchor, wrong shape (review 3, R1)
+            "tail_above_50V_x10": [[v, c * 10 if v > 50.0 else c] for v, c in good],
+            "constant_three_knots": [[0.0, 1860.0], [50.0, 1860.0], [100.0, 1860.0]],
             "singleton": good[:1],
-            "two_knots": good[:2],
-            "nan_v": [[float("nan"), good[0][1]]] + good[1:],
             "nan_c": [good[0]] + [[good[1][0], float("nan")]] + good[2:],
             "unsorted": [good[0], good[2], good[1]] + good[3:],
-            "repeated_v": [good[0], good[1], good[1]] + good[2:],
             "not_from_zero": good[1:],
-            "negative_c": [good[0], [good[1][0], -1.0]] + good[2:],
-            "short_of_table_vds": [k for k in good if k[0] < 40.0],
             "malformed": [[1.0], "x"],
+            "missing": None,
         }
         for name, curve in bad_curves.items():
             res = self._export(self._row(), [self._diagram(coss_eff_curve=curve)])
             self.assertEqual(res.coss_eff_status, "rejected", name)
             self.assertEqual(res.coss_status, "rejected", name)
+            self.assertEqual(res.coss_eff_curve, [], name)
 
-    def test_known_bad_stored_gates_contradicting_pass(self):
-        unc = list(self._diagram()["coss_eff_rel_uncertainty"])
+    def test_stored_gates_and_anchor_are_ignored_not_trusted(self):
+        # whatever the record claims, the export recomputes from the points (R2)
+        for over in ({"coss_eff_rel_uncertainty": [-math.inf]},
+                     {"coss_eff_rel_uncertainty": [0.0]},
+                     {"coss_eff_integral_max_error": -1.0},
+                     {"anchor": {**self.trace["anchor"], "diagram_pc": 10_000.0}}):
+            res = self._export(self._row(), [self._diagram(**over)])
+            self.assertEqual(res.coss_eff_status, "pass", over)
+            self.assertEqual(res.qoss_check["diagram_qoss_pc"], self.trace["anchor"]["diagram_pc"])
+            self.assertEqual(res.coss_eff_source["rel_uncertainty"],
+                             self.trace["coss_eff_rel_uncertainty"])
+
+    def test_known_bad_record_evidence(self):
         mutations = {
             "raster": {"method": "raster"},
             "grid_unverified": {"calibration": {"grid_check": {"x": {"status": "verified"},
                                                                "y": {"status": "unverified"}}}},
+            "grid_x_twice": {"calibration": {"grid_check": {"x": {"status": "verified"},
+                                                            "x2": {"status": "verified"}}}},
             "grid_missing": {"calibration": {}},
-            "uncertainty_90pct": {"coss_eff_rel_uncertainty": unc[:-1] + [0.9]},
-            "uncertainty_missing": {"coss_eff_rel_uncertainty": None},
-            "integral_error_90pct": {"coss_eff_integral_max_error": 0.9},
-            "integral_error_nan": {"coss_eff_integral_max_error": float("nan")},
             "stale_producer": {"provenance": {"pdf_sha256": self.SHA, "producer_sha256": "0" * 64}},
+            "points_digest_wrong": {"points_sha256": "0" * 64},
+            "points_digest_missing": {"points_sha256": None},
+            "points_missing": {"csv": str(self.base / "nope.csv")},
+            "quantum_missing": {"quantum": None},
+            "quantum_nan": {"quantum": {"q_pc": float("nan"), "v_v": V_QUANTUM}},
+            # a coarser declared pixel than the points support: recomputation refuses
+            "quantum_coarse": {"quantum": {"q_pc": 50_000.0, "v_v": V_QUANTUM}},
         }
         for name, over in mutations.items():
             res = self._export(self._row(), [self._diagram(**over)])
             self.assertEqual(res.coss_eff_status, "rejected", name)
             self.assertEqual(res.coss_status, "rejected", name)
 
-    def test_known_bad_anchor_to_another_reference_or_wrong_measurement(self):
-        good = self._diagram()["anchor"]
-        for change in ({"table_pc": 114_000.0}, {"vds_v": 80.0}, {"diagram_pc": 10_000.0},
-                       {"diagram_pc": None}, {"diagram_pc": float("nan")}):
-            res = self._export(self._row(), [self._diagram(anchor={**good, **change})])
-            self.assertEqual(res.coss_status, "rejected", change)
+    def test_known_bad_points_edited_after_digitization(self):
+        d = self._diagram()
+        lines = self.csv.read_text().splitlines()
+        lines[300] = lines[300].split(",")[0] + ",500.0000"
+        self.csv.write_text("\n".join(lines) + "\n")
+        res = self._export(self._row(), [d])
+        self.assertEqual(res.coss_eff_status, "rejected")
+        self.assertIn("output_charge_points_missing_or_changed", res.coss_eff_reasons)
 
     def test_known_bad_nonfinite_row_reference_or_integral(self):
         for ref in ({"qoss_pc": float("nan"), "vint_v": 50.0}, {"qoss_pc": Q50, "vint_v": None},

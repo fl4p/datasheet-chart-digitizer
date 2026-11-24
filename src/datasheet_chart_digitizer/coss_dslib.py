@@ -41,9 +41,9 @@ from pathlib import Path
 import numpy as np
 
 from .output_charge import ANCHOR_TOL as OUTPUT_CHARGE_ANCHOR_TOL
-from .output_charge import DERIV_REL_TOL_EDGE as OUTPUT_CHARGE_EDGE_TOL
-from .output_charge import EFF_INTEGRAL_TOL as OUTPUT_CHARGE_EFF_TOL
-from .output_charge import integrate_knots, producer_sha256
+from .output_charge import (
+    evaluate_trace, file_sha256, integrate_knots, producer_sha256, read_points_csv,
+)
 from .coss_export import (
     build_adaptive_coss_model,
     evaluate_coss_knots,
@@ -186,9 +186,18 @@ def _served_curve_problems(curve: object, ref: dict) -> list[str]:
     return []
 
 
-def _diagram_problems(diagram: dict, row: dict) -> list[str]:
-    """Re-check a stored diagram verdict instead of trusting its `status`: the code
-    that produced it, its stored gates, and the served curve itself."""
+def _recompute_diagram(diagram: dict, row: dict) -> tuple[list[str], dict | None]:
+    """Re-derive the diagram verdict instead of trusting anything it stored.
+
+    Checked against the record: the producing code (producer_sha256), the vector
+    trace and BOTH verified axis grids.  Then the traced points are re-read from the
+    points CSV, whose bytes must match the recorded points_sha256, and evaluate_trace
+    is run again with the recorded pixel quanta and THIS row's table Qoss.  Its
+    verdict, uncertainties and integral gates are the ones used; the stored curve must
+    equal the recomputed one.  Returns (problems, recomputed result).
+
+    Integrity, not authentication: a consistently rewritten points CSV plus its
+    digest is not detected; stale, mixed, edited or partially rewritten artifacts are."""
     problems = []
     prov = diagram.get("provenance") or {}
     if prov.get("producer_sha256") != producer_sha256():
@@ -196,52 +205,78 @@ def _diagram_problems(diagram: dict, row: dict) -> list[str]:
     if diagram.get("method") != "vector":
         problems.append(f"output_charge_method:{diagram.get('method')}")
     grid = (diagram.get("calibration") or {}).get("grid_check")
-    axes = list(grid.values()) if isinstance(grid, dict) else []
-    if len(axes) < 2 or not all(isinstance(a, dict) and a.get("status") == "verified" for a in axes):
-        problems.append("output_charge_grid_check_not_verified")
-    err = diagram.get("coss_eff_integral_max_error")
-    if not (isinstance(err, (int, float)) and math.isfinite(err) and err <= OUTPUT_CHARGE_EFF_TOL):
-        problems.append(f"output_charge_integral_error:{err}")
-    unc = diagram.get("coss_eff_rel_uncertainty")
-    if (not isinstance(unc, list) or not unc
-            or not all(isinstance(u, (int, float)) and u <= OUTPUT_CHARGE_EDGE_TOL for u in unc)):
-        problems.append("output_charge_uncertainty_missing_or_above_tolerance")
-    problems.extend(_served_curve_problems(diagram.get("coss_eff_curve"),
-                                           row.get("output_charge_reference") or {}))
-    return problems
+    if not (isinstance(grid, dict) and all(
+            isinstance(grid.get(ax), dict) and grid[ax].get("status") == "verified"
+            for ax in ("x", "y"))):
+        problems.append("output_charge_grid_check_not_verified:need verified x and y")
+    quantum = diagram.get("quantum") or {}
+    q_q, q_v = _finite_positive(quantum.get("q_pc")), _finite_positive(quantum.get("v_v"))
+    if q_q is None or q_v is None:
+        problems.append("output_charge_quantum_missing")
+    csv_path = Path(str(diagram.get("csv") or ""))
+    digest = diagram.get("points_sha256")
+    if not (isinstance(digest, str) and len(digest) == 64 and file_sha256(csv_path) == digest):
+        problems.append("output_charge_points_missing_or_changed")
+    if problems:
+        return problems, None
+    try:
+        v, q_pc = read_points_csv(csv_path)
+    except (OSError, ValueError, KeyError) as exc:
+        return [f"output_charge_points_unreadable:{exc}"], None
+    redo = evaluate_trace(v, q_pc, row.get("output_charge_reference") or {}, q_q, q_v)
+    if redo["status"] != "pass":
+        return [f"output_charge_recheck:{r}" for r in redo["reasons"]], redo
+    stored, fresh = diagram.get("coss_eff_curve"), redo["coss_eff_curve"]
+    try:
+        same = (isinstance(stored, list) and len(stored) == len(fresh) and all(
+            float(a[0]) == float(b[0]) and float(a[1]) == float(b[1])
+            for a, b in zip(stored, fresh)))
+    except (TypeError, ValueError, IndexError):
+        same = False
+    if not same:
+        return ["output_charge_curve_differs_from_recomputation"], redo
+    problems.extend(_served_curve_problems(fresh, row.get("output_charge_reference") or {}))
+    return problems, redo
 
 
-def _apply_coss_eff(res: DslibCossResult, diagram: dict | None, row: dict) -> list[str]:
-    """Fill the Coss_eff verdict; returns the problems that bar the diagram as evidence."""
+def _apply_coss_eff(res: DslibCossResult, diagram: dict | None,
+                    row: dict) -> tuple[list[str], dict | None]:
+    """Fill the Coss_eff verdict.  Returns the problems that bar the diagram as
+    evidence, and the recomputed diagram result (None when not recomputed)."""
     if diagram is None:
-        return ["no_output_charge_diagram"]
+        return ["no_output_charge_diagram"], None
     res.coss_eff_source = {
         "diagram": diagram.get("diagram"), "page": diagram.get("page"),
-        "overlay": diagram.get("overlay"), "anchor": diagram.get("anchor"),
-        "integral_max_error": diagram.get("coss_eff_integral_max_error"),
-        "provenance": diagram.get("provenance"),
+        "overlay": diagram.get("overlay"), "provenance": diagram.get("provenance"),
     }
     status = str(diagram.get("status"))
     if status != "pass":
         res.coss_eff_status = "unverified" if status == "unverified" else "rejected"
         res.coss_eff_reasons = list(diagram.get("reasons") or [f"output_charge_status:{status}"])
-        return res.coss_eff_reasons
-    problems = _diagram_problems(diagram, row)
+        return res.coss_eff_reasons, None
+    problems, redo = _recompute_diagram(diagram, row)
+    if redo is not None:
+        res.coss_eff_source.update({
+            "anchor": redo.get("anchor"),
+            "integral_max_error": redo.get("coss_eff_integral_max_error"),
+            "rel_uncertainty": redo.get("coss_eff_rel_uncertainty"),
+            "half_window_v": redo.get("coss_eff_half_window_v"),
+        })
     if problems:
         res.coss_eff_status = "rejected"
         res.coss_eff_reasons = problems
-        return problems
+        return problems, None
     res.coss_eff_status = "pass"
-    res.coss_eff_curve = [(float(v), float(c)) for v, c in diagram["coss_eff_curve"]]
-    return []
+    res.coss_eff_curve = [(float(v), float(c)) for v, c in redo["coss_eff_curve"]]
+    return [], redo
 
 
-def _source_contradiction(row: dict, diagram: dict | None, diagram_ok: bool) -> dict | None:
-    """qoss_check payload when a passing, re-validated Qoss diagram anchored to the SAME
-    table Qoss this row was checked against explains a graph/table inconsistency."""
-    if diagram is None or not diagram_ok:
+def _source_contradiction(row: dict, redo: dict | None) -> dict | None:
+    """qoss_check payload when a passing Qoss diagram, RECOMPUTED at export against the
+    SAME table Qoss this row was checked against, explains a graph/table inconsistency."""
+    if redo is None or redo.get("status") != "pass":
         return None
-    anchor = diagram.get("anchor") or {}
+    anchor = redo.get("anchor") or {}
     ref = row.get("output_charge_reference") or {}
     ref_q, ref_v = _finite_positive(ref.get("qoss_pc")), _finite_positive(ref.get("vint_v"))
     if (ref_q is None or ref_v is None
@@ -289,13 +324,13 @@ def export_row(row: dict, base_dir: Path, *, max_rel_error: float = 0.02,
     res.ciss_reasons.extend(trace_reasons["Ciss"])
 
     diagram = _matching_output_charge(row, output_charge or [])
-    diagram_ok = not _apply_coss_eff(res, diagram, row)
+    _, redo = _apply_coss_eff(res, diagram, row)
     if diagram is None and any(isinstance(p, dict) and p.get("part") == part
                                for p in output_charge or []):
         # a diagram of this part exists but is not provably from this row's PDF
         res.coss_eff_reasons = ["output_charge_diagram_not_bound_to_this_pdf"]
     qoss_status = row.get("qoss_validation_status")
-    explained = (_source_contradiction(row, diagram, diagram_ok)
+    explained = (_source_contradiction(row, redo)
                  if qoss_status == "graph_table_inconsistent" else None)
     if qoss_status == "pass":
         res.qoss_check = {"status": "pass", "basis": "chart_integral_vs_table"}
