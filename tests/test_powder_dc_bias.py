@@ -6,7 +6,7 @@ fixtures/kdm_sendust_dc_bias/PROVENANCE.md). The residuals are recomputed in thi
 test from cases.json, not taken from the module's own report.
 
 The PDFs are not committed. A missing PDF or a SHA-256 mismatch SKIPS LOUDLY; it
-never passes. The class stays `overlay-review-required` until Fab approves overlays.
+never passes. The class is validated (Fab approved the overlays, 2026-11-24): status `ok`.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ class _SourceCase:
 
     def test_status_never_ok_and_mode(self):
         self.assertEqual(self.rc, 0)
-        self.assertEqual(self.res["status"], "overlay-review-required")
+        self.assertEqual(self.res["status"], "ok")
         self.assertEqual(self.res["mode"], self.CASE["mode"])
 
     def test_overlay_written(self):

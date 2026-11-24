@@ -27,8 +27,8 @@ Curve identity (which grade is which curve) is bound by order and then CHECKED
 against the printed coefficient rows: each curve's median %-point residual
 against its own row must be smaller than against either neighbour row.
 
-This is an unvalidated chart class: every result carries status
-``overlay-review-required`` until Fab approves overlays.
+Validated 2026-11-24: Fab approved the overlays of the three KDM renderings in
+tests/fixtures/kdm_sendust_dc_bias. A result that passes the printed-row gate is ``ok``.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-STATUS = "overlay-review-required"
+STATUS = "ok"
 
 
 class OverlayRefused(ValueError):

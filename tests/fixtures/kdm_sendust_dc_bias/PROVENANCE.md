@@ -60,5 +60,5 @@ printed row. Known-bad calibration:
 
 ## Review state
 
-**Not human-verified.** The class status is `overlay-review-required` and stays that way
-until Fab approves the overlays. Do not mark these cases `human_verified`.
+**Human-verified 2026-11-24.** Fab reviewed and approved the three overlays (digitized curves,
+printed law, calibrated grid with labelled ticks on both axes). The class status is `ok`.
