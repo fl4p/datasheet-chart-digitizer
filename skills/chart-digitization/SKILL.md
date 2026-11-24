@@ -47,6 +47,10 @@ curve (`diode_forward_voltage`) have no `digitize-*` command. Reach them through
 `annotate`, or call `digitize_pdf(pdf, out_dir)` / `digitize_pdf_fail_closed(...)` in the
 module.
 
+Which classes Fab has approved, on which sources and with which scope limits:
+`.claude/memory/validated-chart-classes.md` in the dsdig repo. Outside that scope a
+class is unvalidated for batch use.
+
 **The venv's `dsdig` runs whatever branch the main checkout is on.** It is an editable
 install. Check with
 `git -C /Users/fab/dev/pv/ee/datasheet-chart-digitizer branch --show-current`. If it is
