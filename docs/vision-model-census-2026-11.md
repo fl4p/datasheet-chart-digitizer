@@ -14,6 +14,15 @@ Companion: `docs/vision-models-sota-2026-11.md` (model and licence survey for ta
 
 The tables below are unchanged; read sections 4.2, 4.3 and 6 with these three points.
 
+## Independent review, 2026-11-24
+
+A Codex (GPT-6 Astra, xhigh) adversarial review recomputed the headline numbers from the raw rows and they held. Its verdict: on track with corrections. What it changes here:
+
+- **"Layout detector: go, build first" is not established.** The detector merits one bounded experiment, measured against a cheap baseline (neighbour-aware tick-band expansion and routing fixes in the heuristic finder) on correctly served charts and wrong serves. A 4 pt expansion of the finder's boxes alone raised clean boxes from 182 to 225 of 355, while neighbour contamination rose from 7 to 10, so blind padding is unsafe.
+- **The cause split's "at most 10 of 100" is 10 yes plus 6 unsure**, and it predicts calibration, not a correctly served value.
+- **HXY sensitivity:** without HXY (21 % of PDFs, shared templates) the weighted raster share is 16.5 %, not 21.2 %.
+- **Order of work it recommends:** existing-OCR wiring and routing repairs first, the cheap finder baseline second, the detector experiment third; OCR-model and segmentation training stay deferred.
+
 ## Verdict
 
 | Issue task | Verdict | Main evidence |
@@ -201,7 +210,7 @@ Not run: RDS(on) vs VGS, Vth, MLCC, core loss, paper plots. Reverse leakage ran 
 
 Rows that overstate failure:
 - **Transfer** never returns `ok`; every served chart is `overlay-review-required` by design.
-- **RDS(on)**: each `rds_on` panel is tried by both the I_D and the Tj digitizer, so a panel of one kind is a refusal for the other. 57 errors are `rds_on_panel_not_routed_to_any_rdson_digitizer`, which includes RDS(on)-vs-VGS panels this runner does not send to their digitizer.
+- **RDS(on)**: each `rds_on` panel is tried by both the I_D and the Tj digitizer, so a panel of one kind is a refusal for the other. 59 errors are `rds_on_panel_not_routed_to_any_rdson_digitizer` (57 as the stop reason, 2 more with a second wording), which includes RDS(on)-vs-VGS panels this runner does not send to their digitizer.
 - **Reverse recovery** supports the AO layout only; all 20 are "caption found but no gridline panel".
 
 ### 4.2 Stage that stopped each non-pass chart
@@ -295,7 +304,7 @@ Order of work:
 ### Task 3, curve segmentation: no-go for now
 
 - Raster is 21 % of found panels, so the gate "raster is negligible" does not hold.
-- But 37 of 979 non-pass charts stop at tracing on a raster panel. A perfect segmenter would move at most those 37 today.
+- But 37 of 979 non-pass charts stop at tracing on a raster panel. That 37 is a first-match bucket, not an upper bound: 55 raster non-pass charts match a tracing rule somewhere in their reasons, and neither count shows what a segmenter would recover.
 - The existing raster tracer passes where the earlier stages pass.
 - The one model tried locally fails on accuracy, over-detection and crossings (section 5).
 

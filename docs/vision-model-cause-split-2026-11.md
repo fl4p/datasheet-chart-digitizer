@@ -233,7 +233,7 @@ The same holds for 3 of the 50 raster rows: 2 passes_on_rerun and 1 provenance_g
 - Where it does help:
   - Charts boxed on the wrong chart or on no chart: 8 real wrong-chart or two-chart boxes, plus 9 phantoms.
   - Raster crops that cut the label band: 3 primary plus 16 secondary.
-- A correct box alone would let at most 10 of the 100 sampled stops calibrate, and 6 more are unsure.
+- A correct box alone would let 10 of the 100 sampled stops calibrate, with 6 more unsure (so 10 to 16, not an upper bound of 10). This predicts calibration, not a correctly served value.
 - The census label-set point stands: the detector must output tick-label regions and titles, not just the plot frame. 16 of 50 raster crops already cut labels.
 
 **Task 4, tick-label OCR.**

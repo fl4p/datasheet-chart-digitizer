@@ -61,7 +61,7 @@ No document-layout model I checked detects chart **sub-elements**. Docling's Her
 | Family | Code licence | Weights licence | Small-object or small-dataset evidence | Inference cost evidence | Framework |
 |---|---|---|---|---|---|
 | RF-DETR N/S/M/L (det), all Seg sizes | Apache-2.0 | Apache-2.0 [S75 l. 23] | RF100-VL (100 small real datasets) AP_small: N 30.1, S 34.2, M 35.8, 2XL 38.7 [S78 Table 4]. Self-run by Roboflow | T4 TensorRT FP16: N 2.3 ms, S 3.5 ms, M 4.4 ms, L 6.8 ms [S75 l. 72–75]. No CPU or Apple-Silicon figures found | `rfdetr` pip; `transformers` has `rf_detr` [S117] |
-| RF-DETR A/F/P/XL/2XL | Apache code | **PML 1.0**: commercial self-hosting needs Roboflow Enterprise [S75 l. 23] | — | — | `rfdetr[plus]` |
+| RF-DETR A/F/P/XL/2XL | **PML 1.0** (the `rfdetr_plus` licence covers software and weights; corrected 2026-11-24) | **PML 1.0**: commercial self-hosting needs Roboflow Enterprise [S75 l. 23] | — | — | `rfdetr[plus]` |
 | D-FINE | Apache-2.0 | Apache-2.0 (per repo) | RF100-VL AP_small N 32.4, S 36.6, M 36.0 [S78 Table 4] | T4: N 2.1 ms, 3.8 M params [S75 l. 93] | `transformers` `d_fine` [S117] |
 | DEIM (v1) | Apache-2.0 (LICENSE text) | same | not checked | — | repo |
 | DEIMv2 | **Non-commercial** "DEIMv2 License" since 2026-08-24, covering code **and weights** [S74 §2, §5; commit "docs: update license information" 2026-08-24]. Also uses DINOv3, which has its own custom licence [S77] | non-commercial | — | — | `transformers` `deimv2` [S117] |
