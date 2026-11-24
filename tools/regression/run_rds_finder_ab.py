@@ -124,7 +124,10 @@ def main() -> None:
     source_root = Path(__file__).resolve().parents[2] / "src" / "datasheet_chart_digitizer"
     source_sha256 = {
         name: _sha256(source_root / name)
-        for name in ("find_charts.py", "finder_caption_geometry.py", "chart_classifier.py")
+        for name in (
+            "find_charts.py", "finder_caption_geometry.py", "finder_plot_frames.py",
+            "chart_classifier.py",
+        )
     }
     prepass_path = args.out.with_name("caption-prepass.json")
     baseline_sha256 = _sha256(args.baseline_manifest)
