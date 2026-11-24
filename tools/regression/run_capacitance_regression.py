@@ -37,6 +37,10 @@ class RegressionCase:
     expected_anchor_relabels: int = 0
     expected_graph_table_inconsistent_parts: frozenset[str] = frozenset()
     expected_extraction_axis_counts: tuple[tuple[str, str, int], ...] = ()
+    # Deliberate refusals on charts whose traces were checked by eye and are
+    # correct: part -> the exact reasons expected. Any other reason, or a part
+    # that stops being suspect, fails the run, so the baseline stays honest.
+    expected_trace_suspects: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 CASES = (
@@ -45,9 +49,12 @@ CASES = (
         chart_index=CHART_ROOT / "debug_raster_coss_left_repair" / "charts.json",
         expected_charts=3,
         allowed_qoss_statuses=frozenset({"pass"}),
+        # 2026-11-24: axes are served from the gridlines their labels name
+        # (07c6e7a and later); one chart moved to the vector path. All three
+        # pass both gridline checks.
         expected_extraction_axis_counts=(
-            ("raster", "grid_text", 1),
             ("raster", "position_text", 2),
+            ("vector", "position_text", 1),
         ),
     ),
     RegressionCase(
@@ -55,14 +62,15 @@ CASES = (
         chart_index=CHART_ROOT / "debug_iaucn_dashed" / "charts.json",
         expected_charts=1,
         allowed_qoss_statuses=frozenset({"pass", "coss_anchor_only", None}),
-        expected_extraction_axis_counts=(("vector", "grid_text", 1),),
+        expected_extraction_axis_counts=(("vector", "position_text", 1),),
     ),
     RegressionCase(
         name="large35_random_manufacturer_cv",
         chart_index=CHART_ROOT / "random_mfr_cv_20260708_large35" / "charts.json",
         expected_charts=35,
-        max_untrusted_axes=1,
-        expected_untrusted_parts=frozenset({"IMBG75R007M2H"}),
+        # IMBG75R007M2H was refused until 07c6e7a; it now passes both gridline
+        # checks and reads its table Ciss/Coss/Crss exactly at 500 V.
+        max_untrusted_axes=0,
         allowed_qoss_statuses=frozenset(
             {
                 "pass",
@@ -77,27 +85,26 @@ CASES = (
                 None,
             }
         ),
+        # 2026-11-24: eight former entries (AIMZA75R007/011M2H, IMBG65R026M2H,
+        # IMBG75R020M2H, IMLT65R026M2H, IMT65R039/083/260M1H) were artefacts of
+        # the anchor parser reading the CSV row index as Co(er); BSC016N06NS was
+        # the parser serving the min column (60 nC) instead of typ (81 nC; chart
+        # integral 80.9 nC). Remaining: IPF009N10NM8 Qoss -61 % (chart 193 nC vs
+        # typ 499 nC), IPLT60R160CM8 Co(er)/Co(tr) integrated to 50 V while the
+        # datasheet states 0-400 V.
         expected_graph_table_inconsistent_parts=frozenset(
-            {
-                "AIMZA75R007M2H",
-                "AIMZA75R011M2H",
-                "BSC016N06NS",
-                "IMBG65R026M2H",
-                "IMBG75R020M2H",
-                "IMLT65R026M2H",
-                "IMT65R039M1H",
-                "IMT65R083M1H",
-                "IMT65R260M1H",
-                "IPF009N10NM8",
-                "IPLT60R160CM8",
-            }
+            {"IPF009N10NM8", "IPLT60R160CM8"}
         ),
         expected_extraction_axis_counts=(
-            ("raster", "chart_text", 1),
-            ("raster", "grid_text", 4),
-            ("raster", "position_text", 1),
-            ("vector", "grid_text", 18),
-            ("vector", "position_text", 11),
+            ("raster", "position_text", 2),
+            ("vector", "grid_text", 1),
+            ("vector", "position_text", 32),
+        ),
+        # SiC parts whose Ciss is genuinely flat; geometry alone cannot tell it
+        # from a captured gridline, so the refusal is by design (70bf3d9).
+        expected_trace_suspects=(
+            ("AIMDQ75R060M2H", ("Ciss_flat_full_span_unverified",)),
+            ("IMBG75R007M2H", ("Ciss_flat_full_span_unverified",)),
         ),
     ),
 )
@@ -235,13 +242,22 @@ def _run_case(case: RegressionCase, out_dir: Path) -> list[str]:
         f"qoss={dict(qoss_statuses)} anchor_relabels={anchor_relabels}"
     )
 
-    if trace_statuses - Counter({"pass": trace_statuses.get("pass", 0)}):
-        for result in results:
-            if result.get("trace_validation_status") != "pass":
+    expected_suspects = {part: tuple(reasons) for part, reasons in case.expected_trace_suspects}
+    for result in results:
+        part = str(result.get("part"))
+        status = result.get("trace_validation_status")
+        reasons = tuple(result.get("trace_validation_reasons") or ())
+        if part in expected_suspects:
+            if status != "suspect" or reasons != expected_suspects[part]:
                 failures.append(
-                    f"{result.get('part')} trace {result.get('trace_validation_status')} "
-                    f"{result.get('trace_validation_reasons')}"
+                    f"{part} expected trace suspect {list(expected_suspects[part])}, "
+                    f"got {status} {list(reasons)}"
                 )
+        elif status != "pass":
+            failures.append(f"{part} trace {status} {list(reasons)}")
+    missing_parts = set(expected_suspects) - {str(result.get("part")) for result in results}
+    if missing_parts:
+        failures.append(f"expected trace-suspect parts missing from results: {sorted(missing_parts)}")
     if missing_axis_parts:
         failures.append(f"missing axis calibration: {sorted(missing_axis_parts)}")
     if len(untrusted_parts) > case.max_untrusted_axes:
