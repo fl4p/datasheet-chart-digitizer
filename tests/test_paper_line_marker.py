@@ -95,6 +95,26 @@ class KeilFig2c(unittest.TestCase):
         self.assertAlmostEqual(float(ycal.to_pt(0.7)), 179.41, delta=0.01)
         self.assertAlmostEqual(float(ycal.to_pt(1.0)), 89.34, delta=0.01)
 
+    def test_gridlines_inside_own_plot_box(self):
+        x0, y0, x1, y1 = self.chart["frame_pt"]
+        gy, gx = self.chart["axes"]["y"]["gridlines_pt"], self.chart["axes"]["x"]["gridlines_pt"]
+        self.assertEqual(len(gy), 7)                         # 0.70 .. 1.00; the panel below has six more
+        self.assertTrue(all(y0 - 1 <= g <= y1 + 1 for g in gy), gy)
+        self.assertTrue(all(x0 - 1 <= g <= x1 + 1 for g in gx), gx)
+
+
+class Gridlines(unittest.TestCase):
+    def test_neighbour_panel_rules_excluded(self):
+        grey = (0.873, 0.873, 0.873)
+        rule = lambda a, b: dict(colour=grey, a=a, b=b, width=0.5)
+        lines = [rule((0, 50), (300, 50)),                  # spans both side-by-side panels, inside both
+                 rule((0, 150), (300, 150)),                # same span, in the stacked panel below
+                 rule((40, 0), (40, 100)),                  # left panel's vertical rule
+                 rule((240, 0), (240, 100))]                # right panel's vertical rule
+        gh, gv = P._gridlines(lines, (200, 0, 300, 100))
+        self.assertEqual(gh, [50])
+        self.assertEqual(gv, [240])
+
 
 if __name__ == "__main__":
     unittest.main()

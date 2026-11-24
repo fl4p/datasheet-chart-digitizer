@@ -156,10 +156,14 @@ def _ticks(lines, frame):
 
 
 def _gridlines(lines, frame):
+    """Light full-span rules inside this panel's plot box (stacked or side-by-side
+    panels share the span of their neighbours' gridlines, not their position)."""
     x0, y0, x1, y1 = frame
     gh = [l["a"][1] for l in lines if _darkness(l["colour"]) <= GRID_DARK_MAX and abs(l["a"][1] - l["b"][1]) < 0.05
+          and y0 - 1 <= l["a"][1] <= y1 + 1
           and min(l["a"][0], l["b"][0]) <= x0 + 1 and max(l["a"][0], l["b"][0]) >= x1 - 1]
     gv = [l["a"][0] for l in lines if _darkness(l["colour"]) <= GRID_DARK_MAX and abs(l["a"][0] - l["b"][0]) < 0.05
+          and x0 - 1 <= l["a"][0] <= x1 + 1
           and min(l["a"][1], l["b"][1]) <= y0 + 1 and max(l["a"][1], l["b"][1]) >= y1 - 1]
     return sorted(set(round(v, 3) for v in gh)), sorted(set(round(v, 3) for v in gv))
 
