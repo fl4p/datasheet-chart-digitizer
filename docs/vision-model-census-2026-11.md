@@ -4,12 +4,22 @@ Date: 2026-11-24. dsdig commit: `e2d8ddc` (`main`). Issue: #19, task 1.
 This is a read-only measurement. No model was trained and no digitizer was changed.
 Companion: `docs/vision-models-sota-2026-11.md` (model and licence survey for tasks 2–4).
 
+## Correction, 2026-11-24 (after the cause split)
+
+`docs/vision-model-cause-split-2026-11.md` looked at 50 vector and 50 raster axis-calibration stops one by one (agent readings, not human-verified). It changes three statements below:
+
+1. **Task 4: the stop rule fires. Do not train a recogniser now.** Misread digits are 2 of 50 raster stops (5 counting dropped or unread labels). For 26 of 50 no OCR ran at all: 16 are body-diode and RDS(on) charts, which have no OCR path, and 10 are transfer charts refused on their axis-title text before the raster path is reached. The fix is to wire the existing OCR path into those classes.
+2. **Task 2: a correct box alone would fix few axis stops** (10 of 100 yes, 6 unsure). The case for the detector rests on the finder audit in section 3 (missed and mis-boxed charts), not on the axis-calibration totals.
+3. **"Axis calibration is the largest stop" overstates it.** The stage rule is first-match by priority: 234 of the 465 axis rows also match a later-stage rule (165 of the 241 on vector panels; recomputed from `charts.jsonl`). In the sample, 18 of 50 vector and 3 of 50 raster rows were not axis failures. In particular "transfer panel lacks owned VGS and ID axis evidence" (75 rows) is a check of the axis-title text (`transfer_characteristics.py`), not a calibration failure.
+
+The tables below are unchanged; read sections 4.2, 4.3 and 6 with these three points.
+
 ## Verdict
 
 | Issue task | Verdict | Main evidence |
 |---|---|---|
 | 2. Layout detector | **Go**, build first | On 194 audited pages the finder gave a clean box to 142 of 372 charts, a defective box to 64 and no box to 166. Of the kinds dsdig digitizes, 52 were missed and 55 had a defective box. |
-| 4. Tick-label OCR | **Go, after task 2**, as an experiment with a stop rule | 24 % of found panels have no native text for their tick labels. On raster panels, axis calibration is the largest stop: 193 of 293 non-pass charts. Whether those stops are misread digits or mislocated tick bands is not measured yet. |
+| 4. Tick-label OCR | **Superseded: no recogniser training now** (see the correction above). Originally: go after task 2, with a stop rule | 24 % of found panels have no native text for their tick labels. On raster panels, axis calibration is the largest stop: 193 of 293 non-pass charts. Whether those stops are misread digits or mislocated tick bands is not measured yet. |
 | 3. Curve segmentation | **No-go for now**; revisit when raster charts reach the tracer | Raster is not negligible (21 % of found panels, 33 % of PDFs). But only 37 of 979 non-pass charts stopped at tracing on a raster panel; raster charts mostly stop earlier. The raster charts seen are clean bitmaps, not scans. The local LineFormer run misses the 1 px target and over-detects. |
 
 Issue #18 (no raster entry point) stays a prerequisite for tasks 3 and 4.
