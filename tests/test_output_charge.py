@@ -20,7 +20,7 @@ from datasheet_chart_digitizer.output_charge import (
     _window_slope,
     charge_unit_scale_pc,
     evaluate_trace,
-    file_sha256,
+    evidence_sha256,
     integrate_knots,
     is_output_charge_chart,
     producer_sha256,
@@ -207,7 +207,12 @@ class EvaluateTraceTests(unittest.TestCase):
                     truth, _ = _fit_slope(v[m] - kv, exact[m], 2 if kv - h < v[0] else 1)
                     self.assertLessEqual(abs(c - truth) / c, u + 1e-3, (sigma, q_step, kv))
 
-    def test_known_bad_more_allowed_noise_never_turns_refusal_into_pass(self):
+    def test_known_bad_noise_subtracted_bias_cases_stay_refused(self):
+        # Regression for review 3 (R4): on these identical samples a larger declared
+        # quantum never turns a refusal into a pass.  This is NOT a general panel
+        # monotonicity guarantee (review 4, N2): per-knot window feasibility is monotone,
+        # but a wider selected window can meet the integral gates better.  The quantum
+        # itself is bound to the points by the evidence digest.
         # identical samples; only the declared quantum grows.  The decaying case is
         # where subtracting the higher-order fit's noise bound from the bias passed
         # again at 75-250 pC after refusing at 50 pC.
@@ -311,10 +316,11 @@ class ExportGateTests(unittest.TestCase):
             "coss_eff_rel_uncertainty": t["coss_eff_rel_uncertainty"],
             "coss_eff_integral_max_error": t["coss_eff_integral_max_error"],
             "quantum": {"q_pc": Q_QUANTUM, "v_v": V_QUANTUM},
-            "csv": str(self.csv),
-            "points_sha256": file_sha256(self.csv),
+            "csv": self.csv.name,
+            "_manifest_dir": str(self.base),
             "provenance": {"pdf_sha256": self.SHA, "producer_sha256": producer_sha256()},
         }
+        d["evidence_sha256"] = evidence_sha256(self.csv, d)  # digest of the GOOD record
         d.update(over)
         return d
 
@@ -387,9 +393,18 @@ class ExportGateTests(unittest.TestCase):
                                                             "x2": {"status": "verified"}}}},
             "grid_missing": {"calibration": {}},
             "stale_producer": {"provenance": {"pdf_sha256": self.SHA, "producer_sha256": "0" * 64}},
-            "points_digest_wrong": {"points_sha256": "0" * 64},
-            "points_digest_missing": {"points_sha256": None},
-            "points_missing": {"csv": str(self.base / "nope.csv")},
+            "evidence_digest_wrong": {"evidence_sha256": "0" * 64},
+            "evidence_digest_missing": {"evidence_sha256": None},
+            "points_missing": {"csv": "nope.csv"},
+            "relative_path_without_manifest_dir": {"_manifest_dir": None},
+            # review 4, N4: metadata edited or mixed in alone, points untouched
+            "quantum_lowered_alone": {"quantum": {"q_pc": Q_QUANTUM / 1000, "v_v": V_QUANTUM}},
+            "grid_payload_edited": {"calibration": {"grid_check": {
+                "x": {"status": "verified", "tolerance_px": 1e6},
+                "y": {"status": "verified"}}}},
+            "grid_x_copied_to_y": {"calibration": {"grid_check": {
+                "x": {"status": "verified", "axis": "x"},
+                "y": {"status": "verified", "axis": "x"}}}},
             "quantum_missing": {"quantum": None},
             "quantum_nan": {"quantum": {"q_pc": float("nan"), "v_v": V_QUANTUM}},
             # a coarser declared pixel than the points support: recomputation refuses
@@ -407,7 +422,8 @@ class ExportGateTests(unittest.TestCase):
         self.csv.write_text("\n".join(lines) + "\n")
         res = self._export(self._row(), [d])
         self.assertEqual(res.coss_eff_status, "rejected")
-        self.assertIn("output_charge_points_missing_or_changed", res.coss_eff_reasons)
+        self.assertTrue(any(r.startswith("output_charge_evidence_missing_or_changed")
+                            for r in res.coss_eff_reasons), res.coss_eff_reasons)
 
     def test_known_bad_nonfinite_row_reference_or_integral(self):
         for ref in ({"qoss_pc": float("nan"), "vint_v": 50.0}, {"qoss_pc": Q50, "vint_v": None},
@@ -509,3 +525,87 @@ class OptiMOS8CorpusTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BundlePortabilityTests(unittest.TestCase):
+    """Review 4, N5: an intact output bundle stays valid when its directory moves."""
+
+    def test_moved_bundle_and_legacy_absolute_path(self):
+        import json
+        import shutil
+        from datasheet_chart_digitizer.coss_dslib import load_output_charge
+        with TemporaryDirectory() as tmp:
+            src = Path(tmp) / "run"
+            (src / "points").mkdir(parents=True)
+            csv = src / "points" / "TESTFET.qoss_points.csv"
+            _write_qoss_points(csv)
+            v, q = read_points_csv(csv)
+            t = evaluate_trace(v, q, {"qoss_pc": Q50, "vint_v": 50.0},
+                               q_quantum_pc=Q_QUANTUM, v_quantum_v=V_QUANTUM)
+            verified = {"status": "verified"}
+            panel = {
+                "part": "TESTFET", "diagram": 12, "page": 9, "status": "pass", "reasons": [],
+                "method": "vector",
+                "calibration": {"grid_check": {"x": dict(verified), "y": dict(verified)}},
+                "coss_eff_curve": [list(k) for k in t["coss_eff_curve"]],
+                "quantum": {"q_pc": Q_QUANTUM, "v_v": V_QUANTUM},
+                "csv": "points/TESTFET.qoss_points.csv",
+                "provenance": {"pdf_sha256": "a" * 64, "producer_sha256": producer_sha256()},
+            }
+            panel["evidence_sha256"] = evidence_sha256(csv, panel)
+            (src / "output_charge_digitization.json").write_text(
+                json.dumps({"panels": [panel], "errors": []}))
+            moved = Path(tmp) / "elsewhere" / "renamed"
+            shutil.move(str(src), str(moved))
+            for manifest in (moved / "output_charge_digitization.json",):
+                panels = load_output_charge(manifest)
+                row = _contradiction_row("a" * 64)
+                _write_points_csv(moved / row["points"])
+                res = export_row(row, moved, output_charge=panels)
+                self.assertEqual(res.coss_eff_status, "pass", res.coss_eff_reasons)
+                self.assertEqual(res.qoss_check["status"], "source_contradiction")
+            # an older manifest recorded an absolute path: still honoured
+            legacy = dict(panel, csv=str(moved / "points" / "TESTFET.qoss_points.csv"))
+            res = export_row(_contradiction_row("a" * 64), moved, output_charge=[legacy])
+            self.assertEqual(res.coss_eff_status, "pass", res.coss_eff_reasons)
+
+
+class ConsumedIntegralTests(unittest.TestCase):
+    """Review 4, N1: a passing curve must reproduce the Q(V) and E(V) a consumer
+    integrates, not only the charge at the knots relative to full scale."""
+
+    @staticmethod
+    def _trace(cfun, rnd=None):
+        v = np.round(np.arange(0.0, 100.0001, 0.2), 6)
+        vv = np.linspace(0.0, 100.0, 400_001)
+        cc = cfun(vv)
+        qq = np.concatenate([[0.0], np.cumsum(0.5 * (cc[1:] + cc[:-1]) * np.diff(vv))])
+        q = np.interp(v, vv, qq)
+        if rnd:
+            q = np.round(q / rnd) * rnd
+        return v, q, {"qoss_pc": float(np.interp(50.0, vv, qq)), "vint_v": 50.0}
+
+    def test_known_bad_curves_that_misstate_consumed_q_or_e(self):
+        gauss = lambda c, s: (lambda x: np.exp(-((x - c) ** 2) / (2 * s * s)))  # noqa: E731
+        cases = (
+            # full-swing Eoss 29% low, total Q -0.8%
+            (lambda x: 10 + 10000 * np.exp(-x / 5) + 2000 * gauss(92.5, 0.3)(x), 0.1, 0.1,
+             "energy"),
+            # Q(1 V) +260% while the knot error is 2.4% of full scale
+            (lambda x: 1000 + 10000 * gauss(2.0, 0.3)(x), None, 50.0, "charge"),
+            # E(50 V) -8% at the table voltage
+            (lambda x: 1000 + 10000 * gauss(49.0, 0.3)(x), None, 1.0, "energy"),
+        )
+        for cfun, rnd, q_quantum, what in cases:
+            v, q, ref = self._trace(cfun, rnd)
+            r = evaluate_trace(v, q, ref, q_quantum_pc=q_quantum, v_quantum_v=0.02)
+            self.assertEqual(r["status"], "rejected", what)
+            self.assertTrue(any(s.startswith(f"coss_eff_consumed_{what}_mismatch")
+                                for s in r["reasons"]), (what, r["reasons"]))
+
+    def test_clean_curve_meets_the_consumed_integrals(self):
+        v, q = _sqrt_trace()
+        r = evaluate_trace(v, q, REF)
+        self.assertEqual(r["status"], "pass", r["reasons"])
+        for name in ("q", "e"):
+            self.assertLess(r["coss_eff_consumed_integrals"][name]["worst_over_tol"], 0.5)

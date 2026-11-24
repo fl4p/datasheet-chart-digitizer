@@ -43,6 +43,12 @@ from .capacitance_refs import output_charge_reference_to_json, parse_output_char
 
 ANCHOR_TOL = 0.05
 EFF_INTEGRAL_TOL = 0.03
+# Consumed-integral gate: wherever a consumer integrates the served knots from 0 V, its
+# charge Q(V) and energy E(V) = integral v*C dv must match the traced diagram within this
+# fraction of the LOCAL value plus this fraction of the full-scale value (the floor keeps
+# the first few volts, where Q and E are tiny, from refusing on pixel noise).
+CONSUMED_LOCAL_TOL = 0.05
+CONSUMED_FLOOR = 0.01
 ORIGIN_V_FRACTION = 0.02
 ORIGIN_Q_FRACTION = 0.03
 MONOTONE_DROP_FRACTION = 0.01
@@ -103,6 +109,10 @@ def _window_slope(vw: np.ndarray, qw: np.ndarray, kv: float, deg: int,
     fit's real sensitivity: 1.5x the naive 1/W for a line, about 5.9/W at the end of
     a one-sided quadratic).  t is unknown; with |t| <= |s| + e this solves to
     e <= (q_err + |s|*v_err) * S / (1 - v_err*S), infinite when v_err*S >= 1.
+    ASSUMPTION: the trace is locally linear within half a pixel of each sample (one
+    slope t covers every displacement).  Curvature on that sub-pixel scale is not
+    bounded; a drawn datasheet curve has none to speak of, but this is a worst case
+    only under that assumption.
 
     Bias: the same window refitted two degrees higher; the FULL slope difference is
     returned and charged to the uncertainty (never reduced by the refit's own noise
@@ -130,14 +140,19 @@ def coss_eff_knots(v: np.ndarray, q_pc: np.ndarray, extra_v: tuple[float, ...] =
     around the knot.  Windows are tried from +/-1.5% of the span upward (x1.5 each, to
     at most +/-10%); the knot takes the NARROWEST window whose relative uncertainty,
     (worst-case quantization bound + full high-order disagreement) / slope, is within
-    tolerance.  Every window's uncertainty only grows with the declared quantum, so a
-    knot refused at one quantum stays refused at any larger one.
+    tolerance.  For a FIXED window, the uncertainty only grows with the declared
+    quantum, so the set of windows a knot may use only shrinks.  The panel verdict is
+    not monotone in the declared quantum: a larger quantum can select a wider window
+    whose curve meets the integral gates better.  The quantum is not a free input,
+    though: it is one pixel of the calibrated axes and is bound to the points by the
+    evidence digest.
 
     What a knot means: the derivative of Qoss resolved at its window (half_window_V).
-    Structure narrower than the window is averaged, not served pointwise; a symmetric
-    local fit preserves the window's charge and its first voltage moment, which is
-    what a Qoss/Eoss integral consumes, and the absolute charge gate in
-    evaluate_trace checks the integral at every knot.
+    Structure narrower than the window is averaged, not served pointwise.  Local fits
+    do NOT by themselves conserve the charge or energy of the assembled curve, so
+    evaluate_trace gates what a consumer integrates: Q(V) and E(V) from 0 V at every
+    traced sample, within CONSUMED_LOCAL_TOL of the local value plus CONSUMED_FLOOR of
+    full scale.
 
     In a symmetric window a line and a quadratic give the same slope.  Where the
     window is cut by V0 (Coss falls fastest there) a line reads the window's average
@@ -197,6 +212,37 @@ def integrate_knots(knots: list, v_query: np.ndarray) -> np.ndarray:
     return np.array(out)
 
 
+def consumed_integral_errors(knots: list, v: np.ndarray, q_pc: np.ndarray) -> dict:
+    """Q(V) and E(V) integrated from 0 V over the served knots vs the traced diagram,
+    on a grid holding every knot and every traced sample (C is linear between knots,
+    so Q is exact; E = integral v*C dv by trapezoid on that grid).  The trace's own
+    E(V) = V*Q(V) - integral_0^V Q dv needs no derivative; below its first sample the
+    trace is completed linearly from (0, 0).  Returns the worst error of each, as a
+    multiple of its tolerance (<= 1 passes), and where it occurs."""
+    kv = np.array([k[0] for k in knots], float)
+    kc = np.array([k[1] for k in knots], float)
+    tv = np.concatenate([[0.0], v]) if v[0] > 0 else v
+    tq = np.concatenate([[0.0], q_pc]) if v[0] > 0 else q_pc
+    grid = np.unique(np.concatenate([tv, kv[(kv >= 0) & (kv <= tv[-1])]]))
+    dv = np.diff(grid)
+    c = np.interp(grid, kv, kc)
+    q_k = np.concatenate([[0.0], np.cumsum(0.5 * (c[1:] + c[:-1]) * dv)])
+    vc = grid * c
+    e_k = np.concatenate([[0.0], np.cumsum(0.5 * (vc[1:] + vc[:-1]) * dv)])
+    q_t = np.interp(grid, tv, tq)
+    q_t = q_t - q_t[0]
+    e_t = grid * q_t - np.concatenate([[0.0], np.cumsum(0.5 * (q_t[1:] + q_t[:-1]) * dv)])
+    out = {}
+    for name, got, want in (("q", q_k, q_t), ("e", e_k, e_t)):
+        tol = CONSUMED_LOCAL_TOL * np.abs(want) + CONSUMED_FLOOR * float(np.max(np.abs(want)))
+        ratio = np.abs(got - want) / np.where(tol > 0, tol, np.inf)
+        i = int(np.argmax(ratio))
+        out[name] = {"worst_over_tol": round(float(ratio[i]), 4), "at_v": round(float(grid[i]), 4),
+                     "rel_error": (round(float(got[i] / want[i] - 1.0), 4)
+                                   if want[i] != 0 else None)}
+    return out
+
+
 def _finite_positive(x: object) -> float | None:
     try:
         f = float(x)  # type: ignore[arg-type]
@@ -238,6 +284,16 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
     q_target = np.where(kv < v[0], 0.0, np.interp(kv, v, q_mono))
     q_int = integrate_knots(knots, kv)
     eff_err = float(np.max(np.abs(q_int - q_target))) / q_max
+    finite_knots = all(math.isfinite(c) and c > 0 for _, c in knots)
+    consumed = consumed_integral_errors(knots, v, q_mono) if finite_knots else None
+    if consumed is not None:
+        for name, label in (("q", "charge"), ("e", "energy")):
+            w = consumed[name]
+            if not w["worst_over_tol"] <= 1.0:
+                reasons.append(
+                    f"coss_eff_consumed_{label}_mismatch:{w['rel_error']} at {w['at_v']:g} V "
+                    f"({w['worst_over_tol']:.2f}x tol {CONSUMED_LOCAL_TOL:.0%} local + "
+                    f"{CONSUMED_FLOOR:.0%} full scale)")
 
     anchor: dict[str, object] | None = None
     if ref_q is None or ref_v is None:
@@ -280,6 +336,7 @@ def evaluate_trace(v: np.ndarray, q_pc: np.ndarray, reference: dict | None,
         "coss_eff_half_window_v": [round(k[4], 4) if math.isfinite(k[4]) else None
                                    for k in knots3],
         "coss_eff_integral_max_error": round(eff_err, 5),
+        "coss_eff_consumed_integrals": consumed,
         "quantum": {"q_pc": q_quantum_pc, "v_v": v_quantum_v},
         "method_gates": {"deriv_rel_tol": DERIV_REL_TOL,
                          "deriv_rel_tol_edge": DERIV_REL_TOL_EDGE},
@@ -302,6 +359,20 @@ def file_sha256(path: Path | None) -> str | None:
     if path is None or not Path(path).is_file():
         return None
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def evidence_sha256(points_path: Path, record: dict) -> str | None:
+    """Digest binding the traced points to the metadata the verdict is recomputed
+    with: the points CSV bytes plus the pixel quanta, the axis calibration (incl. the
+    grid-check payload) and the trace method, as canonical JSON.  Editing any one of
+    them alone breaks the digest.  None when the points file is missing."""
+    path = Path(points_path)
+    if not path.is_file():
+        return None
+    meta = {k: record.get(k) for k in ("quantum", "calibration", "method")}
+    h = hashlib.sha256(path.read_bytes())
+    h.update(json.dumps(meta, sort_keys=True, separators=(",", ":"), default=str).encode())
+    return h.hexdigest()
 
 
 def producer_sha256() -> str:
@@ -372,10 +443,11 @@ def process_chart(chart: dict, crop_path: Path, out_dir: Path, rel_stem: Path,
             "grid_check": served_axis_guard.payload(traced.grid_checks),
         },
         "n_points": len(data),
-        "csv": str(csv_path.resolve()),
-        "points_sha256": file_sha256(csv_path),
+        # relative to the manifest directory (out_dir), so a moved bundle stays valid
+        "csv": csv_path.relative_to(out_dir).as_posix(),
         "overlay": str(overlay_path),
     })
+    result["evidence_sha256"] = evidence_sha256(csv_path, result)
     return result
 
 

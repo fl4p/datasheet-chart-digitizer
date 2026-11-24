@@ -373,20 +373,26 @@ slope is held below the first traced point), and their linear integral from 0 V 
 match the diagram at every knot and the table Qoss at its Vds. Each knot is the
 derivative resolved at its fit window (`coss_eff_half_window_v`): the narrowest
 window, from ±1.5% to ±10% of the span, whose uncertainty is within tolerance.
-Structure narrower than that window is averaged, which keeps its charge. That suits a
-Qoss/Eoss integral, but it is not a pointwise capacitance. In a synthetic sweep with
-sharp peaks, the full-swing Qoss and Eoss errors stayed within 2.5% and 3.2%. Each
-knot reports `coss_eff_rel_uncertainty`: the fit's worst-case half-pixel error in
-charge and voltage, plus the full slope difference against a fit two degrees higher.
-It must stay within 10%, or 25% for knots whose fit window is cut by the trace ends.
-A larger declared pixel can only raise it. At 180 DPI the first knot of some
+Structure narrower than that window is averaged; it is not a pointwise capacitance.
+Local fits alone do not conserve charge or energy, so the curve is gated on what a
+consumer integrates: Q(V) and E(V) = ∫v·C dv from 0 V, at every traced sample, must
+match the diagram within 5% of the local value plus 1% of full scale. The diagram's
+E(V) comes from V·Q(V) − ∫Q dV, so no derivative is involved
+(`coss_eff_consumed_integrals`). On the five OptiMOS 8 parts the worst case uses 0.17
+of that tolerance. Each knot reports `coss_eff_rel_uncertainty`: the fit's half-pixel
+error in charge and voltage, plus the full slope difference against a fit two degrees
+higher. It is a worst case only if the trace is locally linear within half a pixel,
+which a drawn curve is. It must stay within 10%, or 25% for knots whose fit window is
+cut by the trace ends. At 180 DPI the first knot of some
 OptiMOS 8 diagrams lands just above 25% and the panel is refused, so digitize these
 diagrams at 360 DPI (`find --dpi 360`). The exporter does not trust the stored
 verdict. It requires the diagram and the C(V) row to have recorded the same PDF
-sha256 and the digitizer code to be unchanged. It then re-reads the traced points
-(their sha256 is recorded) and recomputes the verdict, the knots and the anchor
-against the row's own table Qoss; the stored curve must equal the recomputed one.
-This catches stale, mixed or edited artifacts; it is an integrity check, not
+sha256 and the digitizer code to be unchanged. An evidence digest binds the traced
+points to the recorded pixel quanta, axis calibration and trace method. The exporter
+re-reads the points (resolved relative to the output-charge manifest, so a moved
+directory stays valid) and recomputes the verdict, the knots and the anchor against
+the row's own table Qoss. The stored curve must equal the recomputed one.
+This catches stale, mixed or partly edited artifacts; it is an integrity check, not
 authentication. `coss_curve` remains the small-signal
 chart. The intended use is `coss_curve` for ring tanks and `coss_eff_curve` for
 Qoss/Eoss; no downstream loss model has validated `coss_eff_curve` yet. They can disagree on the same sheet: on OptiMOS 8,

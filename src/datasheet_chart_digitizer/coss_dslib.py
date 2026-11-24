@@ -42,7 +42,7 @@ import numpy as np
 
 from .output_charge import ANCHOR_TOL as OUTPUT_CHARGE_ANCHOR_TOL
 from .output_charge import (
-    evaluate_trace, file_sha256, integrate_knots, producer_sha256, read_points_csv,
+    evaluate_trace, evidence_sha256, integrate_knots, producer_sha256, read_points_csv,
 )
 from .coss_export import (
     build_adaptive_coss_model,
@@ -190,9 +190,10 @@ def _recompute_diagram(diagram: dict, row: dict) -> tuple[list[str], dict | None
     """Re-derive the diagram verdict instead of trusting anything it stored.
 
     Checked against the record: the producing code (producer_sha256), the vector
-    trace and BOTH verified axis grids.  Then the traced points are re-read from the
-    points CSV, whose bytes must match the recorded points_sha256, and evaluate_trace
-    is run again with the recorded pixel quanta and THIS row's table Qoss.  Its
+    trace and BOTH verified axis grids.  The evidence digest binds the points CSV bytes
+    to the recorded quanta, calibration (incl. grid checks) and method, so none can be
+    edited or mixed in alone.  Then evaluate_trace runs again on the points with the
+    recorded quanta and THIS row's table Qoss.  Its
     verdict, uncertainties and integral gates are the ones used; the stored curve must
     equal the recomputed one.  Returns (problems, recomputed result).
 
@@ -213,10 +214,12 @@ def _recompute_diagram(diagram: dict, row: dict) -> tuple[list[str], dict | None
     q_q, q_v = _finite_positive(quantum.get("q_pc")), _finite_positive(quantum.get("v_v"))
     if q_q is None or q_v is None:
         problems.append("output_charge_quantum_missing")
-    csv_path = Path(str(diagram.get("csv") or ""))
-    digest = diagram.get("points_sha256")
-    if not (isinstance(digest, str) and len(digest) == 64 and file_sha256(csv_path) == digest):
-        problems.append("output_charge_points_missing_or_changed")
+    csv_path = _panel_points_path(diagram)
+    digest = diagram.get("evidence_sha256")
+    if not (isinstance(digest, str) and len(digest) == 64 and csv_path is not None
+            and evidence_sha256(csv_path, diagram) == digest):
+        problems.append("output_charge_evidence_missing_or_changed:points, quanta, "
+                        "calibration or method differ from what was digitized")
     if problems:
         return problems, None
     try:
@@ -237,6 +240,22 @@ def _recompute_diagram(diagram: dict, row: dict) -> tuple[list[str], dict | None
         return ["output_charge_curve_differs_from_recomputation"], redo
     problems.extend(_served_curve_problems(fresh, row.get("output_charge_reference") or {}))
     return problems, redo
+
+
+def _panel_points_path(diagram: dict) -> Path | None:
+    """The panel's points CSV: relative paths resolve against the directory of the
+    output-charge manifest it was loaded from (so a moved bundle stays valid);
+    absolute paths from older manifests are used as recorded."""
+    raw = diagram.get("csv")
+    if not isinstance(raw, str) or not raw:
+        return None
+    path = Path(raw)
+    if not path.is_absolute():
+        base = diagram.get("_manifest_dir")
+        if not isinstance(base, str) or not base:
+            return None
+        path = Path(base) / path
+    return path
 
 
 def _apply_coss_eff(res: DslibCossResult, diagram: dict | None,
@@ -570,6 +589,10 @@ def load_output_charge(path: Path | None) -> list[dict]:
     panels = data.get("panels") if isinstance(data, dict) else None
     if not isinstance(panels, list):
         raise ValueError(f"{path} is not an output-charge digitization manifest")
+    base = str(path.resolve().parent)
+    for p in panels:
+        if isinstance(p, dict):
+            p["_manifest_dir"] = base  # resolves the panel's relative artifact paths
     return panels
 
 
