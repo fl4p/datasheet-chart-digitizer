@@ -652,7 +652,9 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
 
-        self.assertEqual(result["status"], "ok")
+        # the curves run on past the 50 A label to the frame: cropped, not ok
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
         self.assertIn("source_axes_current_x_voltage_y", result["diagnostics"])
         self.assertEqual(result["x_axis"]["model"], "linear")
         self.assertEqual(result["y_axis"]["model"], "linear")

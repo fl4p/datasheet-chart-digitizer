@@ -114,12 +114,12 @@ class TruncatedBodyDiodeTests(unittest.TestCase):
 
     def test_unlabelled_end_interval_is_not_truncation(self) -> None:
         # STW46NF30 Figure 13: curves run past the last labelled current
-        # (30 A) into the unlabelled end interval; the class never
-        # extrapolates past its last label, so the serve stays ok.
+        # (30 A) into the unlabelled end interval. Not truncation (nothing
+        # labelled is missing), but the serve is cropped, so not ok.
         pdf = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/st/STW46NF30.pdf")
         results, errors = self._run(pdf, extend=True)
         self.assertEqual(len(results), 1, errors)
-        self.assertEqual(results[0]["status"], "ok")
+        self.assertEqual(results[0]["status"], "unverified")
         self.assertEqual(results[0]["coverage_check"]["status"], "verified")
         self.assertTrue(results[0]["coverage_check"]["notes"])
 

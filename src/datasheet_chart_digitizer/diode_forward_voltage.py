@@ -19,7 +19,7 @@ import numpy as np
 import pymupdf
 from PIL import Image
 
-from .axis_calibration import UNREAD_POWER, power_tick_words
+from .axis_calibration import UNREAD_POWER, join_digit_groups, power_tick_words
 from .capacitance_traces import find_plot_box
 from .capacitance_types import PlotBox
 from .capacitance_vector import (
@@ -92,6 +92,8 @@ class TextLabel:
     cy: float
     x0: float
     x1: float
+    y0: float = 0.0
+    y1: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -258,7 +260,8 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
         diagnostics.append("curve_coverage_unverified")
     if coverage.notes:
         diagnostics.append("source_curve_continues_past_last_labelled_tick_not_extrapolated")
-    coverage_ok = coverage.status == "verified"
+    # a curve that runs on past the served box is a cropped chart, not ok
+    coverage_ok = coverage.status == "verified" and not coverage.notes
     return {
         "status": "ok" if not grid_unverified and coverage_ok else "unverified",
         "diagnostics": diagnostics,
@@ -390,6 +393,19 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     if y_axis is raw_y:
         y_axis = _anchor_linear_axis_to_plot_frame(y_axis, physical_hint, "y")
     plot = tick_aligned_plot(x_axis, y_axis, physical_hint)
+    if plot != physical_hint and "log10" in (x_axis.model, y_axis.model):
+        frame_x, frame_y = _full_span_grid_lines(image, physical_hint)
+        plot = PlotBox(
+            *(
+                frame if _log_frame_on_ladder(axis, edge, frame, lines) else edge
+                for edge, frame, axis, lines in (
+                    (plot.x0, physical_hint.x0, x_axis, frame_x),
+                    (plot.y0, physical_hint.y0, y_axis, frame_y),
+                    (plot.x1, physical_hint.x1, x_axis, frame_x),
+                    (plot.y1, physical_hint.y1, y_axis, frame_y),
+                )
+            )
+        )
     if plot.y0 <= 8:
         raise RuntimeError("plot: tick-aligned frame overlaps the panel title band")
     # _snap_axis_to_grid returns the label-centre axis silently when it finds
@@ -542,6 +558,30 @@ def _voltage_on_y_axis(calibration: PanelCalibration) -> bool:
         and 0.1 <= y_span <= 3.0
         and x_span >= 5.0 * y_span
     )
+
+
+def _log_frame_on_ladder(axis: NumericAxis, edge: int, frame: int, lines) -> bool:
+    """A frame past the last labelled decade, inside one decade, whose rule and
+    every full-span line before it sit on the axis's k*10^n ladder (FCI7N60:
+    frame at 40 A, minor lines at 20 and 30 A above the 10 A label)."""
+    pixels = sorted(tick.pixel for tick in axis.ticks)
+    if axis.model != "log10" or len(pixels) < 2 or frame == edge:
+        return False
+    tol = 2.0
+    last = pixels[0] if frame < edge else pixels[-1]
+    if abs(edge - last) > tol or abs(frame - last) >= float(np.median(np.diff(pixels))) - tol:
+        return False
+    beyond = [line for line in lines if tol < abs(line - last) <= abs(frame - last) + tol
+              and (line - last) * (frame - last) > 0]
+    if not any(abs(line - frame) <= tol for line in beyond):
+        return False
+    for line in beyond:
+        value = axis.value(line)
+        decade = 10.0 ** math.floor(math.log10(value))
+        step = round(value / decade)
+        if not 2 <= step <= 9 or abs((math.log10(step * decade) - axis.b) / axis.m - line) > tol:
+            return False
+    return True
 
 
 def _physical_plot_hint(
@@ -837,7 +877,7 @@ def _page_labels(page, transform: CropTransform) -> list[TextLabel]:
         x0, y0 = transform.to_px(word[0], word[1])
         x1, y1 = transform.to_px(word[2], word[3])
         text = mark + _normalize_numeric_text(word[4].strip())
-        labels.append(TextLabel(text, (x0 + x1) / 2, (y0 + y1) / 2, x0, x1))
+        labels.append(TextLabel(text, (x0 + x1) / 2, (y0 + y1) / 2, x0, x1, y0, y1))
     return labels
 
 
@@ -874,6 +914,7 @@ def _select_axis(
         ]
         cluster_attr, position_attr, tolerance, edge_value = "cy", "cx", 5.0, hint.y1
     else:
+        numeric = _join_gutter_digit_groups(numeric, hint)
         nearby = [
             label
             for label in numeric
@@ -916,6 +957,33 @@ def _select_axis(
     if not candidates:
         raise RuntimeError(f"{orientation.upper()} axis: no trustworthy numeric tick run")
     return max(candidates, key=lambda item: item[:3])[3]
+
+
+def _join_gutter_digit_groups(labels: list[TextLabel], hint: PlotBox) -> list[TextLabel]:
+    """Join digit-grouped labels ("1 000") in the Y-label gutter; X tick rows stay apart."""
+    margin = _AXIS_LABEL_OUTER_MARGIN_FRACTION * hint.height
+    pool = [i for i, label in enumerate(labels) if label.y1 > label.y0 and label.cx < hint.x0
+            and label.x1 >= hint.x0 - 0.35 * hint.width and hint.y0 - margin <= label.cy <= hint.y1 + margin]
+    words = [(labels[i].x0, labels[i].y0, labels[i].x1, labels[i].y1, labels[i].text, i) for i in pool]
+    joined = {w[5]: w for w in join_digit_groups(words)}
+    out = []
+    for i, label in enumerate(labels):
+        w = joined.get(i)
+        if i in pool and w is None:
+            continue
+        out.append(label if w is None or w[2] == label.x1 else TextLabel(w[4], (w[0] + w[2]) / 2, label.cy, w[0], w[2], w[1], w[3]))
+    rest = list(joined.values())
+
+    def in_column(word) -> bool:
+        return sum(abs(w[2] - word[2]) <= 9.0 and abs(w[1] - word[1]) > w[3] - w[1] for w in rest) >= 2
+
+    for head in rest:
+        digit = (head[2] - head[0]) / max(1, len(head[4]))
+        split = [w[4] for w in rest if re.fullmatch(r"\d{3}", w[4]) and abs(w[1] - head[1]) <= 0.3 * (head[3] - head[1])
+                 and 0.0 < w[0] - head[2] <= 2.0 * digit and in_column(w)]
+        if split:
+            raise RuntimeError(f"Y axis: tick label {head[4]!r} is followed by {split[0]!r}; an unjoined digit group")
+    return out
 
 
 def _cluster(labels: list[TextLabel], key, tolerance: float) -> list[list[TextLabel]]:

@@ -131,6 +131,15 @@ row carries its `curve_status` and `chart_status`. Validated on one paper only (
 al. 2016, MATLAB export; Fig. 2c approved 2026-11-24), so every panel is at best
 `unverified`, never `ok`: check the overlay.
 
+`digitize-powder-dc-bias` is `ok` only when `--printed` rows were given and every curve binds to
+its own row; without them it is `unverified`. `digitize-core-loss` writes a `status`: `ok` only
+when every curve is within ±10 % of the printed law at the reference flux, else (or with
+`--law none`) `unverified`. Reverse-leakage current and RDS(on)-vs-I_D ohm units come from the
+Y-axis title the plot frame owns; without one, the panel text must name exactly one unit, else
+the chart refuses. A body-diode curve that runs on past the served plot box keeps the chart
+`unverified`; a log frame past the last labelled decade is served when its rule and the minor
+lines before it sit on the axis's k·10^n ladder.
+
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
 package-owned experimental `GateChargeResult` records the selected panel, Vpl
 estimate, status, trace source, score, curve points, axis evidence, and

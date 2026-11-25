@@ -284,6 +284,13 @@ def assign_temperatures(
     ]
     voltage_span = voltage_bounds[1] - voltage_bounds[0]
     log_current = current_axis.model == "log10"
+    if log_current:
+        # a log frame past the last labelled decade is served (plot box = frame)
+        plot = calibration.plot
+        ticks = sorted(tick.pixel for tick in current_axis.ticks)
+        beyond = [current_axis.value(px) for px in ((plot.x0, plot.x1) if voltage_on_y else (plot.y0, plot.y1))
+                  if px < ticks[0] - 2.0 or px > ticks[-1] + 2.0]
+        current_bounds = [min([current_bounds[0], *beyond]), max([current_bounds[1], *beyond])]
     data = []
     for curve in curves_px:
         points = []

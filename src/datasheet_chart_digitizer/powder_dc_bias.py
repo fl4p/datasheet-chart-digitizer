@@ -28,7 +28,8 @@ against the printed coefficient rows: each curve's median %-point residual
 against its own row must be smaller than against either neighbour row.
 
 Validated 2026-11-24: Fab approved the overlays of the three KDM renderings in
-tests/fixtures/kdm_sendust_dc_bias. A result that passes the printed-row gate is ``ok``.
+tests/fixtures/kdm_sendust_dc_bias. A result that passes the printed-row gate is ``ok``;
+without printed rows it is ``unverified``.
 """
 
 from __future__ import annotations
@@ -479,6 +480,9 @@ def main(argv: list[str] | None = None) -> int:
     if ok is False:
         result["status"] = "refused"
         result["reasons"].append("curve order disagrees with the printed rows")
+    elif ok is None and result["status"] == "ok":
+        result["status"] = "unverified"
+        result["reasons"].append("no printed rows (--printed): curve identity and the H axis are unchecked")
 
     curves_out = []
     for i, p in enumerate(perms):

@@ -76,7 +76,9 @@ class Stw46TransposedBodyDiodeTests(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         result = results[0]
-        self.assertEqual(result["status"], "ok")
+        # curves run on past the last labelled current (30 A): a cropped serve
+        self.assertEqual(result["status"], "unverified")
+        self.assertIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
         self.assertEqual(result["panel"]["page"], 7)
         self.assertEqual(result["panel"]["diagram"], 13)
         self.assertEqual(result["panel"]["kind"], "body_diode")

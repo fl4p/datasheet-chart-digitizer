@@ -75,6 +75,23 @@ _MAX_OCCLUSION_COLS = 40
 _TRACK_TOL_PX = 12
 
 
+# |digitized/printed - 1| at the reference flux for ``ok``. The approved KDM panel
+# reads up to +4.5 % (8 kHz, a source drawing error, review 2026-09-06); a wrong
+# axis range or curve binding is off by a factor.
+PRINTED_LAW_RATIO_TOL = 0.10
+
+
+def law_status(fits) -> tuple[str, list[str]]:
+    """``ok`` only when every curve agrees with the printed law within tolerance."""
+    ratios = [f.printed_law_ratio for f in fits]
+    if not fits or any(r is None for r in ratios):
+        return "unverified", ["no printed law to check the curves against (--law none)"]
+    bad = [f"{f.frequency_khz:g} kHz {r:.3f}" for f, r in zip(fits, ratios) if not abs(r - 1.0) <= PRINTED_LAW_RATIO_TOL]
+    if bad:
+        return "unverified", [f"digitized/printed ratio beyond +-{PRINTED_LAW_RATIO_TOL:.0%}: {', '.join(bad)}"]
+    return "ok", []
+
+
 @dataclass
 class CurveFit:
     """One frequency curve: free-fit power law plus its agreement with the print."""
@@ -452,13 +469,16 @@ def main(argv: list[str] | None = None) -> int:
               f"{f.ink_offset_median_px:11.2f} {f.ink_offset_p95_px:6.2f} {ratio:>11}")
     alphas = np.array([f.exponent for f in fits])
     print(f"\nmean exponent {alphas.mean():.4f} sd {alphas.std(ddof=1):.4f} over {len(fits)} curves")
+    status, reasons = law_status(fits)
+    print(f"status {status}  {'; '.join(reasons)}")
 
     xt = [float(v) for v in (100, 200, 300, 500, 1000, 2000, 3000, 5000, 10000) if xr[0] <= v <= xr[1]]
     yt = [float(v) for v in (1, 3, 10, 30, 100, 300, 1000, 3000, 10000) if yr[0] <= v <= yr[1]]
     overlay_path = out / (Path(a.pdf).stem + "-core-loss-overlay.png")
     render_overlay(rgb, fits, x_cal, y_cal, meta["panel"], xt, yt, overlay_path)
     (out / (Path(a.pdf).stem + "-core-loss.json")).write_text(json.dumps(
-        {"source": a.pdf, "page": a.page, "dpi": a.dpi,
+        {"source": a.pdf, "page": a.page, "dpi": a.dpi, "status": status, "reasons": reasons,
+         "printed_law_ratio_tolerance": PRINTED_LAW_RATIO_TOL,
          "x_calibration": asdict(x_cal), "y_calibration": asdict(y_cal),
          "curves": [asdict(f) for f in fits]}, indent=2))
     print(f"\nOVERLAY: {overlay_path}")

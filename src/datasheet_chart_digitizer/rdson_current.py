@@ -12,6 +12,7 @@ import numpy as np
 import pymupdf
 
 from .capacitance_types import PlotBox
+from .axis_title_identity import frame_owned_axis_titles
 from .crop_transform import CropTransform
 from .diode_forward_voltage import (
     _anchor_linear_axis_to_plot_frame,
@@ -308,7 +309,9 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     )
     x_axis = _anchor_linear_axis_to_plot_frame(x_axis, plot, "x")
     y_axis = _anchor_linear_axis_to_plot_frame(y_axis, plot, "y")
-    if _rdson_y_scale_to_mohm(panel) == 1000.0:
+    with pymupdf.open(panel.pdf) as document:
+        y_title = frame_owned_axis_titles(document[panel.page - 1], transform, lambda: plot)[1]
+    if _rdson_y_scale_to_mohm(panel, y_title) == 1000.0:
         y_axis = NumericAxis(
             y_axis.model,
             y_axis.m * 1000.0,
@@ -366,15 +369,35 @@ def _owned_vector_plot_hint(
     return PlotBox(round(x0), round(y0), round(x1), round(y1))
 
 
-def _rdson_y_scale_to_mohm(panel: ChartPanel) -> float:
-    """Return the explicit source-unit conversion into the plugin's mOhm contract."""
+_MILLI_OHM = re.compile(r"(?<![A-Za-z])m\s*Ω")
+_BARE_OHM = re.compile(r"(?<![A-Za-z])(?<!m)(?<!m )Ω")
 
-    local = _local_axis_text(panel).replace("Ω", "Ω")
-    if re.search(r"\bm\s*Ω", local, re.I):
-        return 1.0
-    if re.search(r"(?<![A-Za-z])Ω", local):
-        return 1000.0
-    return 1.0
+
+def _ohm_text(text: str) -> str:
+    """Ω spellings: Ohm, U+2126, Symbol-font "mW"/U+F057, an m with a missing glyph ("[m ]")."""
+    text = re.sub(r"ohms?\b", "Ω", text.replace("\u2126", "Ω").replace("\uf057", "Ω"), flags=re.I)
+    return re.sub(r"([(\[])\s*m\s*(?:W|[^\x20-\x7e\s])?\s*([)\]])", r"\1mΩ\2", text)
+
+
+def _rdson_y_scale_to_mohm(panel: ChartPanel, owned_y_title: str = "") -> float:
+    """The source-unit conversion into the plugin's mOhm contract.
+
+    The owned Y-axis title decides when it names a unit; otherwise the text
+    around the panel must name exactly one of mΩ and Ω. Never defaulted.
+    """
+    for source, text in (("owned Y-axis title", owned_y_title), ("axis text", _local_axis_text(panel))):
+        text = _ohm_text(text)
+        milli, bare = bool(_MILLI_OHM.search(text)), bool(_BARE_OHM.search(text))
+        if milli and bare:
+            raise RuntimeError(f"RDS(on) unit: the {source} names both mΩ and Ω; refusing to pick one")
+        if milli or bare:
+            return 1.0 if milli else 1000.0
+    raise RuntimeError("RDS(on) unit: no mΩ or Ω near the panel; refusing to assume one")
+
+
+def _legacy_bare_ohm(panel: ChartPanel) -> bool:
+    text = _local_axis_text(panel).replace("\u2126", "Ω")
+    return not re.search(r"\bm\s*Ω", text, re.I) and bool(re.search(r"(?<![A-Za-z])Ω", text))
 
 
 def _axis_identity_is_evidenced(panel: ChartPanel) -> bool:
@@ -385,7 +408,7 @@ def _axis_identity_is_evidenced(panel: ChartPanel) -> bool:
         "rdson" in compact or "dson" in compact
     ) and (
         any(unit in compact for unit in ("mω", "mΩ", "mΩ", "m\uf057"))
-        or _rdson_y_scale_to_mohm(panel) == 1000.0
+        or _legacy_bare_ohm(panel)
     )
     return _is_rdson_current_panel(panel) and has_current_axis and has_rdson_axis
 

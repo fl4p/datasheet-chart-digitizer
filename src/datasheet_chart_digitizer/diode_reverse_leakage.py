@@ -259,30 +259,27 @@ _WRAPPED_CURRENT_UNIT = r"[(\[]\s*([pnum]?)\s*A\s*[)\]]"
 def _title_current_prefix(panel_text: str, owned_y_title: str) -> str | None:
     """The SI prefix of the current axis title ("" for plain A), or None.
 
-    The finder's panel text is searched first. A ROTATED or clipped axis
-    title is often not in that text; the fallback is the Y-axis title this
-    panel's plot frame geometrically OWNS (``axis_title_identity``), which
-    never takes a neighbour's title. It must name exactly one wrapped current
-    unit ("(µA)", "IR[nA]"); two different ones refuse rather than pick.
+    The Y-axis title this panel's plot frame geometrically OWNS
+    (``axis_title_identity``) decides when it names a wrapped current unit
+    ("(µA)", "IR[nA]"). A rotated or clipped title is often not owned; then the
+    finder's panel text must name exactly one distinct wrapped current unit.
+    Two different units in either source refuse rather than pick.
     """
-    text = panel_text.replace("μ", "u").replace("µ", "u")
-    match = re.search(
-        r"current[^()\[\]]{0,40}" + _WRAPPED_CURRENT_UNIT, text, re.IGNORECASE
-    ) or re.search(_WRAPPED_CURRENT_UNIT, text)
-    if match is not None:
-        return match.group(1)
-    units = {
-        found.group(1)
-        for found in re.finditer(
-            _WRAPPED_CURRENT_UNIT, owned_y_title.replace("μ", "u").replace("µ", "u")
-        )
-    }
-    if len(units) > 1:
-        raise ValueError(
-            f"the owned Y-axis title names {len(units)} different current units "
-            f"({', '.join(sorted(u + 'A' for u in units))}); refusing to pick one"
-        )
-    return units.pop() if units else None
+    for source, text in (("owned Y-axis title", owned_y_title), ("panel text", panel_text)):
+        units = {
+            found.group(1)
+            for found in re.finditer(
+                _WRAPPED_CURRENT_UNIT, text.replace("μ", "u").replace("µ", "u")
+            )
+        }
+        if len(units) > 1:
+            raise ValueError(
+                f"the {source} names {len(units)} different current units "
+                f"({', '.join(sorted(u + 'A' for u in units))}); refusing to pick one"
+            )
+        if units:
+            return units.pop()
+    return None
 
 
 def _calibrate(
