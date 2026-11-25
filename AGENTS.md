@@ -78,3 +78,6 @@ the task involves chart digitization or extraction review:
 
 Python library + `dsdig` CLI, own `.venv`. Tests in `tests/`, one-off and
 regression harnesses in `tools/`.
+
+Full suite: `scripts/test-remote.sh`; local runs limited to `-n 2`. A bare `pytest` runs the fast
+subset (`-m "not slow"`) on 2 workers; add `-m ""` for the slow tests. See README "Tests".

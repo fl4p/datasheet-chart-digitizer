@@ -37,7 +37,9 @@ Environment
     DSDIG_TEST_CACHE=0      no digitize cache and no OCR memo (everything live)
     DSDIG_TEST_CACHE_DIR    cache root (default: <repo>/out/test-cache)
     DSDIG_OCR_CACHE         the tesseract memo (src/.../tesseract_memo.py);
-                            defaulted to <root>/ocr when the cache is on
+                            defaulted to <root>/ocr when the cache is on (also by
+                            conftest.py, for every test)
+    DSDIG_RENDER_CACHE      the pdftoppm memo (tests/render_memo.py), <root>/render
 """
 
 from __future__ import annotations
@@ -75,13 +77,7 @@ REPO = Path(__file__).resolve().parents[1]
 DS = Path("/Users/fab/dev/ee/solar-charger-eval/ds")
 OUT_ROOT = REPO / "out"
 
-
-def enabled() -> bool:
-    return os.environ.get("DSDIG_TEST_CACHE", "1").strip().lower() not in {"0", "off", "false", "no"}
-
-
-def cache_root() -> Path:
-    return Path(os.environ.get("DSDIG_TEST_CACHE_DIR") or OUT_ROOT / "test-cache")
+from cache_env import cache_root, enabled  # noqa: E402
 
 
 if enabled():

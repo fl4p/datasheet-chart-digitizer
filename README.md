@@ -56,6 +56,38 @@ python3 -m pip install -e .
 
 The command-line tools require `pdftotext` and `pdftoppm` from Poppler.
 
+## Tests
+
+Full suite: `scripts/test-remote.sh`; local runs are limited to `-n 2`.
+
+```bash
+scripts/test-remote.sh                       # full suite on vup.fabi.me, up to 12 workers
+scripts/test-remote.sh -m "not slow"         # fast subset there
+scripts/test-remote.sh tests/test_x.py -k y  # any pytest arguments
+pytest                                       # locally: fast subset, 2 workers (pyproject addopts)
+pytest -m "" tests/test_x.py                 # locally, slow tests included
+```
+
+`scripts/test-remote.sh` syncs the current worktree (any `git worktree`) to the same absolute path
+on the host, keeps a Linux venv there keyed on `pyproject.toml` + `uv.lock` (rebuilt when either
+changes) and the datasheet-corpus subset the tests name (`scripts/remote_corpus.py`), queues for
+CPU slots with `offload hold`, streams pytest's output and exits with its code. See the script header
+for its environment variables and the host prerequisites.
+
+Slow tests are deselected by the default `-m "not slow"`; `-m ""` runs everything. Slow are: tests
+listed `slow` in `tests/test_durations.txt` (2 s or more in a cold-cache run), every RDS(VGS) test
+that digitizes a datasheet (they share one cached digitization per PDF, so any of them may pay for
+it), every test of a `setUpClass` class that has a slow test, and `@pytest.mark.slow`. Each test
+file keeps at least one fast test. Regenerate
+the list from a cold-cache full run: `scripts/test-remote.sh --junitxml=/tmp/j.xml`, copy the report
+back, `scripts/update_test_durations.py j.xml`. The same file orders the run longest-first.
+
+Test caches (`out/test-cache/`, or `DSDIG_TEST_CACHE_DIR`; `DSDIG_TEST_CACHE=0` turns all off): the
+RDS(VGS) digitize cache (`tests/rds_digitize_cache.py`), the tesseract memo
+(`DSDIG_OCR_CACHE`, `src/datasheet_chart_digitizer/tesseract_memo.py`) and the pdftoppm render memo
+(`DSDIG_RENDER_CACHE`, `tests/render_memo.py`). Each is keyed on its full input and the installation
+that produces it, so a hit is always what a live run would return.
+
 ## Usage
 
 ```bash

@@ -38,3 +38,8 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = ["src", "tests"]
+# local default: 2 workers (a bare `pytest` must not saturate the Mac) and the fast subset;
+# full suite on the remote host: scripts/test-remote.sh (-n 12 -m ""), locally `-m ""`.
+# worksteal: an idle worker takes queued tests from a busy one (with `load`, tests queued behind a
+# long one on one worker kept the others idle: 16 min cold where the CPU work fits in 6)
+addopts = "-n 2 --dist worksteal -m 'not slow'"
