@@ -11,7 +11,11 @@ from .capacitance_grid_mask import (
     _remove_frame_residual_rails,
     _remove_full_width_horizontal_rails,
 )
-from .capacitance_pair_tracking import bridge_flat_ciss_occlusions, track_ciss_coss_pair
+from .capacitance_pair_tracking import (
+    bridge_flat_ciss_occlusions,
+    repair_crossed_upper_merge,
+    track_ciss_coss_pair,
+)
 from .capacitance_types import CapAnchor, PlotBox, Trace
 from .capacitance_validation import (
     UNPHYSICAL_VALUE_RISE_FRACTION,
@@ -439,6 +443,7 @@ def extract_trace_components(
     assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
     assigned = _repair_leading_steep_crss(mask, assigned, plot)
     assigned = _repair_reseparated_upper_crossing(centers_by_x, assigned, plot)
+    assigned = repair_crossed_upper_merge(mask, assigned, plot)
     if joint_pair_tracking:
         assigned = bridge_flat_ciss_occlusions(assigned, plot)
 

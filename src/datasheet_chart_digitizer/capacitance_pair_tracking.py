@@ -195,3 +195,105 @@ def bridge_flat_ciss_occlusions(
     out = dict(assigned)
     out["Ciss"] = sorted(repaired.items())
     return out
+
+
+# Incoming Ciss/Coss closing speed (px/column) that makes a merge transversal.
+CROSSING_MIN_CLOSING_SLOPE = 0.25
+CROSSING_SLOPE_WINDOW = 10
+CROSSING_SAME_STROKE_PX = 3.0
+CROSSING_MIN_FOLLOWED_COLUMNS = 12
+
+
+def repair_crossed_upper_merge(
+    mask: np.ndarray,
+    assigned: dict[str, list[tuple[int, int]]],
+    plot: PlotBox,
+) -> dict[str, list[tuple[int, int]]]:
+    """Follow a curve that crosses its peer through a short merge.
+
+    Superjunction Coss falls onto the flat Ciss, merges for a few columns and
+    leaves below it. A slope-extrapolating tracker misses the sharp knee and
+    leaves both names on Ciss. If the two names close on each other at a
+    material rate and then share a right tail, follow the approaching name's
+    own ink (8-connected column runs) through the merge and out on the far
+    side. Any ambiguity leaves the shared tail, which validation refuses.
+    """
+
+    if not {"Ciss", "Coss"}.issubset(assigned):
+        return assigned
+    ys = {
+        name: {x - plot.x0: float(y - plot.y0) for x, y in assigned[name]}
+        for name in ("Ciss", "Coss")
+    }
+    common = sorted(ys["Ciss"].keys() & ys["Coss"].keys())
+    distinct = [
+        x for x in common
+        if abs(ys["Ciss"][x] - ys["Coss"][x]) > CROSSING_SAME_STROKE_PX
+    ]
+    if not distinct or len(common) - common.index(distinct[-1]) - 1 < (
+        CROSSING_MIN_FOLLOWED_COLUMNS
+    ):
+        return assigned
+    start = distinct[-1]
+    window = [x for x in distinct if x > start - CROSSING_SLOPE_WINDOW]
+    if len(window) < CROSSING_SLOPE_WINDOW // 2:
+        return assigned
+    slopes = {
+        name: float(np.polyfit(window, [ys[name][x] for x in window], 1)[0])
+        for name in ys
+    }
+    upper, lower = sorted(ys, key=lambda name: ys[name][start])  # image y
+    if slopes[upper] - slopes[lower] < CROSSING_MIN_CLOSING_SLOPE:
+        return assigned
+
+    run = _run_at(mask[:, start], ys[upper][start])
+    if run is None or run[0] <= ys[lower][start] <= run[1]:
+        return assigned
+    followed: list[tuple[int, float]] = []
+    merged = crossed = False
+    for x in range(start + 1, mask.shape[1]):
+        nxt = [
+            r for r in _runs(mask[:, x])
+            if r[0] <= run[1] + 1 and r[1] >= run[0] - 1
+        ]
+        if len(nxt) > 1 and merged and not crossed:
+            # Crossing: the upper curve leaves below its peer.
+            run, crossed = nxt[-1], True
+        elif len(nxt) == 1:
+            run = nxt[0]
+        else:
+            break
+        peer = ys[lower].get(x)
+        if not crossed and peer is not None and run[0] - 1 <= peer <= run[1] + 1:
+            merged = True
+        followed.append((x, (run[0] + run[1]) / 2.0))
+    tail = [
+        x for x, y in followed
+        if y - ys[lower].get(x, np.inf) > CROSSING_SAME_STROKE_PX
+    ]
+    crss = {x - plot.x0: y - plot.y0 for x, y in assigned.get("Crss", [])}
+    if (
+        not crossed
+        or len(tail) < CROSSING_MIN_FOLLOWED_COLUMNS
+        or any(abs(y - crss.get(x, -1e9)) <= CROSSING_SAME_STROKE_PX for x, y in followed)
+    ):
+        return assigned
+    out = dict(assigned)
+    out[upper] = [(x, y) for x, y in assigned[upper] if x - plot.x0 <= start] + [
+        (plot.x0 + x, plot.y0 + int(round(y))) for x, y in followed
+    ]
+    return out
+
+
+def _runs(column: np.ndarray) -> list[tuple[int, int]]:
+    ys = np.flatnonzero(column)
+    if len(ys) == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(ys) > 1)
+    starts = np.concatenate(([ys[0]], ys[breaks + 1]))
+    ends = np.concatenate((ys[breaks], [ys[-1]]))
+    return [(int(a), int(b)) for a, b in zip(starts, ends)]
+
+
+def _run_at(column: np.ndarray, y: float) -> tuple[int, int] | None:
+    return next((r for r in _runs(column) if r[0] - 1 <= y <= r[1] + 1), None)
