@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from .capacitance_ink_continuity import CONNECTION_OFF_INK_MIN_PX, off_ink_runs
 from .capacitance_types import PlotBox
 
 
@@ -62,6 +63,8 @@ def _repair_leading_steep_coss(
     centers_by_x: list[list[float]],
     assigned: dict[str, list[tuple[int, int]]],
     plot: PlotBox,
+    *,
+    ink_distance: np.ndarray | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     if not all(name in assigned for name in ("Ciss", "Coss")):
         return assigned
@@ -73,11 +76,11 @@ def _repair_leading_steep_coss(
 
     repaired_coss = _repair_missing_leading_knee(mask, coss, plot)
     if repaired_coss is not None:
-        if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+        if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}, ink_distance=ink_distance):
             repaired_coss = _trim_repair_points_on_peer(repaired_coss, coss, assigned["Ciss"], plot)
-        if repaired_coss is not None and _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+        if repaired_coss is not None and _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}, ink_distance=ink_distance):
             repaired_coss = _enforce_low_v_coss_monotone(repaired_coss, plot)
-            if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+            if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}, ink_distance=ink_distance):
                 return assigned
             out = dict(assigned)
             out["Coss"] = repaired_coss
@@ -148,7 +151,7 @@ def _repair_leading_steep_coss(
             by_x[x] = y
     out = dict(assigned)
     repaired_coss = sorted(by_x.items())
-    if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}):
+    if not _repair_shape_guard(repaired_coss, coss, plot, peers={"Ciss": assigned["Ciss"]}, ink_distance=ink_distance):
         return assigned
     out["Coss"] = repaired_coss
     return out
@@ -487,6 +490,8 @@ def _repair_leading_steep_crss(
     mask: np.ndarray,
     assigned: dict[str, list[tuple[int, int]]],
     plot: PlotBox,
+    *,
+    ink_distance: np.ndarray | None = None,
 ) -> dict[str, list[tuple[int, int]]]:
     """Recover the near-vertical low-VDS Crss knee in raster charts.
 
@@ -583,7 +588,14 @@ def _repair_leading_steep_crss(
         merged_by_x[x] = y
     repaired_crss = sorted(merged_by_x.items())
     peers = {name: points for name, points in assigned.items() if name in ("Ciss", "Coss")}
-    if not _repair_shape_guard(repaired_crss, crss_by_path, plot, peers=peers, require_bottom=True):
+    if not _repair_shape_guard(
+        repaired_crss,
+        crss_by_path,
+        plot,
+        peers=peers,
+        require_bottom=True,
+        ink_distance=ink_distance,
+    ):
         return assigned
     out["Crss"] = repaired_crss
     return out
@@ -596,8 +608,11 @@ def _repair_shape_guard(
     *,
     peers: dict[str, list[tuple[int, int]]] | None = None,
     require_bottom: bool = False,
+    ink_distance: np.ndarray | None = None,
 ) -> bool:
     if not repaired or not _single_valued_by_x(repaired):
+        return False
+    if ink_distance is not None and _repair_leaves_ink(repaired, original, ink_distance):
         return False
     if not _low_v_nonfolding(repaired, plot):
         return False
@@ -609,6 +624,37 @@ def _repair_shape_guard(
     if require_bottom and peers and not _is_bottom_branch(repair_segment, peers):
         return False
     return True
+
+
+def _repair_leaves_ink(
+    repaired: list[tuple[int, int]],
+    original: list[tuple[int, int]],
+    ink_distance: np.ndarray,
+) -> bool:
+    """True when the spliced segment crosses blank paper.
+
+    A leading repair walks row runs up the left edge, where every curve starts
+    in the same few columns, so the walk can climb onto ANOTHER curve's stroke
+    and then fall back to its own in one column (AGMH022N10H Coss and Crss on
+    Ciss ink, 58 px drop through white; DMN39M1LFVW-7-HXY Crss on Ciss then
+    Coss ink).  Each sample still sits on ink, which is all the shape tests
+    see; the line between them does not.  The changed span is checked together
+    with the samples either side of it, because the splice joins are where the
+    jump hides.
+    """
+
+    changed = _changed_repair_segment(repaired, original)
+    if not changed:
+        return False
+    ordered = sorted(repaired)
+    xs = [x for x, _ in ordered]
+    lo = xs.index(changed[0][0])
+    hi = xs.index(changed[-1][0])
+    window = ordered[max(0, lo - 1) : hi + 2]
+    return any(
+        run["length_px"] >= CONNECTION_OFF_INK_MIN_PX
+        for run in off_ink_runs(ink_distance, window)
+    )
 
 
 def _single_valued_by_x(points: list[tuple[int, int]]) -> bool:

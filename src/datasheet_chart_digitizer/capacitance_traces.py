@@ -11,6 +11,7 @@ from .capacitance_grid_mask import (
     _remove_frame_residual_rails,
     _remove_full_width_horizontal_rails,
 )
+from .capacitance_ink_continuity import ink_distance_map
 from .capacitance_leading_repairs import (  # noqa: F401 -- re-exported
     _changed_repair_runs,
     _changed_repair_segment,
@@ -461,9 +462,18 @@ def extract_trace_components(
         seed_x=seed_x,
         joint_pair_tracking=joint_pair_tracking,
     )
-    assigned = _repair_leading_steep_coss(mask, centers_by_x, assigned, plot)
+    # Leading repairs must prove every splice is on source ink; without a
+    # usable ink raster they cannot, so the panel is refused, not repaired blind.
+    ink_distance = ink_distance_map(gray)
+    if ink_distance is None:
+        raise RuntimeError("no usable source ink raster to verify trace repairs")
+    assigned = _repair_leading_steep_coss(
+        mask, centers_by_x, assigned, plot, ink_distance=ink_distance
+    )
     assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
-    assigned = _repair_leading_steep_crss(mask, assigned, plot)
+    assigned = _repair_leading_steep_crss(
+        mask, assigned, plot, ink_distance=ink_distance
+    )
     assigned = _repair_reseparated_upper_crossing(centers_by_x, assigned, plot)
     before = {k: list(v) for k, v in assigned.items()}
     assigned = repair_crossed_upper_merge(mask, assigned, plot)
