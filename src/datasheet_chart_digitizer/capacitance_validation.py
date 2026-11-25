@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 from .capacitance_ink_continuity import continuity_reasons
+from .capacitance_ink_start import low_v_start_reasons
 from .capacitance_types import AxisCalibration, OutputChargeReference, PlotBox, Trace
 
 # Ciss/Coss/Crss are monotonically non-increasing in Vds, so a trace whose value
@@ -137,6 +138,7 @@ def trace_validation_summary(
     right_end_fractions: dict[str, float] | None = None,
     capacitance_titles_confirmed: bool = False,
     continuity_diagnostics: dict[str, object] | None = None,
+    low_v_start_diagnostics: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Fail closed on incomplete or semantically untrusted C(V) traces.
 
@@ -144,6 +146,8 @@ def trace_validation_summary(
     VDS. Without it a rising trace is never exempted as fall-then-rise.
     ``continuity_diagnostics``: `raster_continuity_diagnostics` output; the
     served line between samples must stay on ink (see that module).
+    ``low_v_start_diagnostics``: `capacitance_ink_start.low_v_start_diagnostics`
+    output; each served trace must start where its printed ink starts.
     """
 
     flat_span_gate = (
@@ -155,6 +159,7 @@ def trace_validation_summary(
     source_support = source_support_diagnostics or {}
     if extraction_method == "raster":
         reasons.extend(continuity_reasons(continuity_diagnostics))
+        reasons.extend(low_v_start_reasons(low_v_start_diagnostics))
     if extraction_method == "raster" and source_support.get("applicable"):
         trace_support = source_support.get("trace_support")
         if isinstance(trace_support, dict):
