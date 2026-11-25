@@ -443,7 +443,9 @@ def extract_trace_components(
     assigned = _repair_coss_ciss_overlap_gap(assigned, plot)
     assigned = _repair_leading_steep_crss(mask, assigned, plot)
     assigned = _repair_reseparated_upper_crossing(centers_by_x, assigned, plot)
+    before = {k: list(v) for k, v in assigned.items()}
     assigned = repair_crossed_upper_merge(mask, assigned, plot)
+    crossed = {k for k in assigned if assigned[k] != before.get(k)}
     if joint_pair_tracking:
         assigned = bridge_flat_ciss_occlusions(assigned, plot)
 
@@ -455,7 +457,8 @@ def extract_trace_components(
         xs = [p[0] for p in points]
         ys = [p[1] for p in points]
         bbox = (min(xs) - plot.x0, min(ys) - plot.y0, max(xs) - min(xs) + 1, max(ys) - min(ys) + 1)
-        traces.append(Trace(name=name, area=len(points), bbox=bbox, points=points))
+        traces.append(Trace(name=name, area=len(points), bbox=bbox, points=points,
+                            repair="crossed_upper_merge" if name in crossed else None))
     return traces
 
 

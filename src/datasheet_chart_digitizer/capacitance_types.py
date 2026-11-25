@@ -35,6 +35,8 @@ class Trace:
     # Original PDF legend-swatch color, retained only when the chart's
     # complete color legend decisively bound all three curve identities.
     source_color_rgb: tuple[float, float, float] | None = None
+    # Set when a geometric trace repair changed this curve's path.
+    repair: str | None = None
 
 
 @dataclass(frozen=True)

@@ -82,3 +82,5 @@ def test_st_superjunction_coss_is_not_served_on_ciss(part, table_coss_pf, tmp_pa
     coss = next(r for r in result["table_check"]["anchors"] if r["name"] == "Coss")
     assert coss["table_pf"] == table_coss_pf
     assert abs(coss["log10_ratio"]) <= TABLE_CHECK_MAX_LOG10_RATIO
+    assert "trace_repaired_crossed_merge" in result["status_reasons"]
+    assert result["status"] != "ok"

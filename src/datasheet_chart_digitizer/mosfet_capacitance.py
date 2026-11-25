@@ -379,6 +379,7 @@ def process_chart(
         )
     extraction_method = "vector"
     vector_selection_method: str | None = None
+    repaired_traces: list[str] = []
     try:
         traces, vector_selection_method = (
             extract_vector_trace_components_with_provenance(chart, image, plot)
@@ -392,6 +393,7 @@ def process_chart(
             seed_x=raster_seed_x,
             joint_pair_tracking=joint_pair_tracking,
         )
+        repaired_traces = sorted(t.name for t in traces if t.repair)
         vector_error = str(vector_exc)
     else:
         vector_error = None
@@ -428,6 +430,11 @@ def process_chart(
         # Unevaluable is not a pass: the served axis could not be checked
         # against its own gridlines, so the chart is not reported ok.
         status_reasons.append("axis_grid_check_unverified")
+        if status == "ok":
+            status = "unverified"
+    if repaired_traces:
+        # The crossed-merge repair is not yet an approved class: review its overlay.
+        status_reasons.append("trace_repaired_crossed_merge")
         if status == "ok":
             status = "unverified"
     physical_output_available = axis_trusted and validation["status"] == "pass"
