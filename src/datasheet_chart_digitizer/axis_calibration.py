@@ -423,6 +423,39 @@ def power_tick_words(page, words=None):
     return kept, [words[i] for i in sorted(unread)]
 
 
+def join_digit_groups(words):
+    """Join a label printed with digit-group spaces ("10 000") into one word.
+
+    The word stream splits it at the space, leaving "10" (a false duplicate of
+    the real 10 label) and "000". A 1-3 digit word followed on its line, within
+    about a space (0.8 digit width), by a 3-digit word is one number. Only for
+    a stacked label column: dense X tick rows ("100 150") are as close.
+    """
+    words = [tuple(w) for w in words]
+    order = sorted(range(len(words)), key=lambda i: (round(words[i][1], 1), words[i][0]))
+    out, used = {}, set()
+    for i in order:
+        if i in used or not re.fullmatch(r"[1-9]\d{0,2}", words[i][4].strip()):
+            continue
+        head = words[i]
+        height = head[3] - head[1]
+        text, x1 = head[4].strip(), head[2]
+        digit = (head[2] - head[0]) / len(text)
+        while True:
+            nxt = next((j for j in order if j not in used and j != i
+                        and re.fullmatch(r"\d{3}", words[j][4].strip())
+                        and abs(words[j][1] - head[1]) <= 0.15 * height
+                        and abs(words[j][3] - head[3]) <= 0.15 * height
+                        and 0.0 < words[j][0] - x1 <= 0.8 * digit), None)
+            if nxt is None:
+                break
+            used.add(nxt)
+            text, x1 = text + words[nxt][4].strip(), words[nxt][2]
+        if x1 != head[2]:
+            out[i] = (head[0], head[1], x1, head[3], text, *head[5:])
+    return [out.get(i, w) for i, w in enumerate(words) if i not in used]
+
+
 def _inside_box(cx: float, cy: float, bbox: tuple[float, float, float, float]) -> bool:
     return bbox[0] - 1.0 <= cx <= bbox[2] + 1.0 and bbox[1] - 1.0 <= cy <= bbox[3] + 1.0
 
@@ -669,6 +702,9 @@ def calibrate_axes(page, x_row_band, y_label_x_band, plot_y_band, x_col_band=Non
 
     def in_y(cx, cy):
         return y_label_x_band[0] < cx < y_label_x_band[1] and plot_y_band[0] < cy < plot_y_band[1]
+
+    y_words = [w for w in words if in_y((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)]
+    words = [w for w in words if w not in y_words] + join_digit_groups(y_words)
 
     bad = [w[4] for w in unread if in_x((w[0] + w[2]) / 2, (w[1] + w[3]) / 2) or in_y((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)]
     if bad:

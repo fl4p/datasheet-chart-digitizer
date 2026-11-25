@@ -1401,9 +1401,13 @@ def _parse_y_decades_from_chart_text(text: str, x_start_index: int) -> list[floa
     if x_start_index > 0:
         tokens = tokens[:x_start_index]
     adjacent = _numbers_adjacent_in_text(prefix)
+    # "10 000" is ten thousand in digit groups, not 10^0
+    grouped = [bool(re.fullmatch(r"\d{3}", m.group(0))) for m in _NUMBER_TOKEN_RE.finditer(prefix)]
 
     decades: list[float] = []
     for index, (a, b) in enumerate(zip(tokens, tokens[1:])):
+        if any(grouped[index : index + 2]):
+            continue
         # A split "10 5" label prints the mantissa and exponent side by side.
         # Numbers separated by PROSE are not a label: Infineon's caption number
         # pairs with the condition line ("10 Typ. capacitances ... V GS = 0 V")

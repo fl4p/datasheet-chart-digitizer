@@ -60,7 +60,11 @@ from .capacitance_axis import (
     reject_bad_position_calibration,
     trace_data_points,
 )
-from .capacitance_assignment import capacitance_table_check, select_trace_assignment
+from .capacitance_assignment import (
+    TABLE_CHECK_MAX_LOG10_RATIO,
+    capacitance_table_check,
+    select_trace_assignment,
+)
 from .capacitance_grid_anchor import grid_check_problems
 from .capacitance_overlay import _fmt_optional, draw_axis_debug_overlay, draw_trace_overlay
 from .capacitance_plot_box import find_capacitance_plot_box_with_method
@@ -169,6 +173,23 @@ from .capacitance_vector import (
 )
 from .axis_title_identity import capacitance_panel_titles
 from .chart_classifier import strong_noncapacitance_panel_kind
+
+
+def table_contradicts_axis_scale(table_check: dict, calibration: AxisCalibration | None) -> bool:
+    """A Y axis no gridline check verified, against which every evaluated table
+    anchor (at least two) is inconsistent on the same side, the worst by at least a
+    decade: a scale fault, not a chart/table difference. A grid-verified axis is
+    never overruled by the table."""
+    check = getattr(calibration, "y_grid_check", None)
+    if calibration is None or (check is not None and check.get("status") == "verified"):
+        return False
+    ratios = [row["log10_ratio"] for row in table_check["anchors"] if row["log10_ratio"] is not None]
+    return (
+        len(ratios) >= 2
+        and (all(r > 0 for r in ratios) or all(r < 0 for r in ratios))
+        and all(abs(r) > TABLE_CHECK_MAX_LOG10_RATIO for r in ratios)
+        and max(abs(r) for r in ratios) >= 1.0
+    )
 
 
 def _axis_result_is_trusted(
@@ -472,6 +493,18 @@ def process_chart(
         # Recorded, not gating: chart and table may differ for real (AGM15N10D-G
         # Ciss 315 pF at 100 kHz in the chart vs 520 pF at 1 MHz in the table).
         status_reasons.append("table_check_inconsistent")
+    if axis_trusted and table_contradicts_axis_scale(table_check, axis_calibration):
+        axis_trusted = False
+        physical_output_available = False
+        trace_data = {}
+        status, reasons = _capacitance_status(False, extraction_method, validation)
+        status_reasons = reasons + [r for r in status_reasons if r not in reasons]
+        status_reasons.append("axis_scale_contradicted_by_table")
+        axis_warning = (
+            "every spec-table anchor lies on one side of the curves, the worst a decade or "
+            "more, on an axis no gridline check verified; physical vds_V/cap_pF columns "
+            "and Qoss validation are disabled"
+        )
     overlay = draw_trace_overlay(
         image,
         plot,
