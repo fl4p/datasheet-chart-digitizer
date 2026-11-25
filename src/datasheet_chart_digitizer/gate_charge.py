@@ -292,18 +292,26 @@ def digitize_gate_charge(
                                         "gate_charge_unit_unresolved",
                                         "vpl_extrapolated_beyond_ticks",
                                         "vpl_outside_expected_range",
+                                        "vpl_unresolved",
                                     }
+                                    and not item.startswith("y_axis_grid_check_")
                                 )
-                                grid_diagnostics = (
-                                    ()
-                                    if seated.check.status == "verified"
-                                    else (f"y_axis_grid_check_{seated.check.status}",)
+                                diagnostics = tuple(
+                                    dict.fromkeys(
+                                        (
+                                            *retained_diagnostics,
+                                            *bounded_diagnostics,
+                                            *_recalibrated_vpl_diagnostics(
+                                                result, vpl, y_ticks_px, seated.check.status
+                                            ),
+                                        )
+                                    )
                                 )
-                                curve_blocked = bool(CURVE_BLOCKING_DIAGNOSTICS & set(retained_diagnostics))
                                 result = replace(
                                     result,
                                     vpl=vpl,
-                                    status="ok" if not (grid_diagnostics or curve_blocked) else "low_confidence",
+                                    status=_gate_status(diagnostics),
+                                    y_pending_table=False,
                                     y_tick_count=len(y_ticks_px),
                                     y_ticks_px=y_ticks_px,
                                     x_ticks_px=result.x_ticks_px or carried_x_ticks(ocr_result, result),
@@ -317,15 +325,7 @@ def digitize_gate_charge(
                                     ),
                                     x_tick_unit=x_tick_unit,
                                     y_grid=seated.payload(),
-                                    diagnostics=tuple(
-                                        dict.fromkeys(
-                                            (
-                                                *retained_diagnostics,
-                                                *bounded_diagnostics,
-                                                *grid_diagnostics,
-                                            )
-                                        )
-                                    ),
+                                    diagnostics=diagnostics,
                                 )
                 if result is not None and result.status in {"axis_assumed", "axis_grid_inferred"} and not (panel.diagram >= 900 and "waveform" in panel.title.lower()):
                     # Raster charts often retain accurate numeric labels that the
@@ -520,6 +520,28 @@ def _detach_transient_panel_artifacts(panel: ChartPanel) -> ChartPanel:
     return replace(panel, crop_png="")
 
 
+def _recalibrated_vpl_diagnostics(result, vpl, y_ticks_px, grid_status: str) -> tuple[str, ...]:
+    """The value gates of ``_digitize_panel`` on a Vpl re-read through seated
+    ticks (``recalibrate_gate_result`` bounds the extrapolation itself)."""
+    if vpl is None or not math.isfinite(vpl):
+        return ("vpl_unresolved",)
+    found = []
+    if not (_vpl_is_plausible(vpl) or _depletion_vpl_is_source_plausible(
+        vpl, result.vpl_y_px, list(result.curve_px), result.plot_box_px, list(y_ticks_px)
+    )):
+        found.append("vpl_outside_expected_range")
+    if grid_status != "verified":
+        found.append(f"y_axis_grid_check_{grid_status}")
+    return tuple(found)
+
+
+def _numeric_label_columns_on_both_sides(text_page, crop_rect, scale, plot_box) -> bool:
+    return all(
+        len(_local_y_ticks_for_plot(text_page, crop_rect, scale, plot_box, side=side)) >= 2
+        for side in ("left", "right")
+    )
+
+
 def _vpl_is_plausible(vpl: float | None) -> bool:
     return vpl is not None and 1.0 <= abs(float(vpl)) <= 12.0
 
@@ -529,6 +551,41 @@ CURVE_CLIPPED_DIAGNOSTIC = "plot_box_clips_source_curve"
 CURVE_BLOCKING_DIAGNOSTICS = frozenset(
     {"non_monotone_gate_curve", CURVE_CLIPPED_DIAGNOSTIC, "low_trace_confidence", BLEND_DIAGNOSTIC}
 )
+DUAL_Y_IDENTITY_DIAGNOSTIC = "y_axis_dual_column_identity_unverified"
+# Every finding that keeps a traced Vpl from "ok"; y_axis_grid_check_* by prefix.
+LOW_CONFIDENCE_DIAGNOSTICS = CURVE_BLOCKING_DIAGNOSTICS | {
+    "curve_missing_initial_ramp", "curve_missing_axis_origin", BRANCH_HOP_DIAGNOSTIC,
+    "vpl_outside_expected_range", "vpl_extrapolated_beyond_ticks", "plot_box_aspect_implausible",
+    "y_axis_title_names_drain_not_gate", DUAL_Y_IDENTITY_DIAGNOSTIC,
+}
+
+
+def _status_blockers(diagnostics) -> set[str]:
+    return {
+        item for item in diagnostics
+        if item in LOW_CONFIDENCE_DIAGNOSTICS or item.startswith("y_axis_grid_check_")
+    }
+
+
+def _gate_status(diagnostics) -> str:
+    items = set(diagnostics)
+    if items & {"vpl_unresolved", "insufficient_curve_points", "gate_charge_unit_unresolved"}:
+        return "unresolved"
+    if "axis_assumed_0_10" in items:
+        return "axis_assumed"
+    if "axis_inferred_from_regular_grid" in items:
+        return "axis_grid_inferred"
+    return "low_confidence" if _status_blockers(items) else "ok"
+
+
+def _y_pending_table(diagnostics, y_grid: dict | None) -> bool:
+    """The one blocker a spec-table Qg agreement may lift: a VGS axis bound to
+    its rules by count and order whose check is unverified (never failed)."""
+    return (
+        _gate_status(diagnostics) == "low_confidence"
+        and _status_blockers(diagnostics) == {"y_axis_grid_check_unverified"}
+        and ((y_grid or {}).get("anchoring") or {}).get("binding") == "ordinal_rules"
+    )
 
 
 def _bounded_ocr_diagnostics(panel: ChartPanel) -> tuple[str, ...]:
@@ -998,12 +1055,16 @@ def _digitize_panel(
         diagnostics.append("plot_box_aspect_implausible")
     # Unevaluable is not a pass: a VGS line that misses its rules, or that
     # could not be checked against them, does not make an "ok" Vpl.
-    grid_problem = y_grid is not None and y_grid.check.status != "verified"
-    if grid_problem:
+    if y_grid is not None and y_grid.check.status != "verified":
         diagnostics.append(f"y_axis_grid_check_{y_grid.check.status}")
-    y_axis_contradicted = y_axis_identity == "contradicted"
-    if y_axis_contradicted:
+    if y_axis_identity == "contradicted":
         diagnostics.append("y_axis_title_names_drain_not_gate")
+    elif y_axis_identity != "consistent" and _numeric_label_columns_on_both_sides(
+        axis_text_page, crop_rect, scale, plot_box
+    ):
+        # Dual-y: the nearer column wins, and a VDS column can be the nearer
+        # one. Without a gate title beside it, which column is VGS is unknown.
+        diagnostics.append(DUAL_Y_IDENTITY_DIAGNOSTIC)
     if y_axis_rebound:
         diagnostics.append("y_axis_rebound_to_gate_titled_column")
 
@@ -1014,54 +1075,15 @@ def _digitize_panel(
     elif not _vpl_is_plausible(vpl):
         score -= 12.0
 
-    if vpl is None or len(curve) < 20:
-        status = "unresolved"
-    elif axis_assumed:
-        status = "axis_assumed"
-    elif axis_grid_inferred:
-        status = "axis_grid_inferred"
-    elif (
-        low_trace_confidence
-        or missing_initial_ramp
-        or missing_axis_origin
-        or non_monotone_gate_curve
-        or clipped_curve
-        or branch_cut_short
-        or blended_trace
-        # A value the digitizer itself calls implausible, or one it had to extrapolate
-        # off the end of its ticks, must not be reported as "ok". These two diagnostics
-        # were computed and then dropped on the floor by the status: SUP90140E returned
-        # 28.6 V with status "ok" AND vpl_outside_expected_range, and every consumer
-        # that keys on status -- fetlib's read_charts among them -- stored it as a clean
-        # reading. A status is a provenance claim; it must not claim more than was done.
-        or not vpl_expected_for_source
-        or extrapolated_vpl
-        or implausible_box
-        or grid_problem
-        or y_axis_contradicted
-    ):
-        status = "low_confidence"
-    else:
-        status = "ok"
-    # The ONE blocker a spec-table Qg agreement may lift later: a VGS axis
-    # bound to its rules by count and order (not by registration). Recorded
-    # here, where every other gate is known.
-    y_pending_table = bool(
-        status == "low_confidence"
-        and grid_problem
-        and y_grid is not None
-        and (y_grid.anchoring or {}).get("binding") == "ordinal_rules"
-        and not (
-            low_trace_confidence or missing_initial_ramp or missing_axis_origin
-            or non_monotone_gate_curve or clipped_curve or branch_cut_short
-            or blended_trace or not vpl_expected_for_source or extrapolated_vpl
-            or implausible_box or y_axis_contradicted
-        )
-    )
+    # A status is a provenance claim: every computed finding that blocks "ok"
+    # (SUP90140E: 28.6 V "ok" next to vpl_outside_expected_range) is in
+    # LOW_CONFIDENCE_DIAGNOSTICS, and one function maps them to the status.
+    status = _gate_status(diagnostics)
+    y_pending_table = _y_pending_table(diagnostics, None if y_grid is None else y_grid.payload())
     x_tick_unit = _gate_charge_unit(broad_context)
     if x_tick_unit is None:
         diagnostics.append("gate_charge_unit_unresolved")
-        status = "unresolved"
+        status = _gate_status(diagnostics)
     # An axis seated on its rules is served at those rules. Only an axis with
     # no rule binding keeps the legacy label run stretched onto the box edges
     # (RJK1001DPP-A0#T2: that stretch put the Qg origin 16.6 px off its rule),
@@ -1258,9 +1280,13 @@ def _check_served_qg_axis(
     # A VGS axis bound by rule order is verified by the same table agreement
     # (the reading went through it); if that was the only blocker, the chart
     # is served.
-    if result.y_pending_table and (table.status == "agrees" or plateau_confirms) and grid_payload["status"] == "verified":
-        y_grid = dict(result.y_grid or {})
-        y_check = dict(y_grid.get("grid_check") or {})
+    y_grid = dict(result.y_grid or {})
+    y_check = dict(y_grid.get("grid_check") or {})
+    # an unverified check only: a failed one is a VGS line off its rules
+    if (
+        result.y_pending_table and y_check.get("status") == "unverified"
+        and (table.status == "agrees" or plateau_confirms) and grid_payload["status"] == "verified"
+    ):
         y_check.update(
             status="verified",
             method="ordinal_rules+table_qg" if table.status == "agrees" else "ordinal_rules+table_qgs_qgd",
