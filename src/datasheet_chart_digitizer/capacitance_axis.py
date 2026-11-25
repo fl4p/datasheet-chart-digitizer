@@ -18,7 +18,7 @@ from .axis_calibration import (
 )
 
 from .capacitance_traces import _interp_y
-from .capacitance_grid_anchor import anchor_capacitance_axes_on_grid
+from .capacitance_grid_anchor import anchor_capacitance_axes_on_grid, check_count_bound_axes
 from .capacitance_types import AxisCalibration, GridlineFit, PlotBox, Trace
 from .capacitance_vector import _load_fitz
 from .crop_transform import CropTransform
@@ -777,7 +777,7 @@ def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray,
 
     x_scale = (text_calibration.x_max_v - text_calibration.x_min_v) / max(1, plot.x1 - plot.x0)
     x_offset = text_calibration.x_min_v - x_scale * plot.x0
-    return AxisCalibration(
+    calibration = AxisCalibration(
         x_min_v=text_calibration.x_min_v,
         x_max_v=text_calibration.x_max_v,
         y_min_decade=text_calibration.y_min_decade,
@@ -798,6 +798,20 @@ def infer_gridline_axis_calibration(chart: dict[str, object], image: np.ndarray,
         y_grid_span_fraction=y_fit.span_fraction,
         y_grid_residual_px=y_fit.residual_px,
     )
+    # the values were bound to lines by count: check them at their printed labels
+    fitz = _load_fitz()
+    if fitz is None:
+        raise RuntimeError("PyMuPDF is not available")
+    transform, plot_rect = _plot_rect_pt(chart, image, plot)
+    with fitz.open(Path(str(chart["pdf"]))) as doc:
+        calibration = check_count_bound_axes(
+            calibration, image, plot, doc[int(chart["page"]) - 1], transform, plot_rect
+        )
+    failed = [f"{a}: {c['reason']}" for a, c in (("x", calibration.x_grid_check), ("y", calibration.y_grid_check))
+              if c and c["status"] == "failed"]
+    if failed:
+        raise RuntimeError("grid tier: served mapping misses the labelled lines (" + "; ".join(failed) + ")")
+    return calibration
 
 
 def _major_horizontal_gridline_centers(image: np.ndarray, plot: PlotBox, count: int) -> list[float]:

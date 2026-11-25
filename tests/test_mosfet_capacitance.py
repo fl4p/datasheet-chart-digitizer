@@ -572,6 +572,9 @@ class AxisCalibrationTests(unittest.TestCase):
             y_grid_candidate_count=4,
             y_grid_span_fraction=1.0,
             y_grid_residual_px=0.0,
+            # a served axis needs its gridline check (an unchecked one is untrusted)
+            x_grid_check={"status": "verified", "reason": "", "ticks": []},
+            y_grid_check={"status": "verified", "reason": "", "ticks": []},
         )
         metrics = SimpleNamespace(
             Qoss=1000.0,

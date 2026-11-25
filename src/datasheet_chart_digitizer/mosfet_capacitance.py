@@ -333,14 +333,13 @@ def process_chart(
             + "); physical vds_V/cap_pF columns and Qoss validation are disabled"
         )
     elif grid_unevaluable := [
-        f"{axis}: {check['reason']}"
+        f"{axis}: {check['reason'] if check else 'no grid check on the ' + axis_calibration.source + ' path'}"
         for axis in ("x", "y")
         if axis_trusted and axis_calibration is not None
-        and (check := getattr(axis_calibration, f"{axis}_grid_check")) is not None
-        and check["status"] == "unverified"
-        and not check.get("ticks")
+        and ((check := getattr(axis_calibration, f"{axis}_grid_check")) is None
+             or (check["status"] == "unverified" and not check.get("ticks")))
     ]:
-        # a served axis no labelled tick could be checked on is not served
+        # a served axis no labelled tick could be checked on, or never checked, is not served
         axis_trusted = False
         axis_warning = (
             "served axis grid check evaluated no tick ("

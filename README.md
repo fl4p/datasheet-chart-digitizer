@@ -367,6 +367,14 @@ or more, the axis is treated as mis-scaled. The chart is served untrusted
 (`axis_calibration_untrusted`, `axis_scale_contradicted_by_table`, no physical columns).
 A grid-verified axis is never overruled by the table.
 
+The grid tier (`axis_calibration.source = "grid_text"`, used when the tick-label position
+fit refuses) takes its decades from the chart text and binds them to major gridlines by
+count. Its axes are served only after the gridline check: each consumed tick needs one
+visible printed label in the label band (white or invisible text does not count), and the
+served mapping must put it on the line it names. A missed line refuses the tier; a label
+not found leaves the axis `unverified` and untrusted. A served axis with no gridline check
+at all is untrusted.
+
 ## Coss SPICE Export
 
 For compact storage, keep Coss as adaptive log-space knots rather than a global

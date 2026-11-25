@@ -24,6 +24,7 @@ from dataclasses import replace
 import cv2
 import numpy as np
 
+from .axis_calibration import _exact_number_token, power_tick_words
 from .capacitance_retrace import Frame
 from .capacitance_types import AxisCalibration, PlotBox
 from .gridline_anchor import (
@@ -195,6 +196,78 @@ def check_axis_on_grid(
         gray, served, ticks, frame=_frame(plot), orientation=axis, cross_span=span,
         name=f"capacitance {axis}", broken_rules=True,
     )
+
+
+def _hidden_boxes(page) -> list[tuple[float, float, float, float]]:
+    """Boxes of text a reader cannot see: white fill, zero alpha, or neither
+    filled nor stroked (render mode 3)."""
+    boxes = []
+    for block in page.get_text("dict").get("blocks", []):
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                flags = span.get("char_flags")
+                if (span.get("color") == 0xFFFFFF and not (flags or 0) & 32) or span.get("alpha") == 0 or (
+                    flags is not None and not flags & 48
+                ):
+                    boxes.append(tuple(span["bbox"]))
+    return boxes
+
+
+def _label_position(words, unread, hidden, band, accepts) -> float | None:
+    """Centre (pt, along the axis) of the one visible label *accepts* names in *band*."""
+    (x0, x1), (y0, y1), along = band
+    found = set()
+    for w, is_unread in [(w, False) for w in words] + [(w, True) for w in unread]:
+        cx, cy = (w[0] + w[2]) / 2, (w[1] + w[3]) / 2
+        if not (x0 < cx < x1 and y0 < cy < y1) or not accepts(w[4].strip(), is_unread):
+            continue
+        if any(b[0] <= cx <= b[2] and b[1] <= cy <= b[3] for b in hidden):
+            continue
+        found.add(round(cx if along == "x" else cy, 1))
+    return found.pop() if len(found) == 1 else None
+
+
+def check_count_bound_axes(
+    calibration: AxisCalibration, image: np.ndarray, plot: PlotBox, page, transform, plot_rect
+) -> AxisCalibration:
+    """Check a calibration whose tick values were bound to the plot by count or
+    order, not by label position: find every consumed tick's visible printed
+    label (the position tier's label bands) and check the SERVED mapping at it.
+    An axis with a label not found once stays ``unverified``."""
+    words, unread = power_tick_words(page)
+    hidden = _hidden_boxes(page)
+    y_band = ((plot_rect.x0 - 42.0, plot_rect.x0 - 1.0), (plot_rect.y0 - 8.0, plot_rect.y1 + 8.0), "y")
+    x_band = ((plot_rect.x0 - 24.0, plot_rect.x1 + 12.0), (plot_rect.y1 + 2.0, plot_rect.y1 + 24.0), "x")
+
+    def y_accepts(d):
+        def accepts(text, is_unread):
+            if is_unread:
+                return text == f"10{int(d)}"
+            return text == f"10^{int(d)}" or _exact_number_token(text) == 10.0**d
+        return accepts
+
+    def x_accepts(v):
+        return lambda text, is_unread: not is_unread and _exact_number_token(text) == v
+
+    y_pt = [_label_position(words, unread, hidden, y_band, y_accepts(d)) for d in calibration.y_decades]
+    x_pt = [_label_position(words, unread, hidden, x_band, x_accepts(v)) for v in calibration.x_ticks_v]
+    updates: dict[str, object] = {}
+    if None not in y_pt:
+        updates["y_tick_label_px"] = tuple(transform.to_px(plot_rect.x0, y)[1] for y in y_pt)
+    if None not in x_pt:
+        updates["x_tick_label_px"] = tuple(transform.to_px(x, plot_rect.y1)[0] for x in x_pt)
+    calibration = replace(calibration, **updates)
+    gray = _gray(image)
+    missing = {
+        "x": [f"{v:g}" for v, p in zip(calibration.x_ticks_v, x_pt) if p is None],
+        "y": [f"1e{d:g}" for d, p in zip(calibration.y_decades, y_pt) if p is None],
+    }
+    checks = {
+        axis: GridCheck("unverified", f"capacitance {axis}: no single visible label for {missing[axis]}", None, ())
+        if missing[axis] else check_axis_on_grid(calibration, gray, plot, axis)
+        for axis in ("x", "y")
+    }
+    return replace(calibration, x_grid_check=checks["x"].payload(), y_grid_check=checks["y"].payload())
 
 
 def grid_check_problems(calibration: AxisCalibration | None) -> tuple[list[str], list[str]]:
