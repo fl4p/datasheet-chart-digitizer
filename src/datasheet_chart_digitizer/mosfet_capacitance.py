@@ -378,7 +378,6 @@ def process_chart(
         )
     extraction_method = "vector"
     vector_selection_method: str | None = None
-    repaired_traces: list[str] = []
     try:
         traces, vector_selection_method = (
             extract_vector_trace_components_with_provenance(chart, image, plot)
@@ -392,7 +391,6 @@ def process_chart(
             seed_x=raster_seed_x,
             joint_pair_tracking=joint_pair_tracking,
         )
-        repaired_traces = sorted(t.name for t in traces if t.repair)
         vector_error = str(vector_exc)
     else:
         vector_error = None
@@ -431,11 +429,10 @@ def process_chart(
         status_reasons.append("axis_grid_check_unverified")
         if status == "ok":
             status = "unverified"
-    if repaired_traces:
-        # The crossed-merge repair is not yet an approved class: review its overlay.
-        status_reasons.append("trace_repaired_crossed_merge")
-        if status == "ok":
-            status = "unverified"
+    for trace in traces:
+        # Approved class (packet cv-fixes-2026-11-25-001): recorded, does not gate ok.
+        if trace.repair and isinstance(diagnostics.get(trace.name), dict):
+            diagnostics[trace.name]["repair"] = trace.repair
     physical_output_available = axis_trusted and validation["status"] == "pass"
     # A linear axis can be calibrated perfectly and still be unable to resolve a
     # small trace: GT060N10T's Crss anchor is 16 pF = 0.84 px, so its served
