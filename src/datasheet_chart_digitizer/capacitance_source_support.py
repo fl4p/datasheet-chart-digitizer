@@ -6,10 +6,11 @@ import math
 
 import numpy as np
 
+from .capacitance_ink_continuity import INK_THRESHOLD
 from .capacitance_traces import _raster_source_centers_by_x
 from .capacitance_types import PlotBox, Trace
 
-SOURCE_INK_THRESHOLD = 90
+SOURCE_INK_THRESHOLD = INK_THRESHOLD
 SOURCE_INK_X_RADIUS_PX = 1
 SOURCE_INK_MAX_DISTANCE_PX = 3.0
 SOURCE_INK_MIN_ABSENT_COLUMNS = 8
