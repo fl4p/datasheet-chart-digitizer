@@ -199,7 +199,7 @@ class GateChargeVplTests(unittest.TestCase):
             for x in range(514, 781, 4)
         )
 
-        value, y_px = estimation._estimate_vpl_from_curve(
+        value, y_px, from_slope = estimation._estimate_vpl_from_curve(
             curve,
             mock.MagicMock(y_ticks=[]),
             estimation.pymupdf.Rect(0.0, 0.0, 800.0, 500.0),
@@ -210,6 +210,7 @@ class GateChargeVplTests(unittest.TestCase):
 
         self.assertAlmostEqual(value, 6.05, delta=0.2)
         self.assertAlmostEqual(y_px, 197.5, delta=10.0)
+        self.assertFalse(from_slope)
 
     def test_plateau_resampler_does_not_bridge_steep_x_gap(self) -> None:
         curve = [(0, 400), (4, 396), (8, 392), (200, 200), (204, 196)]

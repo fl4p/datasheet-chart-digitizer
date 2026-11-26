@@ -845,10 +845,14 @@ def _estimate_vpl_from_curve(
     scale: float,
     plot_box: tuple[int, int, int, int],
     local_y_ticks: list[tuple[float, float]] | None = None,
-) -> tuple[float | None, float | None]:
-    """Return (Vpl, y_px) from the traced VGS(Qg) curve."""
+) -> tuple[float | None, float | None, bool]:
+    """Return (Vpl, y_px, from_slope_fit) from the traced VGS(Qg) curve.
+
+    ``from_slope_fit``: no flat plateau stretch was read; y_px is the mean of
+    the middle segment of a 3-line fit, a rising stretch, not a plateau.
+    """
     if len(curve) < 20:
-        return None, None
+        return None, None, False
     x0, y0, x1, y1 = plot_box
     pts = _resample_flat_x_gaps(curve, plot_box)
     xs = np.array([p[0] for p in pts], dtype=float)
@@ -878,15 +882,16 @@ def _estimate_vpl_from_curve(
         xfrac = xr / max(1.0, x1 - x0)
         score = 3.0 * xfrac / (flatness + 0.01) + min(pre_rise, post_rise) / max(1.0, y1 - y0) - 8.0 * rel_x
         candidates.append((score, rel_x, float(np.median(ys[i:j])), yr, i, j))
-    if not candidates:
+    from_slope = not candidates
+    if from_slope:
         if middle_y is None:
-            return None, None
+            return None, None, False
         y_px = middle_y
         if local_y_ticks:
             local_v = _v_from_local_ticks(local_y_ticks, y_px, rect, scale)
             if local_v is not None:
-                return local_v, y_px
-        return _v_from_y_pixel(chart, rect, scale, y_px), y_px
+                return local_v, y_px, from_slope
+        return _v_from_y_pixel(chart, rect, scale, y_px), y_px, from_slope
     best_score = max(c[0] for c in candidates)
     plausible = [c for c in candidates if c[0] >= 0.70 * best_score]
     if not plausible:
@@ -897,12 +902,12 @@ def _estimate_vpl_from_curve(
         and candidate_yr > 0.010 * max(1, y1 - y0)
         and abs(middle_y - y_px) > 0.035 * max(1, y1 - y0)
     ):
-        y_px = middle_y
+        y_px, from_slope = middle_y, True
     if local_y_ticks:
         local_v = _v_from_local_ticks(local_y_ticks, y_px, rect, scale)
         if local_v is not None:
-            return local_v, y_px
-    return _v_from_y_pixel(chart, rect, scale, y_px), y_px
+            return local_v, y_px, from_slope
+    return _v_from_y_pixel(chart, rect, scale, y_px), y_px, from_slope
 
 
 # axis titles sit beyond the label column, within this reach of the frame

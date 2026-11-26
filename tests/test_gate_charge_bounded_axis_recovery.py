@@ -16,7 +16,6 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
         cases = {
             "infineon/IRFB4410ZGPBF.pdf": 5.14,
             "infineon/IRFB4410ZPBF.pdf": 5.14,
-            "infineon/IRFBA90N20DPBF.pdf": 6.19,
             "infineon/IRLB4030PBF.pdf": 3.58,
             "mcc/MCPF90N12A-BP.pdf": 3.88,
             "rohm/RX3P10BBHC16.pdf": 4.01,
@@ -58,7 +57,10 @@ class GateChargeBoundedAxisRecoveryTests(unittest.TestCase):
         #   ~45 nC and then rides the falling VDS stroke to 0 V:
         #   non_monotone_gate_curve.
         # Their Vpl reads were right; the served curves were not.
+        # IRFBA90N20DPBF p4 (was 6.19 V): the plateau rises 5.7 -> 6.6 V with no
+        #   flat stretch; Vpl is the mean of the 3-line fit's middle segment.
         withheld = {
+            "infineon/IRFBA90N20DPBF.pdf": "vpl_from_slope_fallback",
             "nce/NCE0160G.pdf": "plot_box_clips_source_curve",
             "st/STH240N10F7-2.pdf": "plot_box_clips_source_curve",
             "toshiba/TK72E12N1.pdf": "non_monotone_gate_curve",

@@ -166,6 +166,11 @@ ticks on the horizontal rules, the Qg ticks on the vertical rules or bottom-fram
 curve gets `points_available`. A Qg axis that failed or could not be checked withholds the
 points, never the Vpl.
 
+Vpl is the median of a flat window between two rises. When the curve has no such window,
+or that window is not flat and a 3-line fit's middle segment sits elsewhere, Vpl is the mean of
+that middle segment (`vpl_from_slope_fallback`): a rising stretch, not a measured plateau (a
+label over the plateau, a sloped SiC plateau, a soft knee). Such a chart is never `ok`.
+
 The served `plot_box_px` agrees with the served rules (`gate_charge_plot_box`): an edge across
 a seated axis is bound to its outermost served rule, unless a full-span rule continuous with
 the frame lies further out (an unlabelled terminal interval: within one pitch, or up to three
@@ -182,9 +187,11 @@ it with typ (tolerance 3 % of typ + half the printed resolution). Tri-state: `ag
 When the labels do not register on one grid (a raster grid off a straight line by a pixel or
 two; a label run printed at a different pitch from its grid), the axis is bound to its rules
 by **count and order** (`anchoring.binding = "ordinal_rules"`: exactly one solid rule per label,
-uniform rules and labels, pitches within 10 %). Such an axis is `verified`
-(`grid_check.method = "ordinal_rules+table_qg"`) only when the table check `agrees`; otherwise it
-stays unverified. On an axis the grid check verified, the table check is recorded only: on the
+uniform rules and labels, pitches within 10 %). Such an axis whose check is `unverified` becomes
+`verified` only when the table check `agrees` (`grid_check.method = "ordinal_rules+table_qg"`), or
+when the plateau on the same curve agrees with the table's Qgs and Qgd and the Qg typ is
+unevaluable or within 10 % (`ordinal_rules+table_qgs_qgd`); otherwise it stays unverified. A
+`failed` check (a served tick off its rule) is never lifted, on either axis. On an axis the grid check verified, the table check is recorded only: on the
 human-verified charts table and printed curve disagree beyond the tolerance on ~7 % of charts.
 
 **Dual-y charts.** When the nearer VGS label column's title names the drain (VDS), the column on

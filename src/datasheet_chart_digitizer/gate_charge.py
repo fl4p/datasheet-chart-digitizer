@@ -552,11 +552,13 @@ CURVE_BLOCKING_DIAGNOSTICS = frozenset(
     {"non_monotone_gate_curve", CURVE_CLIPPED_DIAGNOSTIC, "low_trace_confidence", BLEND_DIAGNOSTIC}
 )
 DUAL_Y_IDENTITY_DIAGNOSTIC = "y_axis_dual_column_identity_unverified"
+# no flat plateau stretch was read: Vpl is the mean of a rising segment
+VPL_SLOPE_FALLBACK_DIAGNOSTIC = "vpl_from_slope_fallback"
 # Every finding that keeps a traced Vpl from "ok"; y_axis_grid_check_* by prefix.
 LOW_CONFIDENCE_DIAGNOSTICS = CURVE_BLOCKING_DIAGNOSTICS | {
     "curve_missing_initial_ramp", "curve_missing_axis_origin", BRANCH_HOP_DIAGNOSTIC,
     "vpl_outside_expected_range", "vpl_extrapolated_beyond_ticks", "plot_box_aspect_implausible",
-    "y_axis_title_names_drain_not_gate", DUAL_Y_IDENTITY_DIAGNOSTIC,
+    "y_axis_title_names_drain_not_gate", DUAL_Y_IDENTITY_DIAGNOSTIC, VPL_SLOPE_FALLBACK_DIAGNOSTIC,
 }
 
 
@@ -975,7 +977,7 @@ def _digitize_panel(
         per_vdd_error = f"per_vdd_error:{type(error).__name__}:{error}"[:200]
     # A switching trace replaced under a shared plateau keeps the plateau it
     # was read on: same plateau, so the served Vpl must not move.
-    vpl, vpl_y_px = _estimate_vpl_from_curve(
+    vpl, vpl_y_px, vpl_from_slope = _estimate_vpl_from_curve(
         traced_curve if legacy_rule.startswith("switching") else curve,
         panel, crop_rect, scale, plot_box, local_y_ticks,
     )
@@ -983,6 +985,8 @@ def _digitize_panel(
         vpl = None
 
     diagnostics: list[str] = []
+    if vpl_from_slope:  # also with vpl None: a recalibration re-reads vpl_y_px
+        diagnostics.append(VPL_SLOPE_FALLBACK_DIAGNOSTIC)
     vpl_expected_for_source = _vpl_is_plausible(vpl) or _depletion_vpl_is_source_plausible(
         vpl, vpl_y_px, curve, plot_box, local_y_ticks
     )
@@ -1173,14 +1177,15 @@ def _check_served_qg_axis(
     VDD/VDS, read at the table's VGS through the served axes, against the
     table's Qg typ. It is the deciding evidence ONLY for an axis bound to its
     rules by count and order (``ordinal_rules``, when the labels do not
-    register on one grid): agreement verifies it (both axes it read through),
-    anything else leaves it unverified. On an axis the grid check verified it
+    register on one grid) whose check is unverified: agreement verifies it
+    (both axes it read through). A failed check (a served tick off its rule)
+    is never lifted. On an axis the grid check verified it
     is recorded, not applied: on Fab's verified charts the table and the
     printed curve disagree by more than the tolerance on ~11 % of charts
     (up to 19 %, FDPF55N06), so it cannot overrule the rules.
 
     Plateau check (``gate_charge_table_check.plateau_check``): run only for an
-    ordinal axis the Qg check did not confirm. The plateau's start and length
+    ordinal axis whose Qg check is unverified. The plateau's start and length
     on the same curve against the table's Qgs / Qgd; agreement verifies the
     axis when the Qg typ is unevaluable or off by at most
     ``PLATEAU_MAX_QG_REL`` (an ordinal binding fails in whole steps, far
@@ -1211,10 +1216,14 @@ def _check_served_qg_axis(
             rows, per_vdd=result.per_vdd, legacy_curve=result.curve_px,
             x_ticks=result.x_ticks_px, y_ticks=result.y_ticks_px,
         ) if result.x_tick_unit is not None else _TableCheck("not_evaluable", "Qg unit unresolved")
-    x_ordinal = (previous.get("anchoring") or {}).get("binding") == "ordinal_rules"
+    # only an unverified check may be lifted: a failed one is a Qg rule missed
+    x_pending_table = (
+        (previous.get("anchoring") or {}).get("binding") == "ordinal_rules"
+        and check.status == "unverified"
+    )
     grid_payload = check.payload()
     plateau = None
-    if x_ordinal and check.status != "verified" and table.status != "agrees":
+    if x_pending_table and table.status != "agrees":
         try:
             qg_rows = spec_rows() if callable(spec_rows) else _parse_qg_spec_rows(result.pdf)
             splits = split_rows() if callable(split_rows) else _parse_charge_split_rows(result.pdf)
@@ -1230,7 +1239,7 @@ def _check_served_qg_axis(
         and abs(table.delta_rel) <= _PLATEAU_MAX_QG_REL
     )
     plateau_confirms = plateau is not None and plateau.status == "agrees" and qg_within_band
-    if x_ordinal and check.status != "verified":
+    if x_pending_table:
         if plateau_confirms:
             grid_payload = {
                 **grid_payload,
