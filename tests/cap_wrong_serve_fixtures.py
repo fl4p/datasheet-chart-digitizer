@@ -12,13 +12,15 @@ from datasheet_chart_digitizer.capacitance_types import CapAnchor, PlotBox, Trac
 
 FIXTURES = Path(__file__).parent / "fixtures" / "cap_wrong_serve"
 
-# Spec-table anchors main parsed from each PDF (none for G6N90F and DMN39M1).
+# Spec-table anchors main parsed from each PDF (none for G6N90F, DMN39M1, 4435).
 ANCHORS: dict[str, dict[str, tuple[float, float]]] = {
     "G6N90F": {},
     "AGMH022N10H": {"Ciss": (11500.0, 50.0), "Coss": (1480.0, 50.0), "Crss": (75.0, 50.0)},
     "DMN39M1LFVW-7-HXY.unicoded": {},
     "PSMN020-30MLC": {"Ciss": (430.0, 15.0), "Coss": (120.0, 15.0), "Crss": (70.0, 15.0)},
     "SP010N02GHTF": {"Ciss": (13420.0, 50.0), "Coss": (2034.0, 50.0), "Crss": (48.0, 50.0)},
+    "4435": {},
+    "BSC320N20NS3GATMA1": {"Ciss": (1770.0, 100.0), "Coss": (135.0, 100.0), "Crss": (4.0, 100.0)},
 }
 
 

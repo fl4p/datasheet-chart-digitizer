@@ -79,6 +79,7 @@ from .capacitance_refs import (
     supplied_anchor_table_installed,
 )
 from .capacitance_ink_continuity import raster_continuity_diagnostics
+from .capacitance_ink_start import low_v_start_diagnostics
 from .capacitance_source_support import raster_source_support_diagnostics
 from .capacitance_traces import (
     SHARED_CISS_COSS_DISTANCE_FRACTION,
@@ -413,6 +414,11 @@ def process_chart(
         if extraction_method == "raster"
         else {"applicable": False, "reason": "vector_extraction"}
     )
+    low_v_start = (
+        low_v_start_diagnostics(gray, plot, traces)
+        if extraction_method == "raster"
+        else {"applicable": False, "reason": "vector_extraction"}
+    )
     diagnostics = trace_semantic_diagnostics(traces, plot)
     # Positive C-vs-VDS title evidence is required before a rising trace may
     # be read as a superjunction fall-then-rise rather than a mis-seated panel.
@@ -426,6 +432,7 @@ def process_chart(
         trace_right_end_fractions(traces, plot),
         capacitance_titles_confirmed=bool(panel_titles["confirmed"]),
         continuity_diagnostics=continuity_diagnostics,
+        low_v_start_diagnostics=low_v_start,
     )
     status, status_reasons = _capacitance_status(
         axis_trusted, extraction_method, validation
@@ -754,6 +761,7 @@ def process_chart(
         "shared_collapse_spans": shared_spans,
         "source_support_diagnostics": source_support_diagnostics,
         "continuity_diagnostics": continuity_diagnostics,
+        "low_v_start_diagnostics": low_v_start,
         "shared_collapse_thresholds": {
             "distance_fraction_of_short_plot_side": SHARED_CISS_COSS_DISTANCE_FRACTION,
             "minimum_span_fraction": SHARED_CISS_COSS_MIN_SPAN_FRACTION,

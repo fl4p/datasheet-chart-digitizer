@@ -9,6 +9,29 @@ FULL_WIDTH_HORIZONTAL_RAIL_MIN_OCCUPANCY = 0.80
 FRAME_RESIDUAL_MIN_OCCUPANCY = 0.50
 FRAME_RESIDUAL_BAND_PX = 12
 BLACK_GRID_MIN_FULL_SPAN_RULES = 3
+# Frame margin the raster tracer blanks on every side of the plot ROI.
+TRACE_FRAME_MARGIN_FRACTION = 0.012
+TRACE_FRAME_MARGIN_MIN_PX = 3
+
+
+def trace_frame_margin_px(width: int, height: int) -> int:
+    """Pixels the raster tracer blanks inside each plot edge (no trace there)."""
+
+    return max(
+        TRACE_FRAME_MARGIN_MIN_PX,
+        int(round(min(width, height) * TRACE_FRAME_MARGIN_FRACTION)),
+    )
+
+
+def _column_runs(column: np.ndarray) -> list[tuple[int, int]]:
+    """(top, bottom) of each contiguous ink run, inclusive, top to bottom."""
+    ys = np.flatnonzero(column)
+    if len(ys) == 0:
+        return []
+    breaks = np.flatnonzero(np.diff(ys) > 1)
+    starts = np.concatenate(([ys[0]], ys[breaks + 1]))
+    ends = np.concatenate((ys[breaks], [ys[-1]]))
+    return [(int(a), int(b)) for a, b in zip(starts, ends)]
 
 
 def _dark_grid_rule_evidence(dark: np.ndarray) -> bool:

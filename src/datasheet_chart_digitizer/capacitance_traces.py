@@ -7,9 +7,11 @@ from dataclasses import replace
 import cv2
 import numpy as np
 from .capacitance_grid_mask import (
+    _column_runs,
     _dark_grid_rule_evidence,
     _remove_frame_residual_rails,
     _remove_full_width_horizontal_rails,
+    trace_frame_margin_px,
 )
 from .capacitance_ink_continuity import ink_distance_map
 from .capacitance_leading_repairs import (  # noqa: F401 -- re-exported
@@ -531,7 +533,7 @@ def _raster_source_centers_by_x(
     # loses those columns and fails toward `short_x_span`, never toward a
     # confident wrong value.
     dark = _remove_frame_residual_rails(dark)
-    margin = max(3, int(round(min(plot.width, plot.height) * 0.012)))
+    margin = trace_frame_margin_px(plot.width, plot.height)
     dark[:margin, :] = 0
     dark[-margin:, :] = 0
     dark[:, :margin] = 0
@@ -544,17 +546,6 @@ def _raster_source_centers_by_x(
         for x in range(mask.shape[1])
     ]
     return mask, centers_by_x
-
-
-def _column_runs(column: np.ndarray) -> list[tuple[int, int]]:
-    """(top, bottom) of each contiguous ink run, inclusive, top to bottom."""
-    ys = np.flatnonzero(column)
-    if len(ys) == 0:
-        return []
-    breaks = np.flatnonzero(np.diff(ys) > 1)
-    starts = np.concatenate(([ys[0]], ys[breaks + 1]))
-    ends = np.concatenate((ys[breaks], [ys[-1]]))
-    return [(int(a), int(b)) for a, b in zip(starts, ends)]
 
 
 def _split_touching_bottom_pair(
