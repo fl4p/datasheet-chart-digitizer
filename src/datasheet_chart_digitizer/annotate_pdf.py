@@ -261,6 +261,12 @@ def _process_indexed_panel(
     )
     if "table_check" in result:
         record["table_check"] = result["table_check"]
+    per_trace = result.get("diagnostics")
+    repairs = {
+        name: d["repair"] for name, d in per_trace.items() if isinstance(d, dict) and d.get("repair")
+    } if isinstance(per_trace, dict) else {}
+    if repairs:
+        record["repairs"] = repairs
     return record
 
 

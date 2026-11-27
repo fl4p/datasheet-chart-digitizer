@@ -43,7 +43,7 @@ def draw_trace_overlay(
         label_at = pts[min(len(pts) - 1, max(0, int(len(pts) * 0.78)))]
         cv2.putText(
             overlay,
-            trace.name,
+            f"{trace.name} (repaired)" if trace.repair else trace.name,
             (label_at[0] + 5, max(18, label_at[1] - 6)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,

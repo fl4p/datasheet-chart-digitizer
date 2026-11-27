@@ -85,3 +85,27 @@ def test_st_superjunction_coss_is_not_served_on_ciss(part, table_coss_pf, tmp_pa
     assert result["diagnostics"]["Coss"]["repair"] == "crossed_upper_merge"
     assert "trace_repaired_crossed_merge" not in result["status_reasons"]
     assert result["status"] == "ok"
+
+
+def test_repair_reaches_the_review_record_and_overlay(tmp_path):
+    pdf = LIB / "STB36N60M6.pdf"
+    if not pdf.exists():
+        pytest.skip("pwr-mosfet-lib datasheets not available")
+    import cv2
+    from datasheet_chart_digitizer.annotate_pdf import _process_indexed_panel
+    from datasheet_chart_digitizer.find_charts import process_pdf
+
+    panel = next(p for p in process_pdf(pdf, tmp_path, 220) if p.kind == "capacitances")
+    record = _process_indexed_panel(panel, tmp_path, pdf)
+    assert record["repairs"] == {"Coss": "crossed_upper_merge"}
+
+    from dataclasses import replace
+    from datasheet_chart_digitizer.capacitance_overlay import draw_trace_overlay
+    from datasheet_chart_digitizer.capacitance_types import PlotBox, Trace
+
+    plot = PlotBox(10, 10, 190, 190)
+    image = np.full((200, 200, 3), 255, np.uint8)
+    trace = Trace("Coss", 150, (20, 100, 170, 100), [(20 + i, 100) for i in range(150)])
+    plain = draw_trace_overlay(image, plot, [trace])
+    marked = draw_trace_overlay(image, plot, [replace(trace, repair="crossed_upper_merge")])
+    assert (cv2.absdiff(plain, marked) > 0).any()

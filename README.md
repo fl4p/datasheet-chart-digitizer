@@ -386,6 +386,11 @@ not change the status, so a C(V) chart can be `ok` with that reason: chart and t
 legitimately differ (e.g. measured at 100 kHz vs 1 MHz), so check the overlay, which
 labels each anchor `[agrees]`, `[MISMATCH]` or `[unchecked]`.
 
+A curve whose path a geometric repair changed (e.g. Coss split off a crossed Ciss/Coss
+merge) carries `diagnostics[<trace>]["repair"]`; the annotate record lists them under
+`repairs` and the overlay labels the curve `<name> (repaired)`. A repair does not change
+the status.
+
 One exception gates: when the served Y axis has no verified gridline check and every
 evaluated anchor (at least two) is `inconsistent` on the same side, the worst by a decade
 or more, the axis is treated as mis-scaled. The chart is served untrusted
