@@ -143,7 +143,11 @@ when every curve is within ±10 % of the printed law at the reference flux, else
 Y-axis title the plot frame owns; without one, the panel text must name exactly one unit, else
 the chart refuses. A body-diode curve that runs on past the served plot box keeps the chart
 `unverified`; a log frame past the last labelled decade is served when its rule and the minor
-lines before it sit on the axis's k·10^n ladder.
+lines before it sit on the axis's k·10^n ladder. A linear frame past the last label is served
+when the labels are uniform (fit residual ≤ 1.5 px), the frame is one or two whole label steps
+out and the full-span rules up to it repeat the subdivision of the last labelled interval
+(each within 2 px, none missing or extra), and only on an axis whose served-grid check is
+verified; any other frame keeps the chart `unverified`.
 
 `digitize-vpl` is standalone and uses the package's generic chart finder. Its
 package-owned experimental `GateChargeResult` records the selected panel, Vpl

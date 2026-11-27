@@ -291,6 +291,16 @@ def assign_temperatures(
         beyond = [current_axis.value(px) for px in ((plot.x0, plot.x1) if voltage_on_y else (plot.y0, plot.y1))
                   if px < ticks[0] - 2.0 or px > ticks[-1] + 2.0]
         current_bounds = [min([current_bounds[0], *beyond]), max([current_bounds[1], *beyond])]
+    # linear edges the calibration served out to a lattice frame past the last label
+    frame_edges = getattr(calibration, "frame_edges", ())
+    for bounds, axis, names in (
+        (voltage_bounds, voltage_axis, "y0 y1" if voltage_on_y else "x0 x1"),
+        (current_bounds, current_axis, "x0 x1" if voltage_on_y else "y0 y1"),
+    ):
+        for name in names.split():
+            if name in frame_edges:
+                value = axis.value(getattr(calibration.plot, name))
+                bounds[:] = [min(bounds[0], value), max(bounds[1], value)]
     data = []
     for curve in curves_px:
         points = []

@@ -115,12 +115,20 @@ class TruncatedBodyDiodeTests(unittest.TestCase):
     def test_unlabelled_end_interval_is_not_truncation(self) -> None:
         # STW46NF30 Figure 13: curves run past the last labelled current
         # (30 A) into the unlabelled end interval. Not truncation (nothing
-        # labelled is missing), but the serve is cropped, so not ok.
+        # labelled is missing). The frame there (40 A) sits two whole steps
+        # out with the 35 A rule printed, so the box follows it: no note, ok.
         pdf = Path("/Users/fab/dev/pv/pwr-mosfet-lib/datasheets/st/STW46NF30.pdf")
         results, errors = self._run(pdf, extend=True)
         self.assertEqual(len(results), 1, errors)
-        self.assertEqual(results[0]["status"], "unverified")
+        self.assertEqual(results[0]["status"], "ok")
         self.assertEqual(results[0]["coverage_check"]["status"], "verified")
+        self.assertFalse(results[0]["coverage_check"]["notes"])
+        for curve in results[0]["curves"]:
+            self.assertGreater(max(p[1] for p in curve["points"]), 33.7)  # source ends at 34.0 A
+        # without the lattice frame the continuation is a note and the serve is not ok
+        with patch.object(diode_forward_voltage, "_linear_frame_on_lattice", lambda *a, **k: False):
+            results, errors = self._run(pdf, extend=True)
+        self.assertEqual(results[0]["status"], "unverified")
         self.assertTrue(results[0]["coverage_check"]["notes"])
 
     def test_grid_bound_ladder_reaches_the_frame(self) -> None:

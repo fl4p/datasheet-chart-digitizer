@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import json
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from operator import attrgetter
 from pathlib import Path
 
@@ -106,6 +106,8 @@ class PanelCalibration:
     hint_source: str
     # served_axis_guard verdicts on the served x/y mappings (None: not run)
     grid_checks: dict | None = None
+    # linear plot edges ("x0", ...) served out to a lattice frame past the last label
+    frame_edges: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -170,12 +172,14 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     voltage_on_y = _voltage_on_y_axis(calibration)
     labels = _panel_temperature_labels(panel)
     temperatures = _panel_temperatures(panel, labels)
+    gate = _labelled_box(calibration)
     extracted = _extract_vector_curve_series(
         panel,
         crop_path,
         calibration.plot,
         curve_spans_x=voltage_on_y,
         expected_curve_count=len(temperatures),
+        gate=gate,
     )
     curves_px = [curve.points_px for curve in extracted]
     repeated_roles = len(extracted) > len(temperatures)
@@ -201,6 +205,7 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
                     owned_plot,
                     curve_spans_x=voltage_on_y,
                     expected_curve_count=2,
+                    gate=gate,
                 )
             ),
             is_curve_color=_is_curve_stroke_color,
@@ -241,6 +246,8 @@ def _digitize_panel(panel: ChartPanel, out_dir: Path) -> dict[str, object]:
     ]
     if voltage_on_y:
         diagnostics.append("source_axes_current_x_voltage_y")
+    if calibration.frame_edges:
+        diagnostics.append("served_past_last_label_to_lattice_frame_" + "_".join(calibration.frame_edges))
     if any(curve.source_bound_top_exit for curve in extracted):
         diagnostics.append("source_curve_exits_labeled_voltage_range_without_extrapolation")
     diagnostics.append(
@@ -315,6 +322,21 @@ def _served_coverage(panel: ChartPanel, crop_path: Path, calibration: PanelCalib
             return False
 
         return served_curve_coverage(page, transform, gray, plot, curves_px, label_beyond)
+
+
+def _labelled_box(calibration: PanelCalibration) -> PlotBox:
+    """The plot box with each lattice-frame edge back on its outermost label."""
+    edges = {}
+    for name in calibration.frame_edges:
+        pixels = [tick.pixel for tick in (calibration.x_axis if name[0] == "x" else calibration.y_axis).ticks]
+        edges[name] = int(round(min(pixels) if name[1] == "0" else max(pixels)))
+    return replace(calibration.plot, **edges)
+
+
+def _gate_rect(transform: CropTransform, rect: pymupdf.Rect, gate: PlotBox | None) -> pymupdf.Rect:
+    if gate is None:
+        return rect
+    return pymupdf.Rect(*transform.to_pt(gate.x0, gate.y0), *transform.to_pt(gate.x1, gate.y1))
 
 
 def _crop_transform(panel: ChartPanel, crop_path: Path) -> CropTransform:
@@ -393,20 +415,23 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
         x_axis = _anchor_linear_axis_to_plot_frame(x_axis, physical_hint, "x")
     if y_axis is raw_y:
         y_axis = _anchor_linear_axis_to_plot_frame(y_axis, physical_hint, "y")
-    plot = tick_aligned_plot(x_axis, y_axis, physical_hint)
-    if plot != physical_hint and "log10" in (x_axis.model, y_axis.model):
+    tick_plot = plot = tick_aligned_plot(x_axis, y_axis, physical_hint)
+    frame_edges: tuple[str, ...] = ()
+    if plot != physical_hint:
         frame_x, frame_y = _full_span_grid_lines(image, physical_hint)
-        plot = PlotBox(
-            *(
-                frame if _log_frame_on_ladder(axis, edge, frame, lines) else edge
-                for edge, frame, axis, lines in (
-                    (plot.x0, physical_hint.x0, x_axis, frame_x),
-                    (plot.y0, physical_hint.y0, y_axis, frame_y),
-                    (plot.x1, physical_hint.x1, x_axis, frame_x),
-                    (plot.y1, physical_hint.y1, y_axis, frame_y),
-                )
-            )
-        )
+        edges = {}
+        for name, axis, lines in (
+            ("x0", x_axis, frame_x), ("y0", y_axis, frame_y),
+            ("x1", x_axis, frame_x), ("y1", y_axis, frame_y),
+        ):
+            edge, frame = getattr(plot, name), getattr(physical_hint, name)
+            if axis.model == "log10":
+                follow = _log_frame_on_ladder(axis, edge, frame, lines)
+            else:
+                follow = (name != "y0" or frame > 8) and _linear_frame_on_lattice(axis, edge, frame, lines)
+                frame_edges += (name,) if follow else ()
+            edges[name] = frame if follow else edge
+        plot = PlotBox(**edges)
     if plot.y0 <= 8:
         raise RuntimeError("plot: tick-aligned frame overlaps the panel title band")
     # _snap_axis_to_grid returns the label-centre axis silently when it finds
@@ -415,7 +440,15 @@ def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:
     grid_checks = served_axis_guard.check_axes(
         image, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "body diode"
     )
-    return PanelCalibration(plot, x_axis, y_axis, hint, hint_source, grid_checks)
+    unchecked = [name for name in frame_edges if grid_checks[name[0]].status != "verified"]
+    if unchecked:
+        # a frame past the last label is served only on a verified axis
+        plot = replace(plot, **{name: getattr(tick_plot, name) for name in unchecked})
+        frame_edges = tuple(name for name in frame_edges if name not in unchecked)
+        grid_checks = served_axis_guard.check_axes(
+            image, plot, {"x": x_axis, "y": y_axis}, {"x": raw_x, "y": raw_y}, "body diode"
+        )
+    return PanelCalibration(plot, x_axis, y_axis, hint, hint_source, grid_checks, frame_edges)
 
 
 def _extend_rule_bound_axis(
@@ -583,6 +616,50 @@ def _log_frame_on_ladder(axis: NumericAxis, edge: int, frame: int, lines) -> boo
         if not 2 <= step <= 9 or abs((math.log10(step * decade) - axis.b) / axis.m - line) > tol:
             return False
     return True
+
+
+def _linear_frame_on_lattice(
+    axis: NumericAxis, edge: int, frame: int, lines, max_steps: int = 2
+) -> bool:
+    """A frame past the last label of a uniform linear ladder, one or two
+    whole label steps out, with a full-span rule at every position of the
+    subdivision the last labelled interval shows and nowhere else (ST
+    half-step minors; STW46NF30: the axis title replaces the 35 and 40 A
+    labels, the 35 A rule is printed)."""
+    ticks = sorted(axis.ticks, key=lambda tick: tick.pixel)
+    if axis.model != "linear" or len(ticks) < 3 or frame == edge or axis.residual_px > 1.5:
+        return False
+    steps = np.diff([tick.value for tick in ticks])
+    if np.any(np.abs(steps - steps[0]) > 1e-6 * max(1.0, abs(steps[0]))):
+        return False
+    tol = 2.0
+    last, inner = (ticks[0], ticks[1]) if frame < edge else (ticks[-1], ticks[-2])
+    if abs(edge - last.pixel) > tol:
+        return False
+    step = last.value - inner.value  # signed, toward the frame
+    pitch = step / axis.m
+    whole = round((frame - last.pixel) / pitch)
+    if not 1 <= whole <= max_steps or abs(last.pixel + whole * pitch - frame) > tol:
+        return False
+
+    def subdivided(lo: float, hi: float, n: int) -> bool:
+        """Lines strictly between lo and hi steps from *last* are exactly the 1/n lattice."""
+        found = sorted(
+            (line - last.pixel) / pitch for line in lines
+            if lo * abs(pitch) + tol < (line - last.pixel) * math.copysign(1.0, pitch) < hi * abs(pitch) - tol
+        )
+        expected = [j / n for j in range(int(round(lo * n)) + 1, int(round(hi * n)))]
+        return len(found) == len(expected) and all(
+            abs(f - e) * abs(pitch) <= tol for f, e in zip(found, expected)
+        )
+
+    toward = [(line - last.pixel) * math.copysign(1.0, pitch) for line in lines]
+    n = 1 + sum(tol - abs(pitch) < distance < -tol for distance in toward)
+    return (
+        subdivided(-1.0, 0.0, n)
+        and subdivided(0.0, float(whole), n)
+        and any(abs(line - frame) <= tol for line in lines)
+    )
 
 
 def _physical_plot_hint(
@@ -1033,8 +1110,12 @@ def _extract_vector_curve_series(
     curve_spans_x: bool = False,
     expected_curve_count: int | None = None,
     split_merged_drawings: bool = False,
+    gate: PlotBox | None = None,
 ) -> list[ExtractedVectorCurve]:
     """Vector curves inside *plot*, one record per source drawing.
+
+    *gate* (default *plot*): the box the curve-span gate is measured
+    against; a plot served past its last labels keeps the labelled box.
 
     *split_merged_drawings* (opt-in): a single source drawing may hold
     several disjoint subpaths that EACH pass the full-span gate (one path
@@ -1051,6 +1132,7 @@ def _extract_vector_curve_series(
         top_left = transform.to_pt(plot.x0, plot.y0)
         bottom_right = transform.to_pt(plot.x1, plot.y1)
         rect = pymupdf.Rect(*top_left, *bottom_right)
+        gate_rect = _gate_rect(transform, rect, gate)
         paths: list[
             tuple[list[tuple[float, float]], tuple[float, ...], float]
         ] = []
@@ -1067,7 +1149,7 @@ def _extract_vector_curve_series(
                     if split_merged_drawings
                     and len(component) >= 2
                     and _vector_group_span_status(
-                        component, rect, curve_spans_x, expected_curve_count
+                        component, gate_rect, curve_spans_x, expected_curve_count
                     )[0]
                 ]
                 for component in spanning if len(spanning) >= 2 else [max(components, key=len)]:
@@ -1079,7 +1161,7 @@ def _extract_vector_curve_series(
                         )
                     )
             elif _excluded_wide_curve(
-                drawing, rect, curve_spans_x, expected_curve_count
+                drawing, gate_rect, curve_spans_x, expected_curve_count
             ):
                 # A curve-shaped stroke outside the width gate is a curve we
                 # cannot serve; dropping it silently lets the remaining curve
@@ -1109,7 +1191,7 @@ def _extract_vector_curve_series(
         group
         for group, _styles in groups
         if _vector_group_span_status(
-            group, rect, curve_spans_x, expected_curve_count
+            group, gate_rect, curve_spans_x, expected_curve_count
         )[0]
     ]
     if expected_curve_count and len(normal_curve_groups) == expected_curve_count - 1:
@@ -1119,7 +1201,7 @@ def _extract_vector_curve_series(
             for record in gray_paths
             if any(abs(record[2] - width) <= 0.05 for width in confirmed_widths)
             and _vector_group_span_status(
-                record[0], rect, curve_spans_x, expected_curve_count
+                record[0], gate_rect, curve_spans_x, expected_curve_count
             )[0]
         ]
         if len(matched_gray) == 1:
@@ -1130,7 +1212,7 @@ def _extract_vector_curve_series(
     curves: list[ExtractedVectorCurve] = []
     for group, styles in groups:
         full_span, source_bound_top_exit = _vector_group_span_status(
-            group, rect, curve_spans_x, expected_curve_count
+            group, gate_rect, curve_spans_x, expected_curve_count
         )
         if not full_span:
             continue
@@ -1165,6 +1247,7 @@ def _source_drawing_diode_candidate(
     *,
     curve_spans_x: bool,
     expected_curve_count: int,
+    gate: PlotBox | None = None,
 ) -> list[tuple[int, int]] | None:
     """Reproduce one already-extracted diode curve from one source drawing."""
 
@@ -1175,7 +1258,7 @@ def _source_drawing_diode_candidate(
         return None
     component = max(components, key=len)
     if not _vector_group_span_status(
-        component, rect, curve_spans_x, expected_curve_count
+        component, _gate_rect(transform, rect, gate), curve_spans_x, expected_curve_count
     )[0]:
         return None
     raw = [

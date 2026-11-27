@@ -652,9 +652,10 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             result = digitize_pdf(pdf, Path(tmp), dpi=220)[0]
 
-        # the curves run on past the 50 A label to the frame: cropped, not ok
-        self.assertEqual(result["status"], "unverified")
-        self.assertIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
+        # the curves run on past the 50 A label; the frame is one step out (60 A)
+        # with the 55 A half-step rule printed, so the box follows it
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
         self.assertIn("source_axes_current_x_voltage_y", result["diagnostics"])
         self.assertEqual(result["x_axis"]["model"], "linear")
         self.assertEqual(result["y_axis"]["model"], "linear")
@@ -665,7 +666,7 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
         for curve in result["curves"]:
             self.assertGreaterEqual(len(curve["points"]), 330)
             self.assertLessEqual(curve["points"][0][1], 5.3)
-            self.assertGreaterEqual(curve["points"][-1][1], 48.9)
+            self.assertGreaterEqual(curve["points"][-1][1], 57.5)  # source ends at 58.0 A
 
     def test_ti_gray_temperature_curve_is_admitted_by_panel_width_and_span(self):
         if self.datasheets is None:
@@ -709,20 +710,21 @@ class DiodeForwardCalibrationCorpusTests(unittest.TestCase):
             tuple(curve["temperature_c"] for curve in result["curves"]),
             (-50.0, 25.0, 150.0),
         )
-        self.assertIn(
+        # the -50 C curve runs above the 1.2 V label; the frame is one step
+        # up (1.4 V), so it is served to its source end (10.21 A, 1.289 V)
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn(
             "source_curve_exits_labeled_voltage_range_without_extrapolation",
             result["diagnostics"],
         )
         by_temperature = {
             curve["temperature_c"]: curve for curve in result["curves"]
         }
-        cold_current = [point[1] for point in by_temperature[-50.0]["points"]]
-        self.assertGreater(max(cold_current), 5.0)
-        self.assertLess(max(cold_current), 6.0)
-        self.assertLessEqual(
-            max(point[0] for point in by_temperature[-50.0]["points"]),
-            1.201,
-        )
+        cold = by_temperature[-50.0]["points"]
+        self.assertGreater(max(point[1] for point in cold), 10.0)
+        self.assertLess(max(point[1] for point in cold), 10.4)
+        self.assertGreater(max(point[0] for point in cold), 1.27)
+        self.assertLess(max(point[0] for point in cold), 1.30)
         for temperature in (25.0, 150.0):
             self.assertGreaterEqual(
                 max(point[1] for point in by_temperature[temperature]["points"]),

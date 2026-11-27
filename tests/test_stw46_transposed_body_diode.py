@@ -76,9 +76,10 @@ class Stw46TransposedBodyDiodeTests(unittest.TestCase):
 
         self.assertEqual(len(results), 1)
         result = results[0]
-        # curves run on past the last labelled current (30 A): a cropped serve
-        self.assertEqual(result["status"], "unverified")
-        self.assertIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
+        # curves run on past the last labelled current (30 A) to 34 A; the
+        # frame is two steps out (40 A) with the 35 A rule printed: served
+        self.assertEqual(result["status"], "ok")
+        self.assertNotIn("source_curve_continues_past_last_labelled_tick_not_extrapolated", result["diagnostics"])
         self.assertEqual(result["panel"]["page"], 7)
         self.assertEqual(result["panel"]["diagram"], 13)
         self.assertEqual(result["panel"]["kind"], "body_diode")
@@ -86,7 +87,8 @@ class Stw46TransposedBodyDiodeTests(unittest.TestCase):
             result["panel"]["bbox_pt"],
             (41.108, 116.974, 297.041, 292.94),
         )
-        self.assertEqual(result["plot_box_px"], {"x0": 165, "y0": 85, "x1": 440, "y1": 405})
+        # x1 = 40 A frame (2 steps past 30 A), y0 = 1.1 V frame (1 step past 1.0 V)
+        self.assertEqual(result["plot_box_px"], {"x0": 165, "y0": 39, "x1": 531, "y1": 405})
         self.assertEqual(
             result["hint_source"], "capacitance_grid_y_tick_frame_retry"
         )
@@ -107,11 +109,11 @@ class Stw46TransposedBodyDiodeTests(unittest.TestCase):
         }
         self.assertEqual(tuple(by_temperature), (-50.0, 25.0, 175.0))
         for curve in by_temperature.values():
-            self.assertEqual(len(curve["points"]), 247)
+            self.assertEqual(len(curve["points"]), 285)
             currents = [point[1] for point in curve["points"]]
-            self.assertLess(max(currents), 30.0)
-            self.assertGreater(max(currents), 29.8)
-        for index in range(0, 247, 20):
+            self.assertLess(max(currents), 34.2)  # source curves end at 34.0 A
+            self.assertGreater(max(currents), 33.9)
+        for index in range(0, 285, 20):
             self.assertGreater(
                 by_temperature[-50.0]["points"][index][0],
                 by_temperature[25.0]["points"][index][0],
