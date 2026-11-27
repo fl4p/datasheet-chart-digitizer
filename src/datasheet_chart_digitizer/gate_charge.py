@@ -988,8 +988,10 @@ def _digitize_panel(
     diagnostics: list[str] = []
     if vpl_from_slope:  # also with vpl None: a recalibration re-reads vpl_y_px
         diagnostics.append(VPL_SLOPE_FALLBACK_DIAGNOSTIC)
+    # local_y_ticks are page points; curve and vpl_y_px are crop pixels
     vpl_expected_for_source = _vpl_is_plausible(vpl) or _depletion_vpl_is_source_plausible(
-        vpl, vpl_y_px, curve, plot_box, local_y_ticks
+        vpl, vpl_y_px, curve, plot_box,
+        [(value, (y - crop_rect.y0) * scale) for value, y in local_y_ticks],
     )
     low_trace_confidence = trace_score <= -1e8
     missing_initial_ramp = _curve_missing_initial_ramp(curve, plot_box)
