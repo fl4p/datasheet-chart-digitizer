@@ -27,6 +27,7 @@ import re
 from dataclasses import dataclass
 
 import numpy as np
+from . import visible_text
 
 _X_TICK_RE = re.compile(r"[−-]?\d+(?:\.\d+)?")
 # Group 4 is spreadsheet scientific notation ("1E+3", "1.0E+02", "1E-01"),
@@ -206,7 +207,7 @@ def _explicit_power_labels(
     integer such as 102, which could be a legitimate linear-axis value.
     """
     try:
-        payload = page.get_text("dict")
+        payload = visible_text.payload(page, "dict")
     except Exception:
         return []
     if not isinstance(payload, dict):
@@ -255,7 +256,7 @@ def _page_chars(page):
     """Distinct non-space horizontal glyphs ``(char, bbox, baseline_y, size,
     (span id, index))``, by x0."""
     try:
-        payload = page.get_text("rawdict")
+        payload = visible_text.payload(page, "rawdict")
     except Exception:
         return []
     if not isinstance(payload, dict):
@@ -363,7 +364,7 @@ def power_tick_words(page, words=None):
     *words*); a caller must refuse any axis they fall on. Plain single-size
     numbers ("102", glued "100010000") pass unchanged.
     """
-    words = [tuple(w) for w in (page.get_text("words") if words is None else words)]
+    words = [tuple(w) for w in (visible_text.words(page) if words is None else words)]
     chars = _page_chars(page)
 
     def holds(w, box, pad=0.5):

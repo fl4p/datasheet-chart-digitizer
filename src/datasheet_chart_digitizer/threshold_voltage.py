@@ -38,6 +38,7 @@ import numpy as np
 from . import served_axis_guard
 from .breakdown_voltage import _draw_overlay, calibrated_temperature_trace
 from .capacitance_vector import _load_fitz
+from . import visible_text
 
 READOUT_TEMPERATURES_C = (-50.0, 25.0, 100.0, 150.0)
 _TEMP_KIND_RE = re.compile(r"t\s*(ch|a|j|c)\s*$", re.IGNORECASE)
@@ -64,7 +65,7 @@ def spec_vth_window(doc) -> dict | None:
     position; a row whose numbers do not sit under a header refuses (None).
     """
     for page in doc:
-        words = page.get_text("words")
+        words = visible_text.words(page)
         lines: dict[tuple[int, int], list] = {}
         for w in words:
             lines.setdefault((w[5], w[6]), []).append(w)

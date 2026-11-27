@@ -68,6 +68,7 @@ from .numeric_axis import (
     tick_aligned_plot,
 )
 from .overlay import draw_axis_ticks, draw_plot_frame
+from . import visible_text
 
 _NUMERIC_RE = re.compile(r"^[+-]?\d+(?:\.\d+)?$")
 _SCIENTIFIC_RE = re.compile(r"^[+-]?(?:\d+(?:\.\d*)?|\.\d+)[Ee][+-]?\d+$")
@@ -1209,7 +1210,7 @@ def _legend_temperature_styles(
             *transform.to_pt(plot.x1, plot.y1),
         )
         lines: dict[tuple[int, int], list[tuple[float, float, float, float, str]]] = {}
-        for word in page.get_text("words"):
+        for word in visible_text.words(page):
             x0, y0, x1, y1, text, block, line, _ = word
             if rect.x0 <= x0 <= rect.x1 and rect.y0 <= y0 <= rect.y1:
                 lines.setdefault((block, line), []).append((x0, y0, x1, y1, text))

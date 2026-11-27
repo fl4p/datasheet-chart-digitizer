@@ -51,6 +51,7 @@ import numpy as np
 
 from . import __version__
 from .axis_calibration import power_tick_words
+from . import visible_text
 
 # --------------------------------------------------------------------------- #
 # chart classes and units
@@ -648,12 +649,12 @@ def _words(page):
     """Page words (band-painted pages repeat text: kept once), with glued numeric
     labels split at their glyph-advance break (see _split_glued_number)."""
     chars = []
-    for blk in page.get_text("rawdict")["blocks"]:
+    for blk in visible_text.payload(page, "rawdict")["blocks"]:
         for ln in blk.get("lines", []):
             for sp in ln["spans"]:
                 chars += [c for c in sp["chars"] if not c["c"].isspace()]
     seen, out = set(), []
-    for w in page.get_text("words"):
+    for w in visible_text.words(page):
         parts = [(w[4], tuple(w[:4]))]
         if re.fullmatch(r"10*10*", w[4]) and len(w[4]) >= 3:
             inside = [c for c in chars
@@ -690,7 +691,7 @@ def _power_words(page, words):
 
 def _rotated_lines(page):
     out = []
-    for b in page.get_text("dict")["blocks"]:
+    for b in visible_text.payload(page, "dict")["blocks"]:
         for ln in b.get("lines", []):
             if abs(ln["dir"][0]) < 0.1:
                 out.append(("".join(s["text"] for s in ln["spans"]), tuple(ln["bbox"])))

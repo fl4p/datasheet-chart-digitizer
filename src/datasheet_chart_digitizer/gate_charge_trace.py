@@ -8,6 +8,7 @@ import pymupdf
 from PIL import Image, ImageDraw
 
 from .gate_charge_branch import follow_branch_through_hops
+from . import visible_text
 
 
 def _pdf_to_px(rect: pymupdf.Rect, scale: float, x: float, y: float) -> tuple[float, float]:
@@ -38,7 +39,7 @@ def _mask_page_text(
     out = crop.copy()
     draw = ImageDraw.Draw(out)
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         return out
     pad = max(2, int(round(scale * 1.4)))

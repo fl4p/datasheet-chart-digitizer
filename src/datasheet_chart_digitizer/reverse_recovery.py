@@ -50,6 +50,7 @@ from .reverse_recovery_validation import (
 from .find_charts import group_words_into_lines, line_bbox
 from .gridline_anchor import anchor_axis_on_grid, check_served_on_grid
 from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
+from . import visible_text
 
 RR_CAPTION_RE = re.compile(r"(?i)^figure\s*(\d+)\s*[:.]?\s*(diode\s+reverse\s+recovery.*)$")
 TEMP_RE = re.compile(r"(?i)^(\d+)\s*[ºo°]?C$")
@@ -610,7 +611,7 @@ def digitize_pdf(pdf: Path, out_dir: Path, mpn: str | None = None) -> list[dict]
     saw_rr_text = False
     for pno in range(len(doc)):
         page = doc[pno]
-        words = page.get_text("words")
+        words = visible_text.words(page)
         saw_rr_text = saw_rr_text or any(w[4] == "Recovery" for w in words)
         found, orphans = _find_panels_on_page(page, _as_words(words))
         for o in orphans:

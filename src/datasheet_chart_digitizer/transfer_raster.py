@@ -33,6 +33,7 @@ from .linear_tick_axis import _as_numeric_axis, _snap_axis_ticks_to_grid
 from .raster_figure import _runs, curve_mask, render_native, rule_width, trace_curves_by_rows
 from .raster_plot_labels import bind_labels, label_ink, rule_bands, temperature_labels, tokens_and_leaders
 from .raster_tick_ocr import gutter_label_boxes, raster_linear_axes
+from . import visible_text
 
 
 def _native_render_for(chart: dict, page, transform: CropTransform, shape, plot, fitz):
@@ -55,7 +56,7 @@ def is_raster_figure(chart: dict, crop_path: Path) -> bool:
     with fitz.open(str(chart["pdf"])) as doc:
         page = doc[int(chart["page"]) - 1]
         p0, p1 = transform.to_pt(plot.x0, plot.y0), transform.to_pt(plot.x1, plot.y1)
-        if page.get_text("words", clip=fitz.Rect(*p0, *p1)):
+        if visible_text.words(page, clip=fitz.Rect(*p0, *p1)):
             return False  # native text inside the plot: not a whole-figure raster
         plot_rect = fitz.Rect(*p0, *p1)
         if sum(1 for d in page.get_drawings() if fitz.Rect(d["rect"]).intersects(plot_rect)) > 2:

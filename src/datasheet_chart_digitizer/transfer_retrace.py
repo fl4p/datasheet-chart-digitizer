@@ -32,6 +32,7 @@ import numpy as np
 
 from .capacitance_vector import _color_distance, _sample_cubic
 from .numeric_axis import AxisTick, NumericAxis, fit_axis_ticks
+from . import visible_text
 
 # A label binds to its nearest gridline only when it sits within this fraction
 # of the gridline pitch AND that gridline is clearly nearer than the next one.
@@ -531,7 +532,7 @@ def vector_curve_strokes(page, frame, *, min_items: int = 8, min_width: float = 
 
 def _span_color(page, bbox) -> tuple[float, float, float] | None:
     colors = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in visible_text.payload(page, "dict")["blocks"]:
         for line in block.get("lines", []):
             for span in line["spans"]:
                 sx0, sy0, sx1, sy1 = span["bbox"]
@@ -554,7 +555,7 @@ def legend_temperature_colors(page, clip) -> dict[float, tuple[float, float, flo
     labels sharing a colour make the legend unreadable -> ``RuntimeError``.
     """
     words = [
-        w for w in page.get_text("words")
+        w for w in visible_text.words(page)
         if clip.x0 <= (w[0] + w[2]) / 2 <= clip.x1 and clip.y0 <= (w[1] + w[3]) / 2 <= clip.y1
     ]
     drawings = [d for d in page.get_drawings() if d.get("type") == "s"]

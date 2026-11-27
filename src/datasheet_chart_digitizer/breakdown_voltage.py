@@ -71,6 +71,7 @@ from .linear_tick_axis import (  # noqa: F401  (re-exported: tests, transfer)
     _trustworthy_ocr_axis_ticks,
     ocr_gutter_linear_axes,
 )
+from . import visible_text
 
 INT_RE = re.compile(r"^-?\d+$")
 NUM_RE = re.compile(r"^-?\d+(?:\.\d+)?$")
@@ -547,7 +548,7 @@ def _positioned_min_vbrdss(page) -> float | None:
     """Read a V(BR)DSS value owned by the table's Min and Unit columns."""
 
     try:
-        words = [tuple(word) for word in page.get_text("words")]
+        words = [tuple(word) for word in visible_text.words(page)]
     except (AttributeError, RuntimeError, TypeError, ValueError):
         return None
     min_headers = [
@@ -618,7 +619,7 @@ def _spec_min_vbrdss(doc) -> tuple[float, int] | None:
         positioned = _positioned_min_vbrdss(doc[page_num])
         if positioned is not None:
             return positioned, page_num + 1
-        text = re.sub(r"\s+", " ", doc[page_num].get_text("text"))
+        text = re.sub(r"\s+", " ", visible_text.text(doc[page_num]))
         text = text.replace("‑", "-").replace("–", "-").replace("—", "-")
         for pattern in (SPEC_ROW_RE, SPEC_LABEL_ROW_RE):
             for row in pattern.finditer(text):
@@ -635,7 +636,7 @@ def _max_vds_rating(doc) -> tuple[float, int] | None:
         re.IGNORECASE,
     )
     for page_num in range(min(len(doc), 4)):
-        text = re.sub(r"\s+", " ", doc[page_num].get_text("text"))
+        text = re.sub(r"\s+", " ", visible_text.text(doc[page_num]))
         match = pattern.search(text)
         if match:
             return float(match.group(1)), page_num + 1
@@ -781,7 +782,7 @@ def _anchor_breakdown_curve(
 def _words_in_crop_px(page, transform: CropTransform, image_shape: tuple[int, int]) -> list[tuple[str, float, float]]:
     height, width = image_shape
     out = []
-    for w in page.get_text("words"):
+    for w in visible_text.words(page):
         cx, cy = transform.to_px((w[0] + w[2]) / 2, (w[1] + w[3]) / 2)
         if -width * 0.05 <= cx <= width * 1.05 and -height * 0.05 <= cy <= height * 1.05:
             text = w[4].strip()
@@ -871,7 +872,7 @@ def _owned_temperature_x_ticks(
     img_h, _img_w = image_shape
     x_band = (plot.y1 + 0.004 * img_h, plot.y1 + 0.080 * img_h)
     drawings = page.get_drawings()
-    page_words = list(page.get_text("words"))
+    page_words = list(visible_text.words(page))
     ticks: list[tuple[float, float]] = []
     for word in page_words:
         text = str(word[4]).strip().replace("\N{MINUS SIGN}", "-")

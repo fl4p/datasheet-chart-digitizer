@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 from dataclasses import dataclass
+from . import visible_text
 
 
 CROP_MARGIN_PT = 2.0
@@ -78,7 +79,7 @@ def blank_rotated_words(gray, page, transform: CropTransform):
     labels inside the plot, are kept, and without numeric words nothing is
     blanked."""
     words = []
-    for word in page.get_text("words"):
+    for word in visible_text.words(page):
         x0, y0 = transform.to_px(word[0], word[1])
         x1, y1 = transform.to_px(word[2], word[3])
         words.append((x0, y0, x1, y1, word[4]))

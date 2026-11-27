@@ -23,6 +23,7 @@ from .region_ocr import (
     ocr_words_in_rect,
     ocr_words_on_page_poppler,
 )
+from . import visible_text
 
 
 BOUNDED_AXIS_OCR_DPI = 900.0
@@ -55,7 +56,7 @@ def poppler_low_text_page_text(pdf: Path) -> list[PageText]:
     pages: list[PageText] = []
     with pymupdf.open(pdf) as doc:
         for page_num, page in enumerate(doc, start=1):
-            if len(page.get_text("words")) >= 30:
+            if len(visible_text.words(page)) >= 30:
                 continue
             try:
                 raw = ocr_words_on_page_poppler(
@@ -315,7 +316,7 @@ def _native_words_in_rect(
     """Return native words whose centers lie in one bounded source band."""
 
     out = []
-    for word in page.get_text("words"):
+    for word in visible_text.words(page):
         x0, y0, x1, y1 = (float(value) for value in word[:4])
         if rect.contains((0.5 * (x0 + x1), 0.5 * (y0 + y1))):
             out.append((x0, y0, x1, y1, str(word[4])))

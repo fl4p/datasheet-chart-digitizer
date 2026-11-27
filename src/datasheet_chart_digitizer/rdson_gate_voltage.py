@@ -105,6 +105,7 @@ from .rdson_gate_voltage_traces import (
 )
 from .rdson_spec_table import RdsonSpecRow, parse_rdson_spec_rows
 from .region_ocr import _tesseract_words
+from . import visible_text
 
 MAX_RISE_FRACTION = 0.04
 GAP_PX = 2.5                    # consecutive trace columns further apart than this are a gap
@@ -801,7 +802,7 @@ def _has_outline_glyphs(page, transform, plot: PlotBox) -> bool:
     """
     x0, y0 = transform.to_pt(plot.x0, plot.y0)
     x1, y1 = transform.to_pt(plot.x1, plot.y1)
-    words = [w[:4] for w in page.get_text("words")]
+    words = [w[:4] for w in visible_text.words(page)]
     small = []
     for drawing in page.get_drawings():
         fill = drawing.get("fill")
@@ -897,7 +898,7 @@ def _apply_page_temperature_note(traces: list[Trace], page) -> list[str]:
         return []
     matches = [
         (float(m.group("value")), temperature_kind(m.group("sub"), True), m.group(0))
-        for m in _PAGE_TEMPERATURE_NOTE_RE.finditer(" ".join(page.get_text("text").split()))
+        for m in _PAGE_TEMPERATURE_NOTE_RE.finditer(" ".join(visible_text.text(page).split()))
     ] + typical_temperature_note(page)
     notes = {(v, k) for v, k, _text in matches}
     if len(notes) != 1:

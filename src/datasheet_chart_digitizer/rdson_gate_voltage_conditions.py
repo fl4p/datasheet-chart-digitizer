@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from .find_charts import group_words_into_lines, line_text
+from . import visible_text
 
 
 _TYPICAL_NOTE = re.compile(
@@ -14,7 +15,7 @@ _TYPICAL_NOTE = re.compile(
 
 def typical_temperature_note(page):
     """Only the explicitly chart-scoped heading on THIS page can supply T."""
-    text = " ".join(page.get_text("text").split())
+    text = " ".join(visible_text.text(page).split())
     return [(float(m['value']), 'T' + m['sub'].lower(), m.group(0)) for m in _TYPICAL_NOTE.finditer(text)]
 
 

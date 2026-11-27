@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
+from . import visible_text
 
 if TYPE_CHECKING:  # import only for type hints; runtime stays cycle-free
     from .reverse_recovery import Panel
@@ -41,7 +42,7 @@ def spec_anchors(doc) -> list[dict]:
     the single cell when only one is given; ambiguous rows are skipped."""
     anchors = []
     for pno in range(len(doc)):
-        words = doc[pno].get_text("words")
+        words = visible_text.words(doc[pno])
         # cheap page gate: only pages that talk about reverse recovery
         if not any("Recovery" in w[4] for w in words):
             continue

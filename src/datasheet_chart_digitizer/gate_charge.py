@@ -97,6 +97,7 @@ from .gate_axis_ocr import (
     refine_oversized_ocr_gate_panel,
     vpl_extrapolated_beyond_ticks as _vpl_extrapolated_beyond_ticks,
 )
+from . import visible_text
 
 EDGE_TICK_SNAP_MAX_FRACTION = 0.04
 MAX_CURVE_LEFT_GAP_FRACTION = 0.055
@@ -449,7 +450,7 @@ class _PageWordOverride:
     def get_text(self, option: str, *args, **kwargs):
         if option == "words":
             return self._words
-        return self._page.get_text(option, *args, **kwargs)
+        return visible_text.get(self._page, option, *args, **kwargs)
 
     def __getattr__(self, name: str):
         return getattr(self._page, name)
@@ -1872,7 +1873,7 @@ def _clip_context_at_foreign_text(
 ) -> pymupdf.Rect:
     """Stop gate review padding at positively identified neighbour content."""
 
-    words = list(page.get_text("words"))
+    words = list(visible_text.words(page))
     lines: dict[tuple[int, int], list[tuple[object, ...]]] = {}
     for word in words:
         if len(word) >= 7:

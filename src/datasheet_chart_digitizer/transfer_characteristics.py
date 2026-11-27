@@ -68,6 +68,7 @@ from .transfer_temperature_labels import (
     normalize_temperature_text as _normalize_temperature_text,
     temperatures as _temperatures,
 )
+from . import visible_text
 
 POSITIONED_TEMP_LINE_RE = re.compile(
     r"^\s*(?:T\s*(?:C|J)\s*=\s*)?"
@@ -724,7 +725,7 @@ def _positioned_temperature_labels(
     """
 
     lines: dict[tuple[int, int], list[tuple]] = {}
-    for word in page.get_text("words"):
+    for word in visible_text.words(page):
         if len(word) < 8:
             continue
         lines.setdefault((int(word[5]), int(word[6])), []).append(word)

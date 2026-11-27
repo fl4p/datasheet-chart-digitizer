@@ -30,15 +30,11 @@ IDENTITY = SimpleNamespace(to_px=lambda x, y: (x, y))  # page pt == crop px
 
 
 class _Page:
-    def __init__(self, words, hidden=()):
-        self._words, self._hidden = words, hidden
+    def __init__(self, words):
+        self._words = words
 
     def get_text(self, kind):
-        if kind == "words":
-            return list(self._words)
-        spans = [{"bbox": w[:4], "text": w[4], "color": 0xFFFFFF, "alpha": 255, "char_flags": 16}
-                 for w in self._hidden]
-        return {"blocks": [{"lines": [{"spans": spans}]}]} if kind == "dict" else {"blocks": []}
+        return list(self._words) if kind == "words" else {"blocks": []}
 
 
 def _grid_image() -> np.ndarray:
@@ -95,12 +91,38 @@ def test_too_few_decades_bound_to_the_frame_fail():
     assert cal.y_grid_check["status"] == "failed"
 
 
-def test_hidden_labels_are_not_evidence():
+def _real_page(ladder_style: dict | None):
+    """A PDF page (pt == crop px) with printed X labels and the Y ladder drawn
+    in *ladder_style* (None: ordinary black text)."""
+    import pymupdf
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=560, height=500)
+    for k in range(6):
+        text = str(20 * k)
+        page.insert_text((100 + 80 * k - pymupdf.get_text_length(text, fontsize=8) / 2, 462.0), text, fontsize=8)
+    for d in range(5):
+        text = str(10 ** d)
+        page.insert_text((96 - pymupdf.get_text_length(text, fontsize=8), 450.0 - 100 * d + 3.0), text,
+                         fontsize=8, **(ladder_style or {}))
+    return doc, page
+
+
+@pytest.mark.parametrize("style", [{"color": (1, 1, 1)}, {"render_mode": 3}, {"fill_opacity": 0}],
+                         ids=["white", "render_mode_3", "alpha_0"])
+def test_hidden_labels_are_not_evidence(style):
     # white text (Excel secondary axes) on the same rules: never a located label
-    hidden = _ladder(0)
-    page = _Page(hidden + _x_words(), hidden)
+    doc, page = _real_page(style)
     cal = check_count_bound_axes(_calibration((0.0, 1.0, 2.0, 3.0, 4.0)), _grid_image(), PLOT, page, IDENTITY, RECT)
     assert cal.y_grid_check["status"] == "unverified"
+    assert cal.x_grid_check["status"] == "verified"
+
+
+def test_printed_ladder_on_a_real_page_is_verified():
+    # control for the test above: the same ladder printed is found and checked
+    doc, page = _real_page(None)
+    cal = check_count_bound_axes(_calibration((0.0, 1.0, 2.0, 3.0, 4.0)), _grid_image(), PLOT, page, IDENTITY, RECT)
+    assert cal.y_grid_check["status"] == "verified"
     assert cal.x_grid_check["status"] == "verified"
 
 

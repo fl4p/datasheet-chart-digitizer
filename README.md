@@ -40,6 +40,11 @@ as plugins.
   historical two-point crop margin.
 - Digitizes vector PDF traces first, with raster fallback.
 - Calibrates axes from tick labels/gridlines.
+- Reads PDF text (tick labels, axis titles, units, spec tables) only as a reader
+  sees it (`visible_text`): text in render mode 3, with zero alpha, or white on a
+  white background is dropped from the PyMuPDF and `pdftotext` word lists. Kept:
+  invisible text over an image (the OCR layer of a scan), white text on a dark
+  fill, text used as a clip path.
 - Writes calibrated point CSVs plus overlays.
 - For MOSFET capacitance charts, validates `Coss(V)` against datasheet `Qoss`,
   `Co(tr)`, and `Co(er)` where available.
@@ -386,7 +391,7 @@ A grid-verified axis is never overruled by the table.
 The grid tier (`axis_calibration.source = "grid_text"`, used when the tick-label position
 fit refuses) takes its decades from the chart text and binds them to major gridlines by
 count. Its axes are served only after the gridline check: each consumed tick needs one
-visible printed label in the label band (white or invisible text does not count), and the
+visible printed label in the label band (hidden text is never read, see `visible_text`), and the
 served mapping must put it on the line it names. A missed line refuses the tier; a label
 not found leaves the axis `unverified` and untrusted. A served axis with no gridline check
 at all is untrusted.

@@ -49,6 +49,7 @@ import numpy as np
 from .capacitance_vector import _is_dark_stroke, _sample_cubic
 from .gridline_anchor import suppress_curve_ink  # noqa: F401  (moved; re-exported)
 from .transfer_retrace import _clip_polyline
+from . import visible_text
 
 CURVE_NAMES = ("Ciss", "Coss", "Crss")
 # A curve closer than this to the 0 pF rail of a linear axis is not resolved
@@ -458,7 +459,7 @@ def pdf_tick_labels(
     width does not shift it.
     """
     spans = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in visible_text.payload(page, "dict")["blocks"]:
         for line in block.get("lines", []):
             for span in line["spans"]:
                 text = span["text"].strip()
@@ -519,7 +520,7 @@ def pdf_curve_labels(page, frame_pt) -> list[CurveLabel]:
     """
     region = frame_pt + (0.0, 0.0, 40.0, 0.0)
     spans = []
-    for block in page.get_text("dict")["blocks"]:
+    for block in visible_text.payload(page, "dict")["blocks"]:
         for line in block.get("lines", []):
             for span in line["spans"]:
                 text = span["text"].strip()

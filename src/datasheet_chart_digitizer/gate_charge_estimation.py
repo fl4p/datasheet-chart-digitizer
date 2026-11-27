@@ -4,6 +4,7 @@ import re
 
 import numpy as np
 import pymupdf
+from . import visible_text
 
 
 _NATIVE_Y_TICK_MAX = 30.0
@@ -60,7 +61,7 @@ def _local_y_ticks_for_plot(
     height = max(1.0, py1 - py0)
     candidates: dict[str, list[tuple[float, float, float]]] = {"left": [], "right": []}
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         # ``candidates`` is the accumulator, not a result. Returning it handed the
         # caller a dict where it expects a tick list, and ``len(...) >= 2`` on a
@@ -213,7 +214,7 @@ def _best_y_axis_for_panel(
         x_axis_edges = min(x_tick_positions), max(x_tick_positions)
     candidates: list[tuple[float, float, float]] = []
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         return None
     repair_ocr_decimal = getattr(page, "text_source", "") == "tesseract_fallback"
@@ -411,7 +412,7 @@ def _best_x_axis_for_panel(
 
     candidates: list[tuple[float, float, float]] = []
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         return None
     for text, wx0, wy0, wx1, wy1 in _horizontal_numeric_tokens(words):
@@ -595,7 +596,7 @@ def _text_near_rect(page: pymupdf.Page, bbox: pymupdf.Rect, pad: float = 26.0) -
     rect = (bbox + (-pad, -pad, pad, pad)) & page.rect
     parts: list[str] = []
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         return ""
     for word in words:
@@ -949,7 +950,7 @@ def y_axis_side_and_identity(
     px0, px1 = rect.x0 + x0 / scale, rect.x0 + x1 / scale
     py0, py1 = rect.y0 + y0 / scale, rect.y0 + y1 / scale
     try:
-        words = page.get_text("words")
+        words = visible_text.words(page)
     except Exception:
         return "unverified", None
     # the side whose labels ARE the ticks: same value at the same row

@@ -69,3 +69,4 @@
 - [cv-coer-energy-and-anchor-only-tiers](cv-coer-energy-and-anchor-only-tiers.md) — pass_coer_energy / coss_anchor_only tiers for the 26/30 parts with no Qoss; coer_vint_v is unpopulated in fetlib
 - [rds-vgs-chart-class](rds-vgs-chart-class.md) — dsdig digitize-rds-vgs, merged 337f358..993ec34 (2026-09-30..10-04) + 650ddb8; review-round history, goldens, mutation harness
 - [validated-chart-classes](validated-chart-classes.md) — which dsdig classes have a recorded Fab overlay approval (sources, date, commit, scope) and which have none
+- [dsdig hidden text layer](dsdig-hidden-text-layer.md) — read PDF text via visible_text; white/alpha-0/mode-3 decoys real (Vishay, HXY, TI); keep OCR layers over images, clip-mode text

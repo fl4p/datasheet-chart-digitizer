@@ -42,6 +42,7 @@ from .finder_caption_geometry import bbox_iou, page_vector_plot_frames
 from .finder_text_ocr import page_text_from_tesseract_tsv, tesseract_tsv
 from .finder_types import Word
 from .text_dashes import normalize_dashes
+from . import visible_text
 
 BBox = tuple[float, float, float, float]
 
@@ -255,7 +256,7 @@ Y_TITLE_STRIP_PT = 60.0
 def owned_y_axis_title(pdf_page, frame: BBox) -> str | None:
     """The vertical text lines in the strip left of the frame (the y-axis title), text layer only."""
     texts: list[tuple[float, str]] = []
-    for block in pdf_page.get_text("dict").get("blocks", []):
+    for block in visible_text.payload(pdf_page, "dict").get("blocks", []):
         for line in block.get("lines", []):
             dx, _dy = line["dir"]
             if abs(dx) > 0.2:

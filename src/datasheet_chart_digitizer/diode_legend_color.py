@@ -16,6 +16,7 @@ from .source_color_binding import (
     DrawingCandidate,
     bind_two_source_color_legend,
 )
+from . import visible_text
 
 
 def temperatures_from_source_words(words: list[Word]) -> list[float]:
@@ -49,7 +50,7 @@ def colored_temperature_bindings(
         page = document[panel.page - 1]
         source_words = [
             Word(str(word[4]), *(float(value) for value in word[:4]))
-            for word in page.get_text("words")
+            for word in visible_text.words(page)
         ]
         for label in temperature_labels(source_words):
             x0, y0 = transform.to_px(label.x0, label.y0)

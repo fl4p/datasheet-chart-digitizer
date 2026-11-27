@@ -55,7 +55,7 @@ class LeakageTitleUnitTests(unittest.TestCase):
 class LeakageHiddenUnitEndToEnd(unittest.TestCase):
     """BAT54W-G with an invisible (render mode 3) "Reverse current (mA)" in the panel."""
 
-    def _digitize(self, hidden: bool) -> dict:
+    def _digitize(self, hidden: bool, owned_band: bool = False) -> dict:
         from datasheet_chart_digitizer.diode_reverse_leakage import digitize_pdf
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -63,6 +63,9 @@ class LeakageHiddenUnitEndToEnd(unittest.TestCase):
             doc = pymupdf.open(BAT54W)
             if hidden:
                 doc[1].insert_text((318.0, 296.5), "Reverse current (mA)", fontsize=6, render_mode=3)
+            if owned_band:
+                # continues the rotated owned title "I_R - Reverse Current (µA)" upward
+                doc[1].insert_text((358.6, 361.0), "(mA)", fontsize=6, rotate=90, render_mode=3)
             doc.save(pdf)
             results = digitize_pdf(pdf, Path(tmp) / "out", dpi=180)
         self.assertEqual(len(results), 1)
@@ -75,6 +78,13 @@ class LeakageHiddenUnitEndToEnd(unittest.TestCase):
                 self.assertIn("current_axis_unit_read_from_panel_as_uA", result["diagnostics"])
                 hot = {c["temperature_c"]: c for c in result["curves"]}[125.0]["points"][0][1]
                 self.assertTrue(5e-5 < hot < 2e-4, hot)
+
+    def test_hidden_unit_in_the_owned_title_is_not_read(self):
+        # 61deaca read "(µA) (mA)" as the owned title and refused the panel
+        result = self._digitize(False, owned_band=True)
+        self.assertIn("current_axis_unit_read_from_panel_as_uA", result["diagnostics"])
+        hot = {c["temperature_c"]: c for c in result["curves"]}[125.0]["points"][0][1]
+        self.assertTrue(5e-5 < hot < 2e-4, hot)
 
 
 def _synthetic_panel(tmp: Path, labels: dict[int, list[tuple[str, float]]]):

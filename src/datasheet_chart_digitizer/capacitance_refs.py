@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 from .capacitance_types import CapAnchor, OutputChargeReference
+from . import visible_text
 
 _CAP_NAMES = ("Ciss", "Coss", "Crss")
 _VDS_RE = re.compile(r"VDS\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*V")
@@ -330,7 +331,7 @@ def _pdf_capacitance_condition_vds(part: str, datasheet_root: Path) -> float | N
     try:
         with pymupdf.open(pdf_path) as doc:
             for page in doc:
-                text = page.get_text().replace("\x03", " ")
+                text = visible_text.text(page).replace("\x03", " ")
                 if "apacitance" not in text:
                     continue
                 compact = re.sub(r"\s+", "", text)
@@ -431,7 +432,7 @@ def _pdf_output_charge_vint(part: str, datasheet_root: Path) -> float | None:
     try:
         with pymupdf.open(pdf_path) as doc:
             for page in doc:
-                text = page.get_text().replace("\x03", " ")
+                text = visible_text.text(page).replace("\x03", " ")
                 if "utput" not in text or "harge" not in text:
                     continue
                 compact = re.sub(r"\s+", "", text).replace("‑", "-")

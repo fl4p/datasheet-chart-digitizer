@@ -9,13 +9,14 @@ import subprocess
 import tempfile
 import traceback
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace as _dc_replace
 from pathlib import Path
 from typing import Iterable
 import cv2
 import pymupdf
 from PIL import Image
 try:
+    from . import visible_text
     from .chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from .crop_transform import CROP_MARGIN_PT
     from .table_crossref_filter import is_ruled_spec_crossref
@@ -52,6 +53,7 @@ try:
         words_in_bbox,
     )
 except ImportError:  # pragma: no cover - direct script compatibility
+    import visible_text
     from chart_classifier import CAPACITANCE_WORDS, classify_chart, compact_formula_chart_kind, is_marketing_feature_title, is_spaced_figure_start, is_spec_table_header_title, paired_gate_charge_waveform_is_definition, rdson_formula_direction, repair_spaced_caption_text, title_owns_chart_kind
     from crop_transform import CROP_MARGIN_PT
     from table_crossref_filter import is_ruled_spec_crossref
@@ -145,6 +147,7 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
             )
         )
     if not primary_pages or not any(page.words for page in primary_pages): return _run_pymupdf_text(pdf, "pymupdf_bbox_fallback")
+    primary_pages = _drop_hidden_poppler_words(pdf, primary_pages)
     if not any(_page_text_looks_corrupt(page) for page in primary_pages):
         return primary_pages
     try:
@@ -156,6 +159,12 @@ def run_text_bbox(pdf: Path) -> list[PageText]:
         _select_page_text(page, fallback_by_number.get(page.page_num))
         for page in primary_pages
     ]
+def _drop_hidden_poppler_words(pdf: Path, pages: list[PageText]) -> list[PageText]:
+    """pdftotext also emits text the page never paints; drop it per page."""
+    with pymupdf.open(pdf) as doc:
+        if len(doc) != len(pages):
+            raise RuntimeError(f"pdftotext and PyMuPDF disagree on the page count of {pdf}")
+        return [_dc_replace(page, words=visible_text.drop_hidden_words(doc[i], page.words)) for i, page in enumerate(pages)]
 def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[PageText]:
     pages: list[PageText] = []
     with pymupdf.open(pdf) as doc:
@@ -168,7 +177,7 @@ def _run_pymupdf_text(pdf: Path, text_source: str = "pymupdf_fallback") -> list[
                     x1=float(raw[2]),
                     y1=float(raw[3]),
                 )
-                for raw in page.get_text("words")
+                for raw in visible_text.words(page)
                 if str(raw[4]).strip()
             ]
             pages.append(

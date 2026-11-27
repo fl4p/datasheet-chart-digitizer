@@ -45,6 +45,7 @@ import pymupdf
 
 from .find_charts import group_words_into_lines, line_bbox
 from .finder_types import Word
+from . import visible_text
 
 _MAX_TABLE_PAGES = 4
 _LABEL_WINDOW_PT = 48.0
@@ -149,10 +150,10 @@ def page_words(page) -> list[Word]:
       (gap under 1 pt, same baseline) the word gets U+FFFD appended, so the
       unit reader can see "m" + an undecodable glyph instead of a bare "m".
     """
-    raw = [w for w in page.get_text("words") if str(w[4]).strip()]
+    raw = [w for w in visible_text.words(page) if str(w[4]).strip()]
     chars = [
         (c["c"], tuple(float(v) for v in c["bbox"]))
-        for block in page.get_text("rawdict").get("blocks", [])
+        for block in visible_text.payload(page, "rawdict").get("blocks", [])
         for line in block.get("lines", [])
         for span in line.get("spans", [])
         for c in span.get("chars", [])

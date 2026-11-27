@@ -41,6 +41,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from . import visible_text
 from .gate_charge_separation import _point_segment, _x_at_level, plateau_run
 
 _NUMBER = re.compile(r"^=?([0-9]+(?:[.,][0-9]+)?)(V)?[,;]?$")
@@ -85,7 +86,7 @@ class Binding:
 
 def _words(text_page) -> list[tuple[float, float, float, float, str]]:
     try:
-        raw = text_page.get_text("words")
+        raw = visible_text.words(text_page)
     except Exception:
         return []
     seen = set()

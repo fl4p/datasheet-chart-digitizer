@@ -43,6 +43,7 @@ from .rdson_temperature import (
     _rdson_titles_matching,
     _vgs_label_rows,
 )
+from . import visible_text
 
 # A finder ``rds_on`` panel that no RDS(on) digitizer owns.  Reported as an
 # explicit refusal so a supported-class chart never vanishes without a status.
@@ -230,7 +231,7 @@ def _has_owned_normalized_axis_label(panel: ChartPanel) -> bool:
         gutter = pymupdf.Rect(max(0, bbox.x0 - 35), bbox.y0, bbox.x0 + 2, bbox.y1)
         return any(
             "normalized" in str(word[4]).lower()
-            for word in page.get_text("words", clip=gutter)
+            for word in visible_text.words(page, clip=gutter)
         )
 
 
@@ -262,7 +263,7 @@ def _local_axis_text(panel: ChartPanel) -> str:
     with pymupdf.open(panel.pdf) as document:
         page = document[panel.page - 1]
         clip = (pymupdf.Rect(panel.bbox_pt) + (-30, -30, 30, 30)) & page.rect
-        return page.get_text("text", clip=clip)
+        return visible_text.text(page, clip=clip)
 
 
 def calibrate_panel(panel: ChartPanel, crop_path: Path) -> PanelCalibration:

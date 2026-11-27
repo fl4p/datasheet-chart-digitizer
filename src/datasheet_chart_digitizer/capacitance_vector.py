@@ -10,6 +10,7 @@ from .capacitance_traces import _smooth_points, find_plot_box
 from .capacitance_types import PlotBox, Trace, VectorEdge
 from .capacitance_plot_box import _sparse_closed_frame
 from .crop_transform import CropTransform
+from . import visible_text
 
 MIN_EXACT_COLOR_SOURCE_X_SPAN_FRACTION = 0.80
 
@@ -337,7 +338,7 @@ def _legend_swatch_bindings(page, clip) -> dict[str, tuple[float, ...]] | None:
     bindings: dict[str, tuple[float, ...]] = {}
     words = [
         w
-        for w in page.get_text("words")
+        for w in visible_text.words(page)
         if clip.x0 <= (w[0] + w[2]) / 2 <= clip.x1
         and clip.y0 <= (w[1] + w[3]) / 2 <= clip.y1
     ]

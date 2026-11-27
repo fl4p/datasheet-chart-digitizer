@@ -20,6 +20,7 @@ import re
 import pymupdf
 
 from .text_dashes import normalize_dashes
+from . import visible_text
 
 _BODY_DIODE_X_EXPECT = re.compile(r"V\s*_?\s*(SD|DS\s*\(?\s*F|F\b)|source\s*[-‐–]?\s*(to\s*[-‐–]?\s*)?drain|forward|diode", re.I)
 _BODY_DIODE_X_OTHER = re.compile(r"V\s*_?\s*GS\b|gate", re.I)
@@ -34,7 +35,7 @@ def title_band_texts(pdf: str, page: int, plot: tuple[float, float, float, float
     below = pymupdf.Rect(x0 - 10, y1 + 2, x1 + 10, y1 + 40)
     left = pymupdf.Rect(x0 - 70, y0 - 10, x0 - 1, y1 + 10)
     with pymupdf.open(pdf) as document:
-        words = document[page - 1].get_text("words")
+        words = visible_text.words(document[page - 1])
     def inside(rect):
         return " ".join(w[4] for w in words if rect.contains(pymupdf.Point(0.5 * (w[0] + w[2]), 0.5 * (w[1] + w[3]))))
     return inside(below), inside(left)
@@ -295,7 +296,7 @@ def frame_owned_axis_titles(page, transform, find_frame) -> tuple[str, str]:
     x1, y1 = transform.to_pt(plot.x1, plot.y1)
     frame = (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
     rules = page_rules(page.get_drawings(), _RULE_FRACTION * min(frame[2] - frame[0], frame[3] - frame[1]))
-    return owned_axis_titles(page.get_text("words"), rules, frame)
+    return owned_axis_titles(visible_text.words(page), rules, frame)
 
 
 # ---------------------------------------------------------------------------
